@@ -12,12 +12,13 @@ test.describe('General Functionality of Tournament Manager', () => {
     await page.reload();
 
     // Then the default schedule is loaded.
+    const playerInputs = page.locator('[id^="playerInput_"]');
+    await expect(playerInputs).toHaveCount(12);
+
     // And the settings container and player input fields are visible.
     await expect(page.locator('#settingsContainer')).toBeVisible();
     await expect(page.locator('#playerInputsContainer')).toBeVisible();
-    // Optionally, check that some default schedule data is present.
-    const playersText = await page.locator('#playerInputsContainer').textContent();
-    expect(playersText).toContain('P1'); // for example, default placeholder "P1" should appear
+    await expect(page.locator('#tournamentTitle')).toHaveText('Tournament Title');
   });
 
   test('Tournament state persists across page reloads', async ({ page }) => {
