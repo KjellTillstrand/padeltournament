@@ -5,7 +5,7 @@ test.describe('General Functionality of Tournament Manager', () => {
 
   test('Default schedule is loaded when no state is saved', async ({ page }) => {
     // Given no tournament state is saved in localStorage.
-    await page.goto('https://kjelltillstrand.github.io/padeltournament/');
+    await page.goto('/');
     await page.evaluate(() => localStorage.clear());
 
     // When the user loads the page.
@@ -23,7 +23,7 @@ test.describe('General Functionality of Tournament Manager', () => {
 
   test('Tournament state persists across page reloads', async ({ page }) => {
     // Given a tournament has been started with a specific tournament name.
-    await page.goto('https://kjelltillstrand.github.io/padeltournament/');
+    await page.goto('/');
     await page.fill('#tournamentName', 'Test Tournament');
     await page.click('#startTournamentBtn');
 
@@ -48,7 +48,7 @@ test.describe('General Functionality of Tournament Manager', () => {
 
   test('Auto-save state before unload', async ({ page, context }) => {
     // Given a tournament is in progress.
-    await page.goto('https://kjelltillstrand.github.io/padeltournament/');
+    await page.goto('/');
     await page.fill('#tournamentName', 'AutoSave Test');
     await page.click('#startTournamentBtn');
 
@@ -58,7 +58,7 @@ test.describe('General Functionality of Tournament Manager', () => {
     // Then the current tournament state is saved to localStorage.
     // We create a new page in the same browser context.
     const newPage = await context.newPage();
-    await newPage.goto('https://kjelltillstrand.github.io/padeltournament/');
+    await page.goto('/');
     const savedState = await newPage.evaluate(() => localStorage.getItem('tournamentState'));
     expect(savedState).not.toBeNull();
     const state = JSON.parse(savedState);

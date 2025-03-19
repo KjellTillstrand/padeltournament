@@ -4,7 +4,7 @@ const { test, expect } = require('@playwright/test');
 test.describe('Padel Turrar Tournament Manager', () => {
   test.beforeEach(async ({ page }) => {
     // Navigate to your page.
-    await page.goto('https://kjelltillstrand.github.io/padeltournament/');
+    await page.goto('/');
   });
 
   test('Page loads and displays header', async ({ page }) => {
