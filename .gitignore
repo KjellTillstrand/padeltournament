@@ -1,0 +1,33 @@
+# Node modules
+node_modules/
+
+# Build output directories (if any)
+dist/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage directory (if using testing tools that produce coverage)
+coverage/
+
+# Environment files (if using dotenv)
+.env
+.env.local
+
+# IDE settings (e.g., VSCode, JetBrains)
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+
+# Test results
+test-results/
