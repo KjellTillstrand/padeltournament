@@ -1,4 +1,7 @@
-name: Deploy and Test
+name: Deploy and 
+
+permissions:
+  contents: write
 
 on:
   push:
@@ -25,7 +28,7 @@ jobs:
       # - name: Build project
       #   run: npm run build
 
-      
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
