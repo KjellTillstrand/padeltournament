@@ -55,10 +55,9 @@ test.describe('General Functionality of Tournament Manager', () => {
     // When the user navigates away from the page (simulate by closing the page).
     await page.close();
 
-    // Then the current tournament state is saved to localStorage.
-    // We create a new page in the same browser context.
+    // Then create a new page and verify the state is saved.
     const newPage = await context.newPage();
-    await page.goto('/');
+    await newPage.goto('/');
     const savedState = await newPage.evaluate(() => localStorage.getItem('tournamentState'));
     expect(savedState).not.toBeNull();
     const state = JSON.parse(savedState);
