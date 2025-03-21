@@ -41,6 +41,7 @@ jobs:
         env:
           BASE_URL: "http://localhost:8080"
         run: |
+          pkill -f "http-server" || true
           # Start the static server in the background on port 8080.
           npx http-server . -p 8080 &
           SERVER_PID=$!
