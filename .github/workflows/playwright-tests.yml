@@ -10,6 +10,38 @@ on:
   pull_request:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: Install dependencies
+        run: npm install
+
+      # Install http-server and wait-on as dev dependencies (or globally if preferred)
+      - name: Install http-server and wait-on
+        run: npm install -D http-server wait-on
+
+      # Start the static server in the background on port 8080.
+      - name: Start static server
+        run: |
+          npx http-server . -p 8080 &
+          npx wait-on http://localhost:8080
+
+      - name: Install playwright
+        run: npx playwright install
+
+      - name: Run Playwright tests
+        env:
+          BASE_URL: "http://localhost:8080"
+        run: npx playwright test
+        
   deploy:
     runs-on: ubuntu-latest
     steps:
@@ -24,40 +56,13 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # If you have a build step (for example, if using webpack or similar), run it here:
-      # - name: Build project
-      #   run: npm run build
-
-
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./  # adjust if your site is in a subdirectory
 
-  test:
-    needs: deploy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+  
+      
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '16'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Install playwright
-        run: npx playwright install
-
-      # Optionally, add a wait step if the deployed site needs a moment to be live.
-      - name: Wait for deployment to be available
-        run: sleep 20
-
-      - name: Run Playwright Tests
-        env:
-          BASE_URL: "https://kjelltillstrand.github.io/padeltournament/"  # replace with your actual URL
-        run: npx playwright test
+     
