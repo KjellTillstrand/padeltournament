@@ -37,11 +37,20 @@ jobs:
       - name: Install playwright
         run: npx playwright install
 
-      - name: Run Playwright tests
+      - name: Start static server and run tests
         env:
           BASE_URL: "http://localhost:8080"
-        run: npx playwright test
-        
+        run: |
+          # Start the static server in the background on port 8080.
+          npx http-server . -p 8080 &
+          SERVER_PID=$!
+          # Wait until the server is ready.
+          npx wait-on http://localhost:8080
+          # Run Playwright tests (they use BASE_URL from the env)
+          npx playwright test
+          # Kill the server after tests are done.
+          kill $SERVER_PID
+
   deploy:
     runs-on: ubuntu-latest
     steps:
