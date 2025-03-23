@@ -51,6 +51,12 @@ jobs:
           npx playwright test
           # Kill the server after tests are done.
           kill $SERVER_PID
+      
+      - name: Upload Playwright Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: playwright-report
+          path: playwright-report
 
   deploy:
     runs-on: ubuntu-latest
