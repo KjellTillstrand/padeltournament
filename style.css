@@ -1,7 +1,6 @@
 /* Global Styles */
 body {
     font-family: Arial, sans-serif;
-    background: url('./DALLE.webp') no-repeat center center fixed;
     margin: 20px;
     background-color: #d4fdd6;
 }
@@ -10,15 +9,29 @@ body {
 #header {
     text-align: center;
     margin-bottom: 20px;
+    padding: 20px;
+    background-color: rgba(141, 203, 235, 0.2); /* Light translucent background */
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2); /* Soft drop shadow */
+    backdrop-filter: blur(4px); /* Optional glass effect */
 }
+
 #tournamentTitle {
-    font-size: 2.5em;
+    font-size: 3em;
+    align-content: center;
     margin: 0;
+    color: #004d00; /* Deep green */
+    font-weight: bold;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1); /* Soft shadow for contrast */
 }
+
 #siteName {
     font-size: 1.5em;
+    align-content: center;
     margin: 0;
-    color: #555;
+    color: #333;
+    font-style: italic;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 #startTournamentBtn {
@@ -164,18 +177,31 @@ body {
     font-size: 1.5em;
     font-weight: bold;
 }
+
+
+
+.round-header .center button {
+    background-color: #006400; /* Dark green */
+    color: white;
+    border: none;
+    font-size: 1em;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin: 0 10px;
+    transition: background-color 0.3s ease;
+}
+
+.round-header .center button:hover {
+    background-color: #004d00; /* Darker green */
+}
+
+
 .round-header .center {
     flex: 1;
     text-align: center;
 }
-.round-header .center button {
-    background: none;
-    border: none;
-    font-size: 36px;
-    font-weight: bold;
-    cursor: pointer;
-    margin: 0 10px;
-}
+
 .round-header .right {
     flex: 1;
     text-align: right;
@@ -248,7 +274,7 @@ body {
 /* Result Overlay */
 .result-overlay-container {
     position: absolute;
-    top: 5px;
+    top: 50px;
     left: 0;
     width: 100%;
     display: flex;
@@ -278,3 +304,19 @@ body {
 .hidden {
     display: none;
 }
+
+#header.header-with-logo {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+  
+  #siteLogo {
+    height: 200px;
+    width: auto;
+  }
+  
+  .header-text {
+    text-align: left;
+  }

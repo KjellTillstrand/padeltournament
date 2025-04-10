@@ -1,0 +1,43 @@
+/* Custom court name styles for Libro */
+.court-1::before {
+    content: "Libro Court 1";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}
+.court-2::before {
+    content: "Libro Court 2";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}.court-3::before {
+    content: "Libro Court 3";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}.court-4::before {
+    content: "Libro Court 4";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}.court-5::before {
+    content: "Libro Court 5";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}
