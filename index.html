@@ -13,10 +13,14 @@
 
 <body>
   <!-- Header: Tournament Title and Site Name -->
-  <div id="header">
-    <h1 id="tournamentTitle">Tournament Title</h1>
-    <h2 id="siteName">Padel Turrar</h2>
+  <div id="header" class="header-with-logo">
+    <img id="siteLogo" src="" alt="Site Logo" />
+    <div class="header-text">
+      <h1 id="tournamentTitle">Tournament Title</h1>
+      <p id="siteName">Powered by Padel Turrar</p>
+    </div>
   </div>
+
 
   <div id="settingsContainer">
     <div class="global-controls">
@@ -34,12 +38,12 @@
       </select>
     </div>
 
-    
+
     <div class="tournament-info">
       <label for="tournamentName">Tournament Name:</label>
       <input type="text" id="tournamentName" placeholder="Enter tournament name" />
     </div>
-    
+
     <!-- Move Start Tournament Button Below -->
     <div class="start-button-container">
       <button id="startTournamentBtn">Start Tournament</button>
@@ -48,7 +52,7 @@
     <div id="playerInputsContainer">
       <!-- Player input fields will be generated here -->
     </div>
-    
+
     <!-- New container to properly space the saved tournaments section -->
     <div class="saved-tournaments-container">
       <label for="savedTournamentSelect">Saved Tournaments:</label>
@@ -58,7 +62,7 @@
     </div>
 
   </div>
-  <button id="toggleSettingsBtn" style="display:none;">Toggle Settings</button>
+  <button id="toggleSettingsBtn" style="display:none;">Tournament Settings</button>
 
   <!-- Tournament container: displays one round at a time -->
   <div id="tournamentContainer" class="schedule-container"></div>
@@ -391,32 +395,39 @@
 
     function createCourtView(match) {
       const courtDiv = document.createElement('div');
+
+      // Add 'court' class + dynamic court number class
       courtDiv.className = 'court';
+      if (match.court) {
+        courtDiv.classList.add(`court-${match.court}`);
+      }
+
       const resultOverlay = createResultOverlay(match);
       courtDiv.appendChild(resultOverlay);
+
       const centerLine = document.createElement('div');
       centerLine.className = 'center-line';
       courtDiv.appendChild(centerLine);
+
       const teamLeft = document.createElement('div');
       teamLeft.className = 'team team-left';
       teamLeft.textContent = match.teams[0].join(" & ");
       courtDiv.appendChild(teamLeft);
+
       const teamRight = document.createElement('div');
       teamRight.className = 'team team-right';
       teamRight.textContent = match.teams[1].join(" & ");
       courtDiv.appendChild(teamRight);
+
       return courtDiv;
     }
+
 
     function createMatchContainer(match) {
       const container = document.createElement('div');
       container.className = 'match';
       container.dataset.teamLeft = match.teams[0].join(',');
       container.dataset.teamRight = match.teams[1].join(',');
-      const matchLabel = document.createElement('div');
-      matchLabel.className = 'match-label';
-      matchLabel.textContent = "Court " + match.court;
-      container.appendChild(matchLabel);
       const courtView = createCourtView(match);
       container.appendChild(courtView);
       return container;
@@ -450,7 +461,7 @@
       headerCenter.className = "center";
       if (roundIndex > 0) {
         const prevBtn = document.createElement("button");
-        prevBtn.innerHTML = "&#x2190;"; // left arrow
+        prevBtn.innerHTML = "PREVIOUS ROUND"; // left arrow
         prevBtn.addEventListener("click", function () {
           currentRoundIndex--;
           displayRound(currentRoundIndex);
@@ -460,7 +471,7 @@
       }
       if (roundIndex < currentSchedule.rounds.length - 1) {
         const nextBtn = document.createElement("button");
-        nextBtn.innerHTML = "&#x2192;"; // right arrow
+        nextBtn.innerHTML = "NEXT ROUND"; // right arrow
         nextBtn.addEventListener("click", function () {
           currentRoundIndex++;
           displayRound(currentRoundIndex);
@@ -607,10 +618,8 @@
     });
 
     document.getElementById("toggleSettingsBtn").addEventListener("click", toggleSettings);
-    //document.getElementById("saveTournamentBtn").addEventListener("click", saveTournament);
     document.getElementById("loadTournamentBtn").addEventListener("click", loadTournament);
     document.getElementById("deleteTournamentBtn").addEventListener("click", deleteTournament);
-    document.getElementById("newTournamentBtn").addEventListener("click", newTournament);
 
     // Auto-save state before unload (to handle crashes/reloads).
     window.addEventListener("beforeunload", function () {
@@ -691,6 +700,37 @@
       updatePlayerNamesFromInputs();
       return true;
     }
+
+    function getSiteNameFromURL() {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get('site') || 'default';
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      // Get the 'site' parameter from the URL
+      const params = new URLSearchParams(window.location.search);
+      const site = getSiteNameFromURL()
+
+      // Build the path to the background image dynamically
+      const bgUrl = `./sites/${site}/bg.jpg`;
+
+      // Set the background image on the body
+      document.body.style.backgroundImage = `url('${bgUrl}')`;
+      document.body.style.backgroundRepeat = 'no-repeat';
+      document.body.style.backgroundPosition = 'center center';
+      document.body.style.backgroundAttachment = 'fixed';
+      document.body.style.backgroundSize = 'cover'; // Optional for full coverage
+
+      // Dynamically load the site's court styles
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = `./sites/${site}/courts.css`;
+      document.head.appendChild(link);
+
+      const logoImg = document.getElementById('siteLogo');
+      logoImg.src = `sites/${site}/logo.png`;
+
+    });
 
   </script>
 </body>
