@@ -26,7 +26,7 @@ export default defineConfig({
   reporter: 'html',
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
-    url: process.env.BASE_URL || 'http://localhost:3000', // fallback if not deployed
+    baseURL: process.env.BASE_URL || 'http://localhost:3000', // fallback if not deployed
     headless: true,
     viewport: { width: 1280, height: 720 },
     ignoreHTTPSErrors: true,
