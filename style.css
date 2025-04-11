@@ -12,13 +12,12 @@ body {
     padding: 20px;
     background-color: rgba(141, 203, 235, 0.2); /* Light translucent background */
     border-radius: 12px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2); /* Soft drop shadow */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); /* Soft drop shadow */
     backdrop-filter: blur(4px); /* Optional glass effect */
 }
 
 #tournamentTitle {
     font-size: 3em;
-    align-content: center;
     margin: 0;
     color: #004d00; /* Deep green */
     font-weight: bold;
@@ -27,7 +26,6 @@ body {
 
 #siteName {
     font-size: 1.5em;
-    align-content: center;
     margin: 0;
     color: #333;
     font-style: italic;

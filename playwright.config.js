@@ -26,7 +26,7 @@ export default defineConfig({
   reporter: 'html',
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
-    baseURL: process.env.BASE_URL || 'http://kjelltillstrand.github.io/padeltournament', // fallback if not deployed
+    url: process.env.BASE_URL || 'http://localhost:3000', // fallback if not deployed
     headless: true,
     viewport: { width: 1280, height: 720 },
     ignoreHTTPSErrors: true,
@@ -70,11 +70,12 @@ export default defineConfig({
     // },
   ],
 
-  /* Run your local dev server before starting the tests */
-  // webServer: {
-  //   command: 'npm run start',
-  //   url: 'http://127.0.0.1:3000',
-  //   reuseExistingServer: !process.env.CI,
-  // },
+  /* Run your local dev server before starting the tests 
+  webServer: {
+    command: 'npm run start',
+    url: process.env.BASE_URL || 'http://localhost:3000',
+    reuseExistingServer: !process.env.CI,
+    timeout: 120 * 1000, // Wait up to 2 minutes for the server to be up
+  },*/
 });
 
