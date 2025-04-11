@@ -25,7 +25,7 @@
     font-weight: bold;
     font-size: 14px;
 }.court-4::before {
-    content: "4. Länsförsäkringar";
+    content: "4. Länsförsäkringar.";
     position: absolute;
     top: 5px;
     left: 10px;
