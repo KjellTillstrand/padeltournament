@@ -484,10 +484,12 @@
       const headerRight = document.createElement("div");
       headerRight.className = "right";
       const saveBtn = document.createElement("button");
+      saveBtn.id = "saveTournamentBtn";
       saveBtn.textContent = "Save Tournament";
       saveBtn.addEventListener("click", saveTournament);
       headerRight.appendChild(saveBtn);
       const newBtn = document.createElement("button");
+      newBtn.id = "newTournamentBtn";
       newBtn.textContent = "New Tournament";
       newBtn.addEventListener("click", newTournament);
       headerRight.appendChild(newBtn);
@@ -616,7 +618,7 @@
       updateAllScoreboards();
       saveTournamentState();
     });
-    
+
 
     document.getElementById("toggleSettingsBtn").addEventListener("click", toggleSettings);
     document.getElementById("loadTournamentBtn").addEventListener("click", loadTournament);

@@ -6,6 +6,5 @@
   "scripts": {
     "test": "npx playwright test",
     "start": "vite"
-
   }
 }
