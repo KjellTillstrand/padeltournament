@@ -43,7 +43,7 @@ jobs:
         run: |
           pkill -f "http-server" || true
           # Start the static server in the background on port 8080.
-          npx http-server . -p 8080 &
+          npx http-server ./web -p 8080 &
           SERVER_PID=$!
           # Wait until the server is ready.
           npx wait-on http://localhost:8080
@@ -87,10 +87,3 @@ jobs:
           # (If you want to keep your old "gh-pages" branch,
           # you should define a different target branch for this GPO action to work with.)
           target-branch: gh-pages
-
-          
-
-  
-      
-
-     
