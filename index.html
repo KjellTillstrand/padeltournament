@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Padel Turrar Tournament Manager</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="schedules/12p11r.js"></script>
+  <script src="schedules/16p15r.js"></script>
+  <script src="schedules/20p19r.js"></script>
+  <script src="schedules/24p23r.js"></script>
+</head>
+
+<body>
+  <!-- Header: Tournament Title and Site Name -->
+  <div id="header" class="header-with-logo">
+    <img id="siteLogo" src="" alt="Site Logo" />
+    <div class="header-text">
+      <h1 id="tournamentTitle">Tournament Title</h1>
+      <p id="siteName">Powered by Padel Turrar</p>
+    </div>
+  </div>
+
+
+  <div id="settingsContainer">
+    <div class="global-controls">
+      <label for="scheduleSelect">Select Schedule:</label>
+      <select id="scheduleSelect">
+        <option value="12p11r.js">12 Player, 11 Round Schedule</option>
+        <option value="16p15r.js">16 Player, 15 Round Schedule</option>
+        <option value="20p19r.js">20 Player, 19 Round Schedule</option>
+        <option value="24p23r.js">24 Player, 23 Round Schedule</option>
+      </select>
+      <label for="globalTotalPoints">Global Total Points:</label>
+      <select id="globalTotalPoints">
+        <option value="24">24</option>
+        <option value="32">32</option>
+      </select>
+    </div>
+
+
+    <div class="tournament-info">
+      <label for="tournamentName">Tournament Name:</label>
+      <input type="text" id="tournamentName" placeholder="Enter tournament name" />
+    </div>
+
+    <!-- Move Start Tournament Button Below -->
+    <div class="start-button-container">
+      <button id="startTournamentBtn">Start Tournament</button>
+    </div>
+
+    <div id="playerInputsContainer">
+      <!-- Player input fields will be generated here -->
+    </div>
+
+    <!-- New container to properly space the saved tournaments section -->
+    <div class="saved-tournaments-container">
+      <label for="savedTournamentSelect">Saved Tournaments:</label>
+      <select id="savedTournamentSelect"></select>
+      <button id="loadTournamentBtn">Load Tournament</button>
+      <button id="deleteTournamentBtn">Delete Tournament</button>
+    </div>
+
+  </div>
+  <button id="toggleSettingsBtn" style="display:none;">Tournament Settings</button>
+
+  <!-- Tournament container: displays one round at a time -->
+  <div id="tournamentContainer" class="schedule-container"></div>
+
+  <script>
+    let currentSchedule = null;
+    let defaultPlayerNames = []; // stores original names from schedule load
+    let tournamentStarted = false;
+    let currentRoundIndex = 0; // 0-indexed
+
+    // Update header when tournament name changes.
+    document.getElementById("tournamentName").addEventListener("input", function () {
+      document.getElementById("tournamentTitle").textContent = this.value || "Tournament Title";
+    });
+
+    // Save tournament state to localStorage.
+    function saveTournamentState() {
+      const state = {
+        schedule: currentSchedule,
+        currentRoundIndex: currentRoundIndex,
+        tournamentStarted: tournamentStarted,
+        tournamentName: document.getElementById("tournamentName").value
+      };
+      localStorage.setItem("tournamentState", JSON.stringify(state));
+    }
+
+    function restoreTournamentState() {
+      const savedState = localStorage.getItem("tournamentState");
+      if (savedState) {
+        const state = JSON.parse(savedState);
+        currentSchedule = state.schedule;
+        currentRoundIndex = state.currentRoundIndex;
+        tournamentStarted = state.tournamentStarted;
+        document.getElementById("tournamentName").value = state.tournamentName || "";
+        document.getElementById("tournamentTitle").textContent = state.tournamentName || "Tournament Title";
+        // Update UI accordingly.
+        if (tournamentStarted) {
+          disableSettings();
+          displayRound(currentRoundIndex);
+        } else {
+          // Optionally re-render the pre-tournament settings.
+        }
+      }
+    }
+
+
+    // Restore tournament state from localStorage.
+    window.addEventListener("load", function () {
+      // 1. Check for a saved state.
+      const savedState = localStorage.getItem("tournamentState");
+      if (savedState) {
+        console.log("Restoring saved state:", savedState);
+        restoreTournamentState();
+      } else {
+        // 2. No saved state, load default schedule.
+        const defaultModule = document.getElementById("scheduleSelect").value;
+        loadScheduleFromModule(defaultModule);
+      }
+
+      // 3. Ensure currentSchedule is loaded.
+      if (!currentSchedule) {
+        const defaultModule = document.getElementById("scheduleSelect").value;
+        loadScheduleFromModule(defaultModule);
+      }
+
+      // 4. Generate the player name table.
+      if (currentSchedule && currentSchedule.players) {
+        generatePlayerInputs(currentSchedule.players);
+      } else {
+        console.error("No schedule loaded; please load a schedule first.");
+      }
+
+      // 5. Show either the tournament round (if running) or the settings for new tournament.
+      if (tournamentStarted) {
+        disableSettings();
+        document.getElementById("toggleSettingsBtn").style.display = "block";
+        displayRound(currentRoundIndex);
+      } else {
+        document.getElementById("settingsContainer").style.display = "block";
+        document.getElementById("toggleSettingsBtn").style.display = "none";
+      }
+
+      // 6. Populate the saved tournament dropdown.
+      populateSavedTournamentDropdown();
+    });
+
+
+
+
+    // Save current tournament.
+    function saveTournament() {
+      if (!currentSchedule) return;
+      const tournamentName = document.getElementById("tournamentName").value.trim() || "Unnamed Tournament";
+      const savedTournament = {
+        tournamentName: tournamentName,
+        schedule: currentSchedule,
+        savedAt: new Date().toISOString()
+      };
+      let savedTournaments = JSON.parse(localStorage.getItem("savedTournaments") || "[]");
+      const existingIndex = savedTournaments.findIndex(t => t.tournamentName === tournamentName);
+      if (existingIndex !== -1) {
+        savedTournaments[existingIndex] = savedTournament;
+      } else {
+        savedTournaments.push(savedTournament);
+      }
+      localStorage.setItem("savedTournaments", JSON.stringify(savedTournaments));
+      populateSavedTournamentDropdown();
+      alert("Tournament saved!");
+    }
+
+    // Load tournament.
+    function loadTournament() {
+      let savedTournaments = JSON.parse(localStorage.getItem("savedTournaments") || "[]");
+      const dropdown = document.getElementById("savedTournamentSelect");
+      const selectedIndex = parseInt(dropdown.value, 10);
+      if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
+        const selectedTournament = savedTournaments[selectedIndex];
+        currentSchedule = selectedTournament.schedule;
+        currentRoundIndex = 0;
+        tournamentStarted = true;
+        document.getElementById("tournamentName").value = selectedTournament.tournamentName;
+        document.getElementById("tournamentTitle").textContent = selectedTournament.tournamentName;
+        disableSettings();
+        document.getElementById("toggleSettingsBtn").style.display = "block";
+        displayRound(currentRoundIndex);
+        saveTournamentState();
+      }
+    }
+
+    // Delete tournament.
+    function deleteTournament() {
+      const tournamentName = document.getElementById("tournamentName").value.trim();
+      if (!tournamentName) {
+        alert("No tournament name provided.");
+        return;
+      }
+      if (confirm(`Are you sure you want to delete "${tournamentName}"? Your secret sauce will vanish forever!`)) {
+        let savedTournaments = JSON.parse(localStorage.getItem("savedTournaments") || "[]");
+        savedTournaments = savedTournaments.filter(t => t.tournamentName !== tournamentName);
+        localStorage.setItem("savedTournaments", JSON.stringify(savedTournaments));
+        populateSavedTournamentDropdown();
+        resetTournamentState();
+        alert(`Tournament "${tournamentName}" deleted!`);
+      }
+    }
+
+    function getUniqueTournamentName(baseName) {
+      let savedTournaments = JSON.parse(localStorage.getItem("savedTournaments") || "[]");
+      let usedNames = new Set(savedTournaments.map(t => t.tournamentName));
+      if (!usedNames.has(baseName)) return baseName;
+
+      let i = 1;
+      let newName = `${baseName}-${i}`;
+      while (usedNames.has(newName)) {
+        i++;
+        newName = `${baseName}-${i}`;
+      }
+      return newName;
+    }
+
+
+
+    document.getElementById("startTournamentBtn").addEventListener("click", function () {
+      // Get and trim tournament name.
+      let tournamentName = document.getElementById("tournamentName").value.trim();
+      if (!tournamentName) {
+        alert("Tournament name must not be empty.");
+        console.log("Start tournament aborted: name is empty.");
+        return; // Exit function if name is empty.
+      }
+
+      // Generate unique tournament name and update input.
+      tournamentName = getUniqueTournamentName(tournamentName);
+      document.getElementById("tournamentName").value = tournamentName;
+
+      if (!currentSchedule) {
+        alert("Please load a schedule first.");
+        return;
+      }
+
+      if (!randomizePlayers()) return;
+
+      // Now proceed to start the tournament.
+      tournamentStarted = true;
+      currentRoundIndex = 0;
+      disableSettings();
+      document.getElementById("settingsContainer").style.display = "none";
+      document.getElementById("toggleSettingsBtn").style.display = "block";
+      displayRound(currentRoundIndex);
+      saveTournamentState();
+    });
+
+    // New tournament.
+    function newTournament() {
+      if (confirm("Do you want to save the current tournament before creating a new one?")) {
+        saveTournament();
+      }
+      resetTournamentState();
+      document.getElementById("settingsContainer").style.display = "block";
+      document.getElementById("tournamentName").value = "";
+      document.getElementById("tournamentTitle").textContent = "Tournament Title";
+      alert("Ready for a new tournament!");
+    }
+
+
+    function resetTournamentState() {
+      tournamentStarted = false;
+      currentSchedule = null;
+      currentRoundIndex = 0;
+      document.getElementById("scheduleSelect").disabled = false;
+      document.getElementById("globalTotalPoints").disabled = false;
+      document.getElementById("tournamentName").disabled = false;
+      const inputs = document.querySelectorAll("#playerInputsContainer input, #playerInputsContainer textarea");
+      inputs.forEach(input => input.disabled = false);
+      document.getElementById("startTournamentBtn").disabled = false;
+      document.getElementById("toggleSettingsBtn").style.display = "none";
+      localStorage.removeItem("tournamentState");
+      loadScheduleFromModule(document.getElementById("scheduleSelect").value);
+    }
+
+    function populateSavedTournamentDropdown() {
+      const dropdown = document.getElementById("savedTournamentSelect");
+      let savedTournaments = JSON.parse(localStorage.getItem("savedTournaments") || "[]");
+      dropdown.innerHTML = "";
+      savedTournaments.forEach((tournament, index) => {
+        const option = document.createElement("option");
+        option.value = index;
+        option.textContent = tournament.tournamentName + " (Saved: " + new Date(tournament.savedAt).toLocaleString() + ")";
+        dropdown.appendChild(option);
+      });
+      if (currentSchedule && document.getElementById("tournamentName").value) {
+        const currentName = document.getElementById("tournamentName").value.trim();
+        const selectedIndex = savedTournaments.findIndex(t => t.tournamentName === currentName);
+        if (selectedIndex !== -1) dropdown.value = selectedIndex;
+      }
+    }
+
+    // --- Helper Functions (no duplicates) ---
+    function storeDefaultPlayerNames(players) {
+      defaultPlayerNames = players.slice();
+    }
+
+    function generatePlayerInputs(players) {
+      const container = document.getElementById("playerInputsContainer");
+      container.innerHTML = ""; // Clear previous content
+
+      // Create the table container
+      const table = document.createElement("div");
+      table.className = "player-names-table";
+
+      players.forEach((player, index) => {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = player;
+        input.maxLength = 30; // Ensures a max of 30 characters
+        input.id = "playerInput_" + index;
+        input.placeholder = "Enter name";
+
+        table.appendChild(input); // Add each input directly to the table grid
+      });
+
+      container.appendChild(table); // Append table to the container
+    }
+
+
+    function shuffleArray(arr) {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+
+
+
+    // --- Functions for Round and Match Rendering ---
+    function createResultOverlay(match) {
+      const overlayContainer = document.createElement('div');
+      overlayContainer.className = 'result-overlay-container';
+      const total = parseInt(document.getElementById("globalTotalPoints").value, 10);
+      const leftOverlay = document.createElement('div');
+      leftOverlay.className = 'result-overlay-left';
+      const leftInput = document.createElement('input');
+      leftInput.type = 'number';
+      leftInput.min = '0';
+      leftInput.value = '';
+      leftOverlay.appendChild(leftInput);
+      const rightOverlay = document.createElement('div');
+      rightOverlay.className = 'result-overlay-right';
+      const rightInput = document.createElement('input');
+      rightInput.type = 'number';
+      rightInput.min = '0';
+      rightInput.value = '';
+      rightOverlay.appendChild(rightInput);
+      overlayContainer.appendChild(leftOverlay);
+      overlayContainer.appendChild(rightOverlay);
+      const errorSpan = document.createElement('span');
+      errorSpan.className = 'error-message';
+      overlayContainer.appendChild(errorSpan);
+      if (match.result) {
+        leftInput.value = match.result.left;
+        rightInput.value = match.result.right;
+      } else {
+        match.result = { left: '', right: '' };
+      }
+      function updateOpposite(source, target) {
+        if (source.value.trim() === '') {
+          target.value = '';
+        } else {
+          const sourceVal = parseInt(source.value, 10);
+          if (!isNaN(sourceVal)) { target.value = total - sourceVal; }
+        }
+      }
+      function validate() {
+        const leftVal = leftInput.value.trim() === '' ? null : parseInt(leftInput.value, 10);
+        const rightVal = rightInput.value.trim() === '' ? null : parseInt(rightInput.value, 10);
+        if (leftVal === null || rightVal === null) {
+          errorSpan.textContent = " Please fill in both scores";
+        } else if (leftVal + rightVal !== total) {
+          errorSpan.textContent = " Sum must equal " + total;
+        } else { errorSpan.textContent = ""; }
+        match.result = { left: leftInput.value, right: rightInput.value };
+        updateAllScoreboards();
+        saveTournamentState();
+      }
+      leftInput.addEventListener('input', function () { updateOpposite(leftInput, rightInput); validate(); });
+      rightInput.addEventListener('input', function () { updateOpposite(rightInput, leftInput); validate(); });
+      return overlayContainer;
+    }
+
+    function createCourtView(match) {
+      const courtDiv = document.createElement('div');
+
+      // Add 'court' class + dynamic court number class
+      courtDiv.className = 'court';
+      if (match.court) {
+        courtDiv.classList.add(`court-${match.court}`);
+      }
+
+      const resultOverlay = createResultOverlay(match);
+      courtDiv.appendChild(resultOverlay);
+
+      const centerLine = document.createElement('div');
+      centerLine.className = 'center-line';
+      courtDiv.appendChild(centerLine);
+
+      const teamLeft = document.createElement('div');
+      teamLeft.className = 'team team-left';
+      teamLeft.textContent = match.teams[0].join(" & ");
+      courtDiv.appendChild(teamLeft);
+
+      const teamRight = document.createElement('div');
+      teamRight.className = 'team team-right';
+      teamRight.textContent = match.teams[1].join(" & ");
+      courtDiv.appendChild(teamRight);
+
+      return courtDiv;
+    }
+
+
+    function createMatchContainer(match) {
+      const container = document.createElement('div');
+      container.className = 'match';
+      container.dataset.teamLeft = match.teams[0].join(',');
+      container.dataset.teamRight = match.teams[1].join(',');
+      const courtView = createCourtView(match);
+      container.appendChild(courtView);
+      return container;
+    }
+
+
+    function displayRound(roundIndex) {
+      const container = document.getElementById("tournamentContainer");
+      container.innerHTML = "";
+      if (!currentSchedule || !currentSchedule.rounds || roundIndex < 0 || roundIndex >= currentSchedule.rounds.length) {
+        container.textContent = "Round data not available.";
+        return;
+      }
+
+      const round = currentSchedule.rounds[roundIndex];
+      const roundDiv = document.createElement("div");
+      roundDiv.className = "round";
+      roundDiv.setAttribute("data-round", round.roundNumber);
+
+      // --- Round Header ---
+      const roundHeader = document.createElement("div");
+      roundHeader.className = "round-header";
+
+      // Left part: Round title.
+      const headerLeft = document.createElement("div");
+      headerLeft.className = "left";
+      headerLeft.textContent = "Round " + round.roundNumber;
+
+      // Center part: Navigation buttons.
+      const headerCenter = document.createElement("div");
+      headerCenter.className = "center";
+      if (roundIndex > 0) {
+        const prevBtn = document.createElement("button");
+        prevBtn.innerHTML = "PREVIOUS ROUND"; // left arrow
+        prevBtn.addEventListener("click", function () {
+          currentRoundIndex--;
+          displayRound(currentRoundIndex);
+          saveTournamentState();
+        });
+        headerCenter.appendChild(prevBtn);
+      }
+      if (roundIndex < currentSchedule.rounds.length - 1) {
+        const nextBtn = document.createElement("button");
+        nextBtn.innerHTML = "NEXT ROUND"; // right arrow
+        nextBtn.addEventListener("click", function () {
+          currentRoundIndex++;
+          displayRound(currentRoundIndex);
+          saveTournamentState();
+        });
+        headerCenter.appendChild(nextBtn);
+      }
+
+      // Right part: Save and New Tournament buttons.
+      const headerRight = document.createElement("div");
+      headerRight.className = "right";
+      const saveBtn = document.createElement("button");
+      saveBtn.id = "saveTournamentBtn";
+      saveBtn.textContent = "Save Tournament";
+      saveBtn.addEventListener("click", saveTournament);
+      headerRight.appendChild(saveBtn);
+      const newBtn = document.createElement("button");
+      newBtn.id = "newTournamentBtn";
+      newBtn.textContent = "New Tournament";
+      newBtn.addEventListener("click", newTournament);
+      headerRight.appendChild(newBtn);
+
+      // Assemble the round header.
+      roundHeader.appendChild(headerLeft);
+      roundHeader.appendChild(headerCenter);
+      roundHeader.appendChild(headerRight);
+      roundDiv.appendChild(roundHeader);
+
+      // --- Round Body: Two Columns ---
+      const roundBody = document.createElement("div");
+      roundBody.className = "round-body";
+
+      // Left Column: Scoreboard container.
+      const scoreboardContainer = document.createElement("div");
+      scoreboardContainer.className = "scoreboard-container";
+      scoreboardContainer.id = "scoreboard-round-" + round.roundNumber;
+      roundBody.appendChild(scoreboardContainer);
+
+      // Right Column: Matches container.
+      const matchesColumn = document.createElement("div");
+      matchesColumn.className = "matches-column";
+      const matchesContainer = document.createElement("div");
+      matchesContainer.className = "matches-container";
+      round.matches.forEach(match => {
+        const matchContainer = createMatchContainer(match);
+        matchesContainer.appendChild(matchContainer);
+      });
+      matchesColumn.appendChild(matchesContainer);
+      roundBody.appendChild(matchesColumn);
+
+      roundDiv.appendChild(roundBody);
+      container.appendChild(roundDiv);
+
+      updateAllScoreboards();
+      saveTournamentState();
+    }
+
+    function updateAllScoreboards() {
+      const scores = {};
+      if (currentSchedule && currentSchedule.players) {
+        currentSchedule.players.forEach(player => { scores[player] = 0; });
+      }
+      for (let i = 0; i <= currentRoundIndex; i++) {
+        const round = currentSchedule.rounds[i];
+        round.matches.forEach(match => {
+          if (match.result) {
+            const leftScore = match.result.left.trim() === '' ? 0 : parseInt(match.result.left, 10) || 0;
+            const rightScore = match.result.right.trim() === '' ? 0 : parseInt(match.result.right, 10) || 0;
+            match.teams[0].forEach(player => { scores[player] += leftScore; });
+            match.teams[1].forEach(player => { scores[player] += rightScore; });
+          }
+        });
+      }
+      let scoreArray = [];
+      for (let player in scores) {
+        scoreArray.push({ player: player, score: scores[player] });
+      }
+      scoreArray.sort((a, b) => b.score - a.score);
+      const currentRoundNum = currentSchedule.rounds[currentRoundIndex].roundNumber;
+      const scoreboardContainer = document.getElementById("scoreboard-round-" + currentRoundNum);
+      if (scoreboardContainer) {
+        let html = "<table><tr><th>Player</th><th>Points</th></tr>";
+        scoreArray.forEach(item => {
+          html += `<tr><td>${item.player}</td><td>${item.score}</td></tr>`;
+        });
+        html += "</table>";
+        scoreboardContainer.innerHTML = html;
+      }
+    }
+
+    function disableSettings() {
+      document.getElementById("scheduleSelect").disabled = true;
+      document.getElementById("globalTotalPoints").disabled = true;
+      // Remove or comment out the next line so the tournament name remains enabled.
+      // document.getElementById("tournamentName").disabled = true;
+      const inputs = document.querySelectorAll("#playerInputsContainer input, #playerInputsContainer textarea");
+      inputs.forEach(input => input.disabled = true);
+      document.getElementById("startTournamentBtn").disabled = true;
+    }
+
+
+    function toggleSettings() {
+      const settingsDiv = document.getElementById("settingsContainer");
+      settingsDiv.style.display = (settingsDiv.style.display === "none") ? "block" : "none";
+    }
+
+    // Updated loadSchedule function to use global variables from separate JS files.
+    function loadScheduleFromModule(moduleName) {
+      // Here we check moduleName and assign currentSchedule from global variables.
+      if (moduleName === "12p11r.js") {
+        currentSchedule = window.schedule12p11r;
+      } else if (moduleName === "16p15r.js") {
+        currentSchedule = window.schedule16p15r;
+      } else if (moduleName === "20p19r.js") {
+        currentSchedule = window.schedule20p19r;
+      } else if (moduleName === "24p23r.js") {
+        currentSchedule = window.schedule24p23r;
+      } else {
+        console.error("Unknown module name:", moduleName);
+        return;
+      }
+      storeDefaultPlayerNames(currentSchedule.players);
+      // Clear previous match results and (if needed) store teamIndices.
+      currentSchedule.rounds.forEach(round => {
+        round.matches.forEach(match => {
+          match.result = null;
+          match.teamIndices = match.teams.map(team =>
+            team.map(oldName => defaultPlayerNames.indexOf(oldName))
+          );
+        });
+      });
+      generatePlayerInputs(currentSchedule.players);
+      document.getElementById("tournamentContainer").innerHTML = "";
+      localStorage.removeItem("tournamentState");
+    }
+
+    // Event Listeners.
+    document.getElementById("scheduleSelect").addEventListener("change", function () {
+      loadScheduleFromModule(this.value);
+    });
+    document.getElementById("globalTotalPoints").addEventListener("change", function () {
+      updateAllScoreboards();
+      saveTournamentState();
+    });
+
+
+    document.getElementById("toggleSettingsBtn").addEventListener("click", toggleSettings);
+    document.getElementById("loadTournamentBtn").addEventListener("click", loadTournament);
+    document.getElementById("deleteTournamentBtn").addEventListener("click", deleteTournament);
+
+    // Auto-save state before unload (to handle crashes/reloads).
+    window.addEventListener("beforeunload", function () {
+      saveTournamentState();
+    });
+
+    // Randomize players on tournament start.
+    function updatePlayerNamesFromInputs() {
+      if (!currentSchedule || !currentSchedule.players) {
+        alert("No schedule loaded.");
+        return;
+      }
+
+      let newNames = [];
+      for (let i = 0; i < currentSchedule.players.length; i++) {
+        const input = document.getElementById("playerInput_" + i);
+        let name = input.value.trim();
+
+        if (!name) {
+          name = defaultPlayerNames[i]; // Use default if empty
+        }
+        newNames.push(name);
+      }
+
+      if (new Set(newNames).size !== newNames.length) {
+        alert("Player names must be unique.");
+        return;
+      }
+
+      // Update current schedule with new names
+      currentSchedule.players = newNames.slice();
+
+      // Update matches to reflect new names
+      currentSchedule.rounds.forEach(round => {
+        round.matches.forEach(match => {
+          match.teams = match.teamIndices.map(indices =>
+            indices.map(i => newNames[i])
+          );
+        });
+      });
+
+      if (tournamentStarted) displayRound(currentRoundIndex);
+      saveTournamentState();
+    }
+
+    function randomizePlayers() {
+      const numPlayers = currentSchedule.players.length;
+      let names = [];
+      for (let i = 0; i < numPlayers; i++) {
+        const input = document.getElementById("playerInput_" + i);
+        // Use the value if present, otherwise use the default name.
+        let name = input.value.trim();
+        if (!name) {
+          name = defaultPlayerNames[i];
+        }
+        if (name.length > 20) {
+          alert("Player names must be 20 characters or less.");
+          return false;
+        }
+        names.push(name);
+      }
+      // Check uniqueness.
+      const uniqueNames = new Set(names);
+      if (uniqueNames.size !== names.length) {
+        alert("Player names must be unique.");
+        return false;
+      }
+      // Optionally shuffle names if desired.
+      names = shuffleArray(names);
+      currentSchedule.players = names.slice();
+      // Update the table inputs so the user sees the new names.
+      const container = document.getElementById("playerInputsContainer");
+      const inputs = container.querySelectorAll("input");
+      inputs.forEach((input, index) => {
+        input.value = names[index];
+      });
+      // Also update our stored names.
+      updatePlayerNamesFromInputs();
+      return true;
+    }
+
+    function getSiteNameFromURL() {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get('site') || 'default';
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      // Get the 'site' parameter from the URL
+      const params = new URLSearchParams(window.location.search);
+      const site = getSiteNameFromURL()
+
+      // Build the path to the background image dynamically
+      const bgUrl = `./sites/${site}/bg.jpg`;
+
+      // Set the background image on the body
+      document.body.style.backgroundImage = `url('${bgUrl}')`;
+      document.body.style.backgroundRepeat = 'no-repeat';
+      document.body.style.backgroundPosition = 'center center';
+      document.body.style.backgroundAttachment = 'fixed';
+      document.body.style.backgroundSize = 'cover'; // Optional for full coverage
+
+      // Dynamically load the site's court styles
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = `./sites/${site}/courts.css`;
+      document.head.appendChild(link);
+
+      const logoImg = document.getElementById('siteLogo');
+      logoImg.src = `sites/${site}/logo.png`;
+
+    });
+
+  </script>
+</body>
+
+</html>
