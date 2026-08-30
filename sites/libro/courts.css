@@ -1,0 +1,43 @@
+/* Custom court name styles for Libro */
+.court-1::before {
+    content: "1. Centro kakel";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}
+.court-2::before {
+    content: "2. Recover";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}.court-3::before {
+    content: "3. Evolvit";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}.court-4::before {
+    content: "4. Länsförsäkringar.";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}.court-5::before {
+    content: "5. Elite Hotel Academia";
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+}
