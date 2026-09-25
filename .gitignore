@@ -36,3 +36,10 @@ test-results/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# Claude harness runtime state (per-machine, never committed;
+# .claude/CLAUDE.md and .claude/gate.json ARE tracked)
+.claude/wi-context.json
+.claude/mock-board.json
+.claude/worktrees/
+.claude/settings.local.json
