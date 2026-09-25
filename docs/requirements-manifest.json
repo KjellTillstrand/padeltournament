@@ -1,0 +1,25 @@
+{
+  "schema": "padeltournament/requirements-manifest/v1",
+  "description": "Approved Requirements the acceptance suite must cover. An acceptance test verifies a requirement when its test title begins with the requirement tag followed by a colon, e.g. \"R-SCORE-ENTRY: <scenario>\". A test verifying several requirements lists the tags comma-separated before the colon, e.g. \"R-SCORE-ENTRY, R-POINTS-TOTAL: <scenario>\".",
+  "title_convention": "^(R-[A-Z0-9-]+)(, R-[A-Z0-9-]+)*: ",
+  "requirements": [
+    { "tag": "R-SCHEDULE-SELECT", "id": 2, "title": "Select a preconfigured schedule", "method": "Automated Test" },
+    { "tag": "R-POINTS-TOTAL", "id": 3, "title": "Set the points total per game", "method": "Automated Test" },
+    { "tag": "R-NAME-UNIQUE", "id": 4, "title": "Unique, non-empty tournament name", "method": "Automated Test" },
+    { "tag": "R-STATE-PERSIST", "id": 5, "title": "Resume after reload or crash", "method": "Automated Test" },
+    { "tag": "R-PLAYER-NAMES", "id": 6, "title": "Name the players", "method": "Automated Test" },
+    { "tag": "R-COURT-NAMES", "id": 7, "title": "Custom court names", "method": "Automated Test" },
+    { "tag": "R-START-LOCK", "id": 8, "title": "Start the tournament and lock setup", "method": "Automated Test" },
+    { "tag": "R-ROUND-NAV", "id": 9, "title": "Navigate between rounds", "method": "Automated Test" },
+    { "tag": "R-SCORE-ENTRY", "id": 10, "title": "Auto-completing score entry", "method": "Automated Test" },
+    { "tag": "R-TOURNAMENT-STORE", "id": 11, "title": "Save, load and delete tournaments", "method": "Automated Test" },
+    { "tag": "R-SCOREBOARD", "id": 12, "title": "Ranked scoreboard with medal colors", "method": "Automated Test" },
+    {
+      "tag": "R-CLIENT-ONLY",
+      "id": 13,
+      "title": "Fully client-side operation",
+      "method": "Demonstration",
+      "note": "Demonstrated by the acceptance suite itself: it runs against a static http-server serving ./web with no backend (see .github/workflows/playwright-tests.yml), so every passing test shows the app operating fully client-side."
+    }
+  ]
+}

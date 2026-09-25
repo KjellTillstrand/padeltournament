@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 
 test.describe('Player Names Uniqueness Validation', () => {
-  test('should alert when duplicate player names are entered', async ({ page }) => {
+  test('R-PLAYER-NAMES: should alert when duplicate player names are entered', async ({ page }) => {
     await page.goto('/');
     // Fill two player inputs with the same name.
     await page.fill('#playerInput_0', 'Duplicate');

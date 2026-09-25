@@ -8,7 +8,7 @@ test.describe('Default Schedule Loading', () => {
     await page.reload();
   });
 
-  test('should load default schedule with 12 player inputs and default title', async ({ page }) => {
+  test('R-SCHEDULE-SELECT: should load default schedule with 12 player inputs and default title', async ({ page }) => {
     // Expect 12 player inputs (IDs begin with "playerInput_")
     const playerInputs = page.locator('[id^="playerInput_"]');
     await expect(playerInputs).toHaveCount(12);

@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 
 test.describe('Score Auto-Calculation', () => {
-  test('should auto-calculate opponent score based on global total', async ({ page }) => {
+  test('R-SCORE-ENTRY, R-POINTS-TOTAL: should auto-calculate opponent score based on global total', async ({ page }) => {
     await page.goto('/');
     // Set up with a tournament name and choose global total points 24.
     await page.fill('#tournamentName', 'Score Test');
