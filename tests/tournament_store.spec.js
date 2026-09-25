@@ -94,8 +94,8 @@ test.describe('R-TOURNAMENT-STORE: Saving, loading and deleting tournaments', ()
   // recorded scores) but hard-resets the round index to 0 rather than restoring the
   // round the tournament was saved at. This test therefore checks scores and names
   // (which the app genuinely restores) without advancing rounds, since asserting the
-  // round position would fail against the current implementation. See completion
-  // report for this gap.
+  // round position would fail against the current implementation.
+  // DEFERRED: AB#20 (loadTournament() does not restore the saved round position).
   test('R-TOURNAMENT-STORE: Loading restores a saved tournament', async ({ page }) => {
     const organizer = theOrganizer(page);
     page.on('dialog', (dialog) => dialog.dismiss());

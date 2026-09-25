@@ -7,7 +7,8 @@
 // court class, are not editable via any UI, and are not part of the
 // localStorage-persisted tournament state (see web/index.html and
 // web/sites/*/courts.css). Those two scenarios are therefore left untested
-// here rather than faked; see the completion report for details.
+// here rather than faked.
+// DEFERRED: AB#19 (implement custom court names) tracks closing this gap.
 const { test, expect } = require('@playwright/test');
 
 // --- Screenplay kernel (Actor / Task / Question) ---
