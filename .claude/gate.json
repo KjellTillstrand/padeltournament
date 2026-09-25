@@ -1,0 +1,12 @@
+{
+  "protected": [
+    "web/**",
+    "scheduler/**",
+    ".github/**",
+    ".claude/gate.json"
+  ],
+  "verify_allowlist": [
+    "npm test",
+    "npx playwright test"
+  ]
+}
