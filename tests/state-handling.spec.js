@@ -3,7 +3,7 @@ const { test, expect } = require('@playwright/test');
 
 test.describe('General Functionality of Tournament Manager', () => {
 
-  test('R-STATE-PERSIST: Default schedule is loaded when no state is saved', async ({ page }) => {
+  test('R-STATE-PERSIST, R-SCHEDULE-SELECT: Default schedule is loaded when no state is saved', async ({ page }) => {
    
     console.log('BASE URL:', process.env.BASE_URL);
     await page.goto(process.env.BASE_URL || 'http://localhost:3000/');
