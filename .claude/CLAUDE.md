@@ -5,8 +5,11 @@
   `web/sites/{default,libro,was}` variants, styles in `web/css/`.
 - Tournament schedules are data modules in `web/schedules/` (`12p11r.js` … `24p23r.js`),
   loaded dynamically.
-- `scheduler/combined.js` is the offline schedule solver (multi-run randomized pairing);
-  it generates schedule data, it is not part of the served app.
+- Schedulers (none are part of the served app): `scheduler/whist-generate.js` generates
+  the shipped perfect-whist tables (deterministic, self-verifying — refuses to emit an
+  imperfect schedule); `scheduler/engine/` is the parametrized engine for any player
+  count/round length (equitable mixing, `equity` report on every result);
+  `scheduler/combined.js` is the superseded original solver, kept for history.
 - All state (schedule, rounds, scores, tournament name, court names) persists in
   browser localStorage — no backend, no database. See `docs/requirements.md`.
 - Playwright end-to-end tests in `tests/`.
@@ -39,13 +42,18 @@ none configured
 `npm install` once, then `npm start` (vite dev server).
 
 ## Deploy
-none — static app; the Playwright workflow is the only pipeline.
+GitHub Pages, automatic: every push to `main` runs `.github/workflows/playwright-tests.yml`
+("Test and deploy") — full suite + the requirement-coverage gate, then the deploy job
+publishes `web/` to `gh-pages` (push-to-main only, freshness-guarded). CI/release is a
+trust boundary; the workflow, its gate scripts and the requirements manifest are
+gate-protected paths.
 
 ## Gotchas & Patterns
 - Tests exercise localStorage-persisted state; stale state bleeding between specs is
   the classic failure mode here.
-- Schedule modules are generated data — regenerate via `scheduler/combined.js` rather
-  than hand-editing round arrays.
+- Schedule modules are generated data — regenerate via `node scheduler/whist-generate.js <N>`
+  (never hand-edit round arrays; the generator verifies the whist property and refuses
+  to write otherwise). `scheduler/combined.js` is superseded.
 - Playwright owns the test server: `playwright.config.js` serves `./web` on
   127.0.0.1:8199 and, with `reuseExistingServer: false`, an occupied port is a loud
   error before any test runs. Do not hand-start a server for the suite. (Port 8080
