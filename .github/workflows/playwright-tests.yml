@@ -1,9 +1,13 @@
 name: Test and deploy
 
 # Least privilege: every job gets a read-only token unless it opts in. Only the
-# deploy job (which force-pushes gh-pages) is granted write access.
+# deploy job is granted write access, and only to Pages (no contents: write).
 # Actions are pinned to full commit SHAs (tag in the trailing comment); a tag
 # can be moved, a SHA cannot.
+# Pages source: the repository owner sets Settings > Pages > Source to "GitHub
+# Actions" (a one-time manual step). Automating it with actions/configure-pages
+# was evaluated and rejected: changing the source needs Administration: write,
+# which GITHUB_TOKEN cannot be granted.
 permissions:
   contents: read
 
@@ -84,22 +88,42 @@ jobs:
     # Publish only from a push to main (never from pull_request runs), after the
     # test job and its coverage gate are green.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    # Serialize publications so two runs can never race writing gh-pages.
+    # Serialize publications so two runs' Pages deployments never race. (No
+    # branch is written any more; the group keeps its historical name.)
     concurrency:
       group: deploy-gh-pages
       cancel-in-progress: false
-    # The only job with write access: it force-pushes the gh-pages branch.
+    # Pages deploys through GitHub's first-party artifact flow: no branch is
+    # pushed, so no job holds contents: write. pages: write + id-token: write are
+    # what actions/deploy-pages needs (the OIDC token proves the deployment
+    # comes from this workflow run); contents: read is restated because a
+    # job-level block replaces the top-level one, and checkout needs it.
+    # actions: read is for the artifact check below: listing a run's artifacts
+    # needs the Actions permission, not Pages.
     permissions:
-      contents: write
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    # The github-pages environment's deployment branch policy is a second,
+    # server-side check on which branches may publish: main (and, until it is
+    # retired, gh-pages).
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      # Credentials stay persisted here (the default): the overwriter action
-      # pushes with the token checkout leaves in .git/config.
+      # The token is not needed after checkout: the freshness fetch below reads
+      # the public repository anonymously, and deploy-pages receives its token
+      # as an input, not from .git/config.
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # concurrency serializes deploys but does not order them: a slower older
-      # run must not force-push stale content over a newer deploy, so publish
-      # only if this commit is still the head of main.
+      # run must not deploy stale content over a newer deploy, so publish only
+      # if this commit is still the head of main. The fetch is unauthenticated
+      # (public repo); should it ever fail, the step fails and nothing publishes.
       - name: Skip publishing if main has moved on
         id: freshness
         run: |
@@ -112,26 +136,34 @@ jobs:
             echo "::notice::Skipping publish: $GITHUB_SHA is no longer the head of main ($head_sha); the newer run publishes instead."
           fi
 
-      - name: Publish current workdir (which contains generated content) to GitHub Pages
+      - name: Upload web/ as the Pages artifact
+        id: upload
         if: steps.freshness.outputs.current == 'true'
-        uses: rayluo/github-pages-overwriter@c394294cfbfd3f239625a54b6c2b36e6a47bbfee # v1.3
-
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
+          path: web
 
-          # Optional.
-          #
-          # Default value "." means the root directory of your project will be published.
-          #
-          # You can use whatever directory your project uses,
-          # for example "wwwroot" (without leading "./").
-          # Such a directory does *not* have to already exist in your repo,
-          # it could be an output directory created dynamically
-          # by your static website builder.
-          source-directory: web
+      # deploy-pages picks the run's artifact by name, not by id. Fail unless
+      # exactly one github-pages artifact exists in this run and it is the one
+      # uploaded above. This narrows the window for a swapped artifact to the
+      # moment between this check and the deploy; it does not close it
+      # (accepted residual).
+      - name: Verify the Pages artifact is the one just uploaded
+        if: steps.freshness.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ID: ${{ steps.upload.outputs.artifact_id }}
+        run: |
+          ids="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=github-pages&per_page=100" \
+            --jq '[.artifacts[] | select(.name == "github-pages") | .id | tostring] | join(" ")')"
+          count="$(printf '%s' "$ids" | wc -w | tr -d ' ')"
+          if [ -z "$EXPECTED_ID" ] || [ "$count" != "1" ] || [ "$ids" != "$EXPECTED_ID" ]; then
+            echo "::error::Expected exactly one github-pages artifact with id '$EXPECTED_ID' in run $GITHUB_RUN_ID; found $count: [$ids]."
+            exit 1
+          fi
+          echo "Verified: github-pages artifact $EXPECTED_ID is the only one in run $GITHUB_RUN_ID."
 
-          # Optional. Default value "gh-pages".
-          # It specifies the temporary branch which hosts the static website.
-          # Each build will REMOVE this branch and replace it with new content.
-          # (If you want to keep your old "gh-pages" branch,
-          # you should define a different target branch for this GPO action to work with.)
-          target-branch: gh-pages
+      - name: Deploy to GitHub Pages
+        id: deployment
+        if: steps.freshness.outputs.current == 'true'
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
