@@ -30,9 +30,36 @@ const ReopenTheApp = async (actor) => {
   await actor.page.reload();
 };
 
+const RevealTournamentSettings = async (actor) => {
+  await actor.page.click('#toggleSettingsBtn');
+};
+
+const SaveTheTournament = async (actor) => {
+  await actor.page.click('#saveTournamentBtn');
+};
+
+const StartANewTournament = async (actor) => {
+  // newTournament() asks (confirm) whether to save, then (if accepted) saves
+  // via alert(), then confirms readiness via a second alert(). Accept all of them.
+  const acceptAllDialogs = (dialog) => dialog.accept();
+  actor.page.on('dialog', acceptAllDialogs);
+  await actor.page.click('#newTournamentBtn');
+  actor.page.off('dialog', acceptAllDialogs);
+};
+
+const LoadTheSavedTournament = (tournamentName) => async (actor) => {
+  const option = actor.page.locator('#savedTournamentSelect option', { hasText: tournamentName });
+  const value = await option.getAttribute('value');
+  await actor.page.selectOption('#savedTournamentSelect', value);
+  await actor.page.click('#loadTournamentBtn');
+};
+
 // --- Questions ---
 const CourtLabel = (courtNumber) => async (actor) =>
   (await actor.page.locator(`.court-${courtNumber} .court-label`).textContent()).trim();
+
+const CourtNameInputPlaceholder = (courtNumber) => async (actor) =>
+  actor.page.locator(`#courtNameInput_${courtNumber}`).getAttribute('placeholder');
 
 test.describe('R-COURT-NAMES: Custom court names', () => {
   test.beforeEach(async ({ page }) => {
@@ -89,5 +116,76 @@ test.describe('R-COURT-NAMES: Custom court names', () => {
     await expect(page.locator('.round')).toBeVisible();
     expect(await organizer.asksFor(CourtLabel(1))).toBe('Center Court');
     await expect(page.locator('#courtNameInput_1')).toHaveValue('Center Court');
+  });
+
+  // @verifies REQ-7
+  test('R-COURT-NAMES: A saved tournament round-trips its custom court name', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given the Organizer has named a court and started the tournament.
+    await organizer.attemptsTo(NameACourt(1, 'Center Court'));
+    await organizer.attemptsTo(StartTheTournament('Round Trip Tournament'));
+    expect(await organizer.asksFor(CourtLabel(1))).toBe('Center Court');
+
+    // When the Organizer saves it, starts a new tournament, and loads it back.
+    await organizer.attemptsTo(SaveTheTournament);
+    await organizer.attemptsTo(StartANewTournament);
+    await organizer.attemptsTo(LoadTheSavedTournament('Round Trip Tournament'));
+
+    // Then the court shall still be named "Center Court".
+    expect(await organizer.asksFor(CourtLabel(1))).toBe('Center Court');
+  });
+
+  // @verifies REQ-7
+  test('R-COURT-NAMES: Renaming a court mid-tournament updates its label live', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given the tournament has started with the default court names.
+    await organizer.attemptsTo(StartTheTournament('Live Rename Test'));
+    expect(await organizer.asksFor(CourtLabel(2))).toBe('Court 2');
+
+    // When the Organizer renames a court from the (reopened) settings panel.
+    await organizer.attemptsTo(RevealTournamentSettings);
+    await organizer.attemptsTo(NameACourt(2, 'Live Court'));
+
+    // Then the on-screen label updates immediately, without a reload.
+    expect(await organizer.asksFor(CourtLabel(2))).toBe('Live Court');
+  });
+
+  // @verifies REQ-7
+  test('R-COURT-NAMES: A court name containing markup renders as literal text', async ({ page }) => {
+    const organizer = theOrganizer(page);
+    // Kept within the 30-character court name field limit.
+    const payload = '<img src=x onerror=top.p=1>';
+
+    // Given the Organizer names a court with an XSS payload.
+    await organizer.attemptsTo(NameACourt(1, payload));
+    await organizer.attemptsTo(StartTheTournament('XSS Regression'));
+
+    // Then the label shall render the payload as literal text, not markup.
+    expect(await organizer.asksFor(CourtLabel(1))).toBe(payload);
+    await expect(page.locator('.court-1 img')).toHaveCount(0);
+    expect(await page.evaluate(() => window.p)).toBeUndefined();
+  });
+
+  // @verifies REQ-7
+  test('R-COURT-NAMES: The Libro site shows its branded default court names', async ({ page }) => {
+    // Given the app is loaded for the Libro site with no custom court names set.
+    await page.goto('/?site=libro');
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+    const organizer = theOrganizer(page);
+
+    // Then the court name inputs shall be placeholder-hinted with Libro's names.
+    await expect(page.locator('#courtNamesContainer input')).toHaveCount(3);
+    expect(await organizer.asksFor(CourtNameInputPlaceholder(1))).toBe('1. Centro kakel');
+    expect(await organizer.asksFor(CourtNameInputPlaceholder(2))).toBe('2. Recover');
+    expect(await organizer.asksFor(CourtNameInputPlaceholder(3))).toBe('3. Evolvit');
+
+    // And the courts shall be labeled with Libro's branded names in the matches.
+    await organizer.attemptsTo(StartTheTournament('Libro Defaults'));
+    expect(await organizer.asksFor(CourtLabel(1))).toBe('1. Centro kakel');
+    expect(await organizer.asksFor(CourtLabel(2))).toBe('2. Recover');
+    expect(await organizer.asksFor(CourtLabel(3))).toBe('3. Evolvit');
   });
 });
