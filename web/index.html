@@ -645,12 +645,31 @@
       const currentRoundNum = currentSchedule.rounds[currentRoundIndex].roundNumber;
       const scoreboardContainer = document.getElementById("scoreboard-round-" + currentRoundNum);
       if (scoreboardContainer) {
-        let html = "<table><tr><th>Player</th><th>Points</th></tr>";
-        scoreArray.forEach(item => {
-          html += `<tr><td>${item.player}</td><td>${item.score}</td></tr>`;
+        // Player names are user input: build the table with DOM APIs and set
+        // cell text via textContent, never innerHTML. The shape (header row,
+        // then one <tr> per player) is what the rank colours in style.css key on.
+        // The explicit <tbody> matches the DOM the HTML parser used to produce.
+        const table = document.createElement('table');
+        const body = document.createElement('tbody');
+        table.appendChild(body);
+        const headerRow = document.createElement('tr');
+        ['Player', 'Points'].forEach(label => {
+          const th = document.createElement('th');
+          th.textContent = label;
+          headerRow.appendChild(th);
         });
-        html += "</table>";
-        scoreboardContainer.innerHTML = html;
+        body.appendChild(headerRow);
+        scoreArray.forEach(item => {
+          const row = document.createElement('tr');
+          const playerCell = document.createElement('td');
+          playerCell.textContent = item.player;
+          const scoreCell = document.createElement('td');
+          scoreCell.textContent = item.score;
+          row.appendChild(playerCell);
+          row.appendChild(scoreCell);
+          body.appendChild(row);
+        });
+        scoreboardContainer.replaceChildren(table);
       }
     }
 
