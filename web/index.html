@@ -170,6 +170,7 @@
       const savedTournament = {
         tournamentName: tournamentName,
         schedule: currentSchedule,
+        currentRoundIndex: currentRoundIndex,
         courtNames: courtNames.slice(),
         savedAt: new Date().toISOString()
       };
@@ -193,7 +194,9 @@
       if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
         const selectedTournament = savedTournaments[selectedIndex];
         currentSchedule = selectedTournament.schedule;
-        currentRoundIndex = 0;
+        // Tournaments saved before round position was tracked (or with a corrupted
+        // index) carry none/an invalid value: fall back to round 0.
+        currentRoundIndex = normalizeRoundIndex(selectedTournament.currentRoundIndex, currentSchedule);
         tournamentStarted = true;
         // Tournaments saved before court names existed carry none: use the defaults.
         courtNames = normalizeCourtNames(selectedTournament.courtNames);
@@ -347,6 +350,14 @@
     function normalizeCourtNames(names) {
       if (!Array.isArray(names)) return [];
       return names.map(name => (typeof name === "string" ? name : ""));
+    }
+
+    // A missing/non-numeric/out-of-range round index (legacy saves predate this field,
+    // or the schedule shrank) means "start at round 0" rather than crashing.
+    function normalizeRoundIndex(index, schedule) {
+      const roundCount = schedule && Array.isArray(schedule.rounds) ? schedule.rounds.length : 0;
+      if (!Number.isInteger(index) || index < 0 || index >= roundCount) return 0;
+      return index;
     }
 
     // Every match needs its own court, so a schedule has one court per four players.

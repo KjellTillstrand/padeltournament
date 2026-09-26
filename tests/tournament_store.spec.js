@@ -36,6 +36,16 @@ const SaveTheTournament = async (actor) => {
   await actor.page.waitForTimeout(200);
 };
 
+const AdvanceToTheNextRound = async (actor) => {
+  await actor.page.click('.round-header .center button:has-text("NEXT ROUND")');
+  await actor.page.waitForTimeout(200);
+};
+
+const GoBackToThePreviousRound = async (actor) => {
+  await actor.page.click('.round-header .center button:has-text("PREVIOUS ROUND")');
+  await actor.page.waitForTimeout(200);
+};
+
 const StartANewTournament = async (actor) => {
   await actor.page.click('#newTournamentBtn');
   await actor.page.waitForTimeout(200);
@@ -67,6 +77,9 @@ const SavedTournamentNames = async (actor) => {
   return saved.map((t) => t.tournamentName);
 };
 
+const TheDisplayedRoundTitle = async (actor) =>
+  actor.page.locator('.round-header .left').textContent();
+
 test.describe('R-TOURNAMENT-STORE: Saving, loading and deleting tournaments', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
@@ -90,32 +103,55 @@ test.describe('R-TOURNAMENT-STORE: Saving, loading and deleting tournaments', ()
   });
 
   // @verifies REQ-11
-  // Note: the app's loadTournament() restores the saved schedule (player names and
-  // recorded scores) but hard-resets the round index to 0 rather than restoring the
-  // round the tournament was saved at. This test therefore checks scores and names
-  // (which the app genuinely restores) without advancing rounds, since asserting the
-  // round position would fail against the current implementation.
-  // DEFERRED: AB#20 (loadTournament() does not restore the saved round position).
   test('R-TOURNAMENT-STORE: Loading restores a saved tournament', async ({ page }) => {
     const organizer = theOrganizer(page);
     page.on('dialog', (dialog) => dialog.dismiss());
 
-    // Given "Spring Cup" is among the saved tournaments, with a custom player name
-    // and a recorded score.
+    // Given "Spring Cup" is among the saved tournaments, with a custom player name,
+    // a recorded score, and advanced to round 2.
     await organizer.attemptsTo(NameAPlayer(0, 'Ada'));
     await organizer.attemptsTo(StartTheTournament('Spring Cup'));
     await organizer.attemptsTo(RecordAScore(10));
+    await organizer.attemptsTo(AdvanceToTheNextRound);
     await organizer.attemptsTo(SaveTheTournament);
     await organizer.attemptsTo(StartANewTournament);
 
     // When the Organizer loads "Spring Cup".
     await organizer.attemptsTo(LoadTheTournamentNamed('Spring Cup'));
 
-    // Then its scores and names shall be restored.
+    // Then its round, scores and names shall be restored.
     await expect(page.locator('#tournamentTitle')).toHaveText('Spring Cup');
+    expect(await organizer.asksFor(TheDisplayedRoundTitle)).toBe('Round 2');
     await expect(page.locator('.scoreboard-container')).toContainText('Ada');
+
+    // And the score recorded back on round 1 is still there.
+    await organizer.attemptsTo(GoBackToThePreviousRound);
     const restoredScore = await page.locator('.result-overlay-left input').first().inputValue();
     expect(restoredScore).toBe('10');
+  });
+
+  // @verifies REQ-11
+  test('R-TOURNAMENT-STORE: Loading a legacy save without a round position starts at round 1', async ({ page }) => {
+    const organizer = theOrganizer(page);
+    page.on('dialog', (dialog) => dialog.dismiss());
+
+    // Given "Spring Cup" is among the saved tournaments, saved before the round
+    // position was tracked (no currentRoundIndex field on the saved entry).
+    await organizer.attemptsTo(StartTheTournament('Spring Cup'));
+    await organizer.attemptsTo(AdvanceToTheNextRound);
+    await organizer.attemptsTo(SaveTheTournament);
+    await page.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem('savedTournaments') || '[]');
+      delete saved[0].currentRoundIndex;
+      localStorage.setItem('savedTournaments', JSON.stringify(saved));
+    });
+    await organizer.attemptsTo(StartANewTournament);
+
+    // When the Organizer loads "Spring Cup".
+    await organizer.attemptsTo(LoadTheTournamentNamed('Spring Cup'));
+
+    // Then it shall load at round 1 rather than crash or misbehave.
+    expect(await organizer.asksFor(TheDisplayedRoundTitle)).toBe('Round 1');
   });
 
   // @verifies REQ-11
