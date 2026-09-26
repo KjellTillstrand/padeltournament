@@ -198,14 +198,21 @@ test.describe('Equitable schedules for any length', () => {
 
   test('R-EQUITABLE-MIX: the full-length default is the shipped whist table', () => {
     // The engine reuses scheduler/whist-generate.js for the full-length case;
-    // with the default seed it must reproduce the canonical 12p11r table
-    // (apart from the engine's added equity report).
-    const source = fs.readFileSync(path.join(SCHEDULE_DIR, '12p11r.js'), 'utf8');
-    const prefix = 'window.schedule12p11r = ';
-    expect(source.startsWith(prefix)).toBe(true);
-    const { equity, ...table } = generateSchedule({ players: 12, rounds: 11 });
-    expect(equity.optimal).toBe(true);
-    expect(table).toEqual(JSON.parse(source.slice(prefix.length)));
+    // with the default seed it must reproduce each canonical table (apart from
+    // the engine's added equity report). Cost: the spacing stage tries 16
+    // base rounds per size, about 0.3 s at 16, 0.7 s at 20 and 5 s at 24
+    // players, so this test takes about 6 s.
+    for (const n of [12, 16, 20, 24]) {
+      const name = `${n}p${n - 1}r`;
+      const source = fs.readFileSync(path.join(SCHEDULE_DIR, `${name}.js`), 'utf8');
+      const prefix = `window.schedule${name} = `;
+      expect(source.startsWith(prefix), `${name}.js starts with "${prefix}"`).toBe(true);
+      const { equity, ...table } = generateSchedule({ players: n, rounds: n - 1 });
+      expect(equity.optimal, `${name}: equity.optimal`).toBe(true);
+      expect(table, `${name}: engine output equals the shipped table`).toEqual(
+        JSON.parse(source.slice(prefix.length))
+      );
+    }
   });
 
   test('R-EQUITABLE-MIX: more rounds than distinct partners allow are rejected', () => {

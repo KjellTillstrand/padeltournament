@@ -32,7 +32,10 @@ export const MAX_PLAYERS = 24;
 
 // Work budget for the local search, in candidate-move evaluations (a
 // deterministic cut-off, unlike wall time). ~3M evaluations is roughly one
-// second on a laptop; the acceptance shapes need well under 1M.
+// second on a laptop; the acceptance shapes need well under 1M. It governs
+// only the search for shorter schedules: the full-length path runs
+// whist-generate.js's spacedWhist under that script's own fixed budgets
+// (SPACING_CANDIDATES base rounds, etc.), about 5 s at 24 players.
 const MAX_EVALUATIONS = 3000000;
 
 /** The per-size seed whist-generate.js uses; the default here as well. */

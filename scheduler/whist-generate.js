@@ -22,8 +22,9 @@
  * change who partners or opposes whom. Several base rounds (seeds seed,
  * seed + 1, ...) are tried and the best-spaced one is kept. With fewer than
  * 4 courts some adjacent repeats are unavoidable (see adjacentRepeatBound)
- * and the stage is skipped: the constructed 12-player order already has
- * exactly the minimum, 30.
+ * and the stage instead brings their total down to that proven minimum
+ * (30 for 12 players), keeping the constructed order when it is already
+ * there.
  *
  * A court balancing pass then permutes court assignments within each
  * round (which cannot change who meets whom) so every player visits
@@ -463,24 +464,53 @@ function orderWithGap(weights, gap, rand, nodeBudget) {
  *      random orders, lowering the score lexicographically. A swap is taken
  *      only if it improves the score, so it never loses the gap already won.
  *
+ * Options for sizes where some adjacent repeats are unavoidable (fewer than
+ * 4 courts, see adjacentRepeatBound):
+ *   adjacentTotal: score[0] counts back-to-back plus partner-adjacent
+ *     oppositions together (score[1] is then 0), since the requirement there
+ *     bounds their total, not each kind.
+ *   stopAt: the constructed order is tried first and kept if its score[0]
+ *     is at most stopAt; otherwise the search stops at the first start whose
+ *     local search reaches it. Ties therefore go to the constructed order.
+ *
  * Reordering whole rounds cannot change the perfect mix or court coverage:
  * who partners or opposes whom, and on which court, travels with each round;
  * only when things happen changes. Returns { order, score, gap, evaluations }
  * where gap is the smallest distance between two meetings of the same pair.
  */
-function searchRoundOrder(schedule, { seed, restarts = SPACING_RESTARTS } = {}) {
-  const weights = encounterWeights(schedule);
+function searchRoundOrder(
+  schedule,
+  { seed, restarts = SPACING_RESTARTS, adjacentTotal = false, stopAt } = {}
+) {
+  let weights = encounterWeights(schedule);
+  if (adjacentTotal) {
+    weights = {
+      opp: weights.opp.map((row, a) => row.map((o, b) => o + weights.mixed[a][b])),
+      mixed: weights.mixed.map((row) => row.map(() => 0)),
+      any: weights.any,
+    };
+  }
   const R = schedule.rounds.length;
   const rand = mulberry32(seed);
   let evaluations = 0;
+  const constructed = [...Array(R).keys()];
 
-  const starts = [];
+  if (stopAt !== undefined) {
+    const score = spacingScore(constructed, weights);
+    evaluations++;
+    if (score[0] <= stopAt) {
+      return { order: constructed, score, gap: minMeetingGap(score), evaluations };
+    }
+  }
+
+  const gapped = [];
   for (let gap = 2; gap < R; gap++) {
     const order = orderWithGap(weights, gap, rand, SPACING_NODE_BUDGET);
     if (!order) break;
-    starts.push(order);
+    gapped.push(order);
   }
-  starts.reverse(); // widest gap first
+  // The constructed order first when stopAt applies, then widest gap first.
+  const starts = [...(stopAt !== undefined ? [constructed] : []), ...gapped.reverse()];
   for (let i = 0; i < restarts; i++) starts.push(shuffled([...Array(R).keys()], rand));
 
   const swaps = [];
@@ -529,6 +559,7 @@ function searchRoundOrder(schedule, { seed, restarts = SPACING_RESTARTS } = {}) 
       }
     }
     if (!best || compareScores(score, best.score) < 0) best = { order, score };
+    if (stopAt !== undefined && best.score[0] <= stopAt) break;
   }
   return { ...best, gap: minMeetingGap(best.score), evaluations };
 }
@@ -577,36 +608,40 @@ function spacingPossible(N) {
 
 /**
  * The full perfect-mix pipeline with spacing: whist construction, the
- * spacing stage, then court balancing over the final order. Tries `candidates` base rounds (seeds
- * seed, seed + 1, ...), orders each one's rounds with searchRoundOrder and
- * keeps the best: first one that puts every player on every court, then the
- * best spacing score, ties going to the earliest candidate. The result is
- * deterministic for a given N and seed.
+ * spacing stage, then court balancing over the final order. Tries up to
+ * `candidates` base rounds (seeds seed, seed + 1, ...), orders each one's
+ * rounds with searchRoundOrder and keeps the best: first one that puts every
+ * player on every court, then the best spacing score, ties going to the
+ * earliest candidate. The result is deterministic for a given N and seed.
  *
- * Returns { schedule, score, spaced, candidate, restarts, evaluations } where
- * spaced means zero back-to-back oppositions and zero partner-adjacent
- * oppositions (possible only with 4+ courts), candidate is the chosen base round's index (seed + candidate),
- * restarts is that base round's search restarts and evaluations counts
- * round-order scores over all candidates; or null if no base round was found. When spacing is
- * impossible (spacingPossible(N) is false) the stage is skipped and the
- * rounds keep their constructed order; for 12 players that order already
- * meets adjacentRepeatBound exactly, which verifySpacing's caller checks.
+ * With 4 or more courts every candidate is searched and the widest spacing
+ * wins. With fewer, adjacent repeats cannot drop below adjacentRepeatBound(N),
+ * so the search targets that total (adjacentTotal, stopAt) and stops at the
+ * first candidate that reaches it with full court coverage; the constructed
+ * order is tried first, so a construction already at the bound is kept as is.
+ *
+ * Returns { schedule, score, spaced, candidate, tried, built, restarts,
+ * evaluations }: spaced means zero back-to-back and zero partner-adjacent
+ * oppositions (possible only with 4+ courts); candidate is the winning seed
+ * offset (seed + candidate); tried counts the candidate seeds examined and
+ * built those that yielded a base round; restarts is the winning base
+ * round's search restarts; evaluations counts round-order scores over all
+ * candidates. Returns null if no base round was found.
  */
 function spacedWhist(N, seed, { candidates = SPACING_CANDIDATES, restarts = SPACING_RESTARTS } = {}) {
-  if (!spacingPossible(N)) {
-    const found = findBaseRound(N, seed);
-    if (!found) return null;
-    const schedule = balanceCourts(buildSchedule(N, found.base));
-    const score = spacingScore([...Array(N - 1).keys()], encounterWeights(schedule));
-    return { schedule, score, spaced: false, candidate: 0, restarts: found.restarts, evaluations: 0 };
-  }
+  const bound = adjacentRepeatBound(N);
+  const options = bound > 0 ? { adjacentTotal: true, stopAt: bound } : {};
   let best = null;
   let evaluations = 0;
+  let tried = 0;
+  let built = 0;
   for (let k = 0; k < candidates; k++) {
+    tried++;
     const found = findBaseRound(N, seed + k);
     if (!found) continue;
+    built++;
     const schedule = buildSchedule(N, found.base);
-    const result = searchRoundOrder(schedule, { seed: seed + k, restarts });
+    const result = searchRoundOrder(schedule, { seed: seed + k, restarts, ...options });
     evaluations += result.evaluations;
     // Courts are balanced over the final round order; like the reordering,
     // this only moves matches between courts within a round.
@@ -617,13 +652,16 @@ function spacedWhist(N, seed, { candidates = SPACING_CANDIDATES, restarts = SPAC
     if (!best || compareScores(rank, best.rank) < 0) {
       best = { schedule, score: result.score, rank, candidate: k, restarts: found.restarts };
     }
+    if (bound > 0 && best.rank[0] === 0 && best.score[0] <= bound) break;
   }
   if (!best) return null;
   return {
     schedule: best.schedule,
     score: best.score,
-    spaced: best.score[0] === 0 && best.score[1] === 0,
+    spaced: bound === 0 && best.score[0] === 0 && best.score[1] === 0,
     candidate: best.candidate,
+    tried,
+    built,
     restarts: best.restarts,
     evaluations,
   };
@@ -785,8 +823,8 @@ function main() {
       `  spacing: ${spacing.backToBack} back-to-back oppositions, ` +
       `${spacing.partnerAdjacent} partner-adjacent oppositions ` +
       `(${adjacent} adjacent repeats, minimum possible ${bound}), min meeting gap ${spacing.minGap} ` +
-      `(base round ${result.candidate + 1} of ${spacingPossible(N) ? SPACING_CANDIDATES : 1}, ` +
-      `${result.evaluations} order evaluations)`;
+      `(winning seed offset +${result.candidate}; ${result.built} base rounds built from ` +
+      `${result.tried} candidate seeds; ${result.evaluations} order evaluations)`;
     if (problems.length) {
       console.error(`Wh(${N}): VERIFICATION FAILED (${problems.length} problems); nothing written`);
       console.error(spacingLine);
