@@ -34,7 +34,7 @@ export default defineConfig({
   reporter: 'html',
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
-    baseURL: process.env.BASE_URL || TEST_SERVER_URL,
+    baseURL: TEST_SERVER_URL,
     headless: true,
     viewport: { width: 1280, height: 720 },
     ignoreHTTPSErrors: true,
@@ -75,7 +75,8 @@ export default defineConfig({
 
   /* Serve ./web for the tests. Never reuse: an occupied port must fail the run. */
   webServer: {
-    command: 'npx http-server ./web -p 8199 -a 127.0.0.1 -s',
+    // --no: run the pinned local http-server; never download one on the fly.
+    command: 'npx --no http-server ./web -p 8199 -a 127.0.0.1 -s',
     url: TEST_SERVER_URL,
     reuseExistingServer: false,
     timeout: 30 * 1000,

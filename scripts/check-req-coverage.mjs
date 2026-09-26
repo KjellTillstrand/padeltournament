@@ -28,8 +28,9 @@
 // space after the colon, lower-case tag) is reported as a warning so near-miss
 // tagging is visible; it never counts as coverage.
 //
-// Local repro (same reporter wiring as CI; serve ./web first, e.g. on 8123):
-//   BASE_URL=http://localhost:8123 PLAYWRIGHT_JSON_OUTPUT_FILE=/tmp/pw-results.json \
+// Local repro (same reporter wiring as CI; playwright.config.js starts the
+// server itself, so do not start one by hand):
+//   PLAYWRIGHT_JSON_OUTPUT_FILE=/tmp/pw-results.json \
 //     npx playwright test --reporter=list,json
 //   node scripts/check-req-coverage.mjs /tmp/pw-results.json
 //

@@ -46,10 +46,11 @@ none — static app; the Playwright workflow is the only pipeline.
   the classic failure mode here.
 - Schedule modules are generated data — regenerate via `scheduler/combined.js` rather
   than hand-editing round arrays.
-- Local Playwright runs need a static server; port 8080 is often held by another
-  app on this machine (observed: VLC), and testing against the wrong server reads
-  as an all-red suite. Until AB#22 (Playwright-managed webServer, fail-fast on
-  collision) lands: serve on a free port and curl-verify it is the app first.
+- Playwright owns the test server: `playwright.config.js` serves `./web` on
+  127.0.0.1:8199 and, with `reuseExistingServer: false`, an occupied port is a loud
+  error before any test runs. Do not hand-start a server for the suite. (Port 8080
+  on this machine is often held by another app, observed: VLC; testing against the
+  wrong server reads as an all-red suite.)
 - Board operations from inside a worktree MUST pin
   `MOCK_BOARD_STATE=<main checkout>/.claude/mock-board.json` — the mock adapter
   resolves state at the current git toplevel, which in a worktree would fork the
