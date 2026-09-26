@@ -82,6 +82,32 @@ const spread = (counts) => {
 const repeated = (partner) =>
   [...partner].filter(([, n]) => n > 1).map(([pair, n]) => `${pair.replace('|', '-')}: ${n}`);
 
+// Everything the engine promises unconditionally: correct shape, no repeated
+// partner, sit-out counts within one. Also checks that the engine's own
+// equity report agrees with the independent opponent count. Returns the
+// independently counted opponent range.
+function expectSound(schedule, n, rounds, label) {
+  expect(shapeProblems(schedule, n, rounds), `${label}: schedule shape`).toEqual([]);
+  const { partner, opponent, byes } = meetingCounts(schedule);
+  expect(repeated(partner), `${label}: pairs partnered more than once`).toEqual([]);
+  const sitOuts = spread(byes);
+  expect(sitOuts.max - sitOuts.min, `${label}: sit-out counts range ${sitOuts.min}..${sitOuts.max}`)
+    .toBeLessThanOrEqual(1);
+  const opp = spread(opponent);
+  expect(schedule.equity.opponentSpread, `${label}: equity.opponentSpread`).toBe(opp.max - opp.min);
+  expect(schedule.equity.optimal, `${label}: equity.optimal agrees with cost`).toBe(
+    schedule.equity.cost === schedule.equity.lowerBound
+  );
+  return opp;
+}
+
+// Sound, and the equitable mix itself: opponent counts within one.
+function expectEquitable(schedule, n, rounds, label) {
+  const { min, max } = expectSound(schedule, n, rounds, label);
+  expect(max - min, `${label}: opponent counts range ${min}..${max}`).toBeLessThanOrEqual(1);
+  expect(schedule.equity.optimal, `${label}: equity.optimal`).toBe(true);
+}
+
 const EXAMPLES = [
   { players: 12, rounds: 6 },
   { players: 14, rounds: 10 },
@@ -93,15 +119,29 @@ test.describe('Equitable schedules for any length', () => {
   for (const { players: n, rounds } of EXAMPLES) {
     test(`R-EQUITABLE-MIX: ${n} players over ${rounds} rounds never repeat a partner and keep opponent counts within one`, () => {
       for (const seed of SEEDS) {
-        const schedule = generateSchedule({ players: n, rounds, seed });
-        expect(shapeProblems(schedule, n, rounds), `seed ${seed}: schedule shape`).toEqual([]);
-        const { partner, opponent } = meetingCounts(schedule);
-        expect(repeated(partner), `seed ${seed}: pairs partnered more than once`).toEqual([]);
-        const { min, max } = spread(opponent);
-        expect(max - min, `seed ${seed}: opponent counts range ${min}..${max}`).toBeLessThanOrEqual(1);
+        expectEquitable(generateSchedule({ players: n, rounds, seed }), n, rounds, `seed ${seed}`);
       }
     });
   }
+
+  test('R-EQUITABLE-MIX: odd-sized 9/6 and 13/6 tournaments keep opponent counts within one', () => {
+    for (const { players: n, rounds } of [{ players: 9, rounds: 6 }, { players: 13, rounds: 6 }]) {
+      expectEquitable(generateSchedule({ players: n, rounds }), n, rounds, `${n}/${rounds}`);
+    }
+  });
+
+  test('R-EQUITABLE-MIX: a shape the search cannot balance still succeeds and says so', () => {
+    // Known-hard shapes at the default seed: the search budget runs out above
+    // the optimum. The contract is honest degradation — the hard guarantees
+    // hold and equity reports the miss — never a silent "equitable" claim.
+    for (const { players: n, rounds } of [{ players: 20, rounds: 9 }, { players: 14, rounds: 8 }]) {
+      const schedule = generateSchedule({ players: n, rounds });
+      const { min, max } = expectSound(schedule, n, rounds, `${n}/${rounds}`);
+      expect(schedule.equity.optimal, `${n}/${rounds}: equity.optimal`).toBe(false);
+      expect(schedule.equity.cost).toBeGreaterThan(schedule.equity.lowerBound);
+      expect(max - min, `${n}/${rounds}: opponent counts range ${min}..${max}`).toBeGreaterThan(1);
+    }
+  });
 
   test('R-EQUITABLE-MIX: 14 players over 10 rounds spread their byes evenly', () => {
     const names = ['Ana', 'Ben', 'Cai', 'Dov', 'Eli', 'Fay', 'Gus', 'Hal', 'Ivy', 'Jo', 'Kim', 'Lea', 'Max', 'Noa'];
@@ -130,29 +170,53 @@ test.describe('Equitable schedules for any length', () => {
     }
   });
 
+  // Perfect mix over 4n players and 4n - 1 rounds: partners exactly once,
+  // opponents exactly twice.
+  function expectPerfectMix(schedule, n, label) {
+    expect(shapeProblems(schedule, n, n - 1), `${label}: schedule shape`).toEqual([]);
+    const { partner, opponent } = meetingCounts(schedule);
+    const off = (counts, target) =>
+      [...counts].filter(([, v]) => v !== target).map(([pair, v]) => `${pair}: ${v}`);
+    expect(off(partner, 1), `${label}: pairs not partnered exactly once`).toEqual([]);
+    expect(off(opponent, 2), `${label}: pairs not opposed exactly twice`).toEqual([]);
+    expect(schedule.equity).toEqual(
+      expect.objectContaining({ optimal: true, opponentSpread: 0 })
+    );
+  }
+
   test('R-EQUITABLE-MIX: 12 players over 11 rounds achieve the perfect mix', () => {
     for (const seed of [undefined, ...SEEDS]) {
-      const schedule = generateSchedule({ players: 12, rounds: 11, seed });
-      expect(shapeProblems(schedule, 12, 11), `seed ${seed}: schedule shape`).toEqual([]);
-      const { partner, opponent } = meetingCounts(schedule);
-      const off = (counts, target) =>
-        [...counts].filter(([, v]) => v !== target).map(([pair, v]) => `${pair}: ${v}`);
-      expect(off(partner, 1), `seed ${seed}: pairs not partnered exactly once`).toEqual([]);
-      expect(off(opponent, 2), `seed ${seed}: pairs not opposed exactly twice`).toEqual([]);
+      expectPerfectMix(generateSchedule({ players: 12, rounds: 11, seed }), 12, `seed ${seed}`);
+    }
+  });
+
+  test('R-EQUITABLE-MIX: 8, 16, 20 and 24 players over a full length achieve the perfect mix', () => {
+    for (const n of [8, 16, 20, 24]) {
+      expectPerfectMix(generateSchedule({ players: n, rounds: n - 1 }), n, `${n}/${n - 1}`);
     }
   });
 
   test('R-EQUITABLE-MIX: the full-length default is the shipped whist table', () => {
     // The engine reuses scheduler/whist-generate.js for the full-length case;
-    // with the default seed it must reproduce the canonical 12p11r table.
+    // with the default seed it must reproduce the canonical 12p11r table
+    // (apart from the engine's added equity report).
     const source = fs.readFileSync(path.join(SCHEDULE_DIR, '12p11r.js'), 'utf8');
     const prefix = 'window.schedule12p11r = ';
     expect(source.startsWith(prefix)).toBe(true);
-    expect(generateSchedule({ players: 12, rounds: 11 })).toEqual(JSON.parse(source.slice(prefix.length)));
+    const { equity, ...table } = generateSchedule({ players: 12, rounds: 11 });
+    expect(equity.optimal).toBe(true);
+    expect(table).toEqual(JSON.parse(source.slice(prefix.length)));
   });
 
   test('R-EQUITABLE-MIX: more rounds than distinct partners allow are rejected', () => {
     // 12 players have only 11 possible partners each.
     expect(() => generateSchedule({ players: 12, rounds: 12 })).toThrow(/rounds must be between 1 and 11/);
+  });
+
+  test('R-EQUITABLE-MIX: malformed player lists are rejected', () => {
+    // eslint-disable-next-line no-sparse-arrays
+    expect(() => generateSchedule({ players: ['a', , 'b', 'c'], rounds: 2 })).toThrow(/non-empty strings/);
+    expect(() => generateSchedule({ players: ['a', 'b', 'a', 'c'], rounds: 2 })).toThrow(/unique/);
+    expect(() => generateSchedule({ players: ['a', 'b', ' ', 'c'], rounds: 2 })).toThrow(/non-empty strings/);
   });
 });

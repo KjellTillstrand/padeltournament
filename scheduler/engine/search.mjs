@@ -25,7 +25,13 @@
  * out, returning the best arrangement seen.
  */
 
-import { mulberry32, randInt, shuffleInPlace } from './prng.mjs';
+import whist from '../whist-generate.js';
+
+// One seeded PRNG and shuffle for the whole scheduler: the whist generator's.
+const { mulberry32, shuffled } = whist;
+
+/** Uniform integer in [0, n). */
+const randInt = (rand, n) => Math.floor(rand() * n);
 
 const PARTNER_WEIGHT = 16;
 // Tabu parameters, tuned on the 12/6, 14/10 and 20/8 shapes (24 seeds each
@@ -81,11 +87,11 @@ export function searchSchedule({ N, R, seed, maxEvaluations, initial }) {
   } else {
     // Byes rotate through a seeded player order, so bye counts start
     // balanced (at most one apart); active players are shuffled onto courts.
-    const order = shuffleInPlace(Array.from({ length: N }, (_, i) => i), rand);
+    const order = shuffled(Array.from({ length: N }, (_, i) => i), rand);
     for (let r = 0; r < R; r++) {
       const benched = new Set();
       for (let k = 0; k < B; k++) benched.add(order[(r * B + k) % N]);
-      const active = shuffleInPlace(order.filter((p) => !benched.has(p)), rand);
+      const active = shuffled(order.filter((p) => !benched.has(p)), rand);
       place(r, [...active, ...order.filter((p) => benched.has(p))]);
     }
   }
