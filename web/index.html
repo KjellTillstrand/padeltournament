@@ -784,17 +784,21 @@
       return true;
     }
 
+    // Site variants shipped under web/sites/. Add a folder here when adding a site.
+    const KNOWN_SITES = ['default', 'libro', 'was'];
+
     function getSiteNameFromURL() {
       const urlParams = new URLSearchParams(window.location.search);
       const site = urlParams.get('site') || 'default';
-      // The site name becomes part of asset and script paths: accept only a plain
-      // folder name so it can never traverse out of sites/ or point elsewhere.
-      return /^[A-Za-z0-9_-]+$/.test(site) ? site : 'default';
+      // The site name becomes part of asset and script paths (including
+      // sites/<site>/courts.js): accept only a plain folder name, and only one of
+      // the reviewed site folders, so it can never traverse out of sites/ or
+      // select an unreviewed script.
+      return /^[A-Za-z0-9_-]+$/.test(site) && KNOWN_SITES.includes(site) ? site : 'default';
     }
 
     window.addEventListener('DOMContentLoaded', () => {
       // Get the 'site' parameter from the URL
-      const params = new URLSearchParams(window.location.search);
       const site = getSiteNameFromURL()
 
       // Build the path to the background image dynamically

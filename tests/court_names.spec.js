@@ -38,13 +38,14 @@ const SaveTheTournament = async (actor) => {
   await actor.page.click('#saveTournamentBtn');
 };
 
-const StartANewTournament = async (actor) => {
-  // newTournament() asks (confirm) whether to save, then (if accepted) saves
-  // via alert(), then confirms readiness via a second alert(). Accept all of them.
-  const acceptAllDialogs = (dialog) => dialog.accept();
-  actor.page.on('dialog', acceptAllDialogs);
-  await actor.page.click('#newTournamentBtn');
-  actor.page.off('dialog', acceptAllDialogs);
+// Drop the live (auto-saved) tournament state but keep the saved tournaments,
+// then reopen the app. The app re-saves tournamentState from memory on
+// beforeunload, so the key is removed from a same-origin page that is not the
+// app (after the app has already unloaded), not from the app page itself.
+const DiscardTheLiveTournamentState = async (actor) => {
+  await actor.page.goto('/favicon.ico');
+  await actor.page.evaluate(() => localStorage.removeItem('tournamentState'));
+  await actor.page.goto('/');
 };
 
 const LoadTheSavedTournament = (tournamentName) => async (actor) => {
@@ -127,9 +128,13 @@ test.describe('R-COURT-NAMES: Custom court names', () => {
     await organizer.attemptsTo(StartTheTournament('Round Trip Tournament'));
     expect(await organizer.asksFor(CourtLabel(1))).toBe('Center Court');
 
-    // When the Organizer saves it, starts a new tournament, and loads it back.
+    // When the Organizer saves it, the live state is lost, and the Organizer loads it back.
     await organizer.attemptsTo(SaveTheTournament);
-    await organizer.attemptsTo(StartANewTournament);
+    await organizer.attemptsTo(DiscardTheLiveTournamentState);
+    // (The custom name is really gone: only the saved tournament can restore it.)
+    expect(await page.evaluate(() => localStorage.getItem('tournamentState'))).toBeNull();
+    await expect(page.locator('#courtNameInput_1')).toHaveValue('');
+    await expect(page.locator('.round')).toHaveCount(0);
     await organizer.attemptsTo(LoadTheSavedTournament('Round Trip Tournament'));
 
     // Then the court shall still be named "Center Court".
@@ -188,4 +193,41 @@ test.describe('R-COURT-NAMES: Custom court names', () => {
     expect(await organizer.asksFor(CourtLabel(2))).toBe('2. Recover');
     expect(await organizer.asksFor(CourtLabel(3))).toBe('3. Evolvit');
   });
+
+  // The ?site= value builds the sites/<site>/courts.js script path, so anything
+  // that is not a known site folder must fall back to the default site.
+  for (const [description, query] of [
+    ['a path-traversal', '..%2F..%2Fevil'],
+    ['a markup', '%3Cscript%3E'],
+    // Well-formed folder name that is not a shipped site: exercises the allowlist.
+    ['an unknown', 'evil'],
+  ]) {
+    // @verifies REQ-7
+    test(`R-COURT-NAMES: ${description} site parameter falls back to the default court names`, async ({ page }) => {
+      const pageErrors = [];
+      page.on('pageerror', (error) => pageErrors.push(error.message));
+      const siteRequests = [];
+      page.on('request', (request) => {
+        const { pathname } = new URL(request.url());
+        if (pathname.includes('/sites/')) siteRequests.push(pathname);
+      });
+
+      // Given the app is opened with an invalid site parameter.
+      await page.goto(`/?site=${query}`);
+      const organizer = theOrganizer(page);
+
+      // When the rounds are rendered.
+      await organizer.attemptsTo(StartTheTournament('Site Guard Test'));
+
+      // Then the courts shall carry the default names, without any script error.
+      await expect(page.locator('.court-label')).toHaveCount(3);
+      expect(await organizer.asksFor(CourtLabel(1))).toBe('Court 1');
+      expect(await organizer.asksFor(CourtLabel(2))).toBe('Court 2');
+      expect(await organizer.asksFor(CourtLabel(3))).toBe('Court 3');
+      expect(pageErrors).toEqual([]);
+      // And only the default site's assets shall have been requested.
+      expect(siteRequests).toContain('/sites/default/courts.js');
+      expect(siteRequests.every((path) => path.startsWith('/sites/default/'))).toBe(true);
+    });
+  }
 });
