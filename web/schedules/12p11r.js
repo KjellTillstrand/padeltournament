@@ -3,16 +3,16 @@ window.schedule12p11r = {
   "totalRounds": 11,
   "players": [
     "P1",
-    "P8",
-    "P11",
-    "P5",
-    "P10",
+    "P2",
+    "P3",
     "P4",
+    "P5",
     "P6",
     "P7",
+    "P8",
     "P9",
-    "P3",
-    "P2",
+    "P10",
+    "P11",
     "P12"
   ],
   "rounds": [
@@ -23,7 +23,20 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P10",
+              "P12",
+              "P1"
+            ],
+            [
+              "P4",
+              "P11"
+            ]
+          ]
+        },
+        {
+          "court": 2,
+          "teams": [
+            [
+              "P2",
               "P8"
             ],
             [
@@ -33,28 +46,15 @@ window.schedule12p11r = {
           ]
         },
         {
-          "court": 2,
-          "teams": [
-            [
-              "P7",
-              "P11"
-            ],
-            [
-              "P5",
-              "P12"
-            ]
-          ]
-        },
-        {
           "court": 3,
           "teams": [
             [
-              "P2",
-              "P1"
+              "P5",
+              "P7"
             ],
             [
-              "P9",
-              "P4"
+              "P10",
+              "P9"
             ]
           ]
         }
@@ -67,12 +67,12 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P4",
-              "P2"
+              "P3",
+              "P9"
             ],
             [
-              "P6",
-              "P12"
+              "P4",
+              "P7"
             ]
           ]
         },
@@ -80,12 +80,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P3",
-              "P11"
+              "P12",
+              "P2"
             ],
             [
-              "P1",
-              "P7"
+              "P5",
+              "P1"
             ]
           ]
         },
@@ -93,11 +93,11 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P5",
+              "P6",
               "P8"
             ],
             [
-              "P9",
+              "P11",
               "P10"
             ]
           ]
@@ -112,11 +112,11 @@ window.schedule12p11r = {
           "teams": [
             [
               "P12",
-              "P8"
+              "P3"
             ],
             [
-              "P1",
-              "P5"
+              "P6",
+              "P2"
             ]
           ]
         },
@@ -124,12 +124,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P10",
-              "P3"
+              "P4",
+              "P10"
             ],
             [
-              "P11",
-              "P2"
+              "P5",
+              "P8"
             ]
           ]
         },
@@ -138,11 +138,11 @@ window.schedule12p11r = {
           "teams": [
             [
               "P7",
-              "P4"
+              "P9"
             ],
             [
-              "P6",
-              "P9"
+              "P1",
+              "P11"
             ]
           ]
         }
@@ -155,12 +155,12 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P11",
-              "P9"
+              "P8",
+              "P10"
             ],
             [
-              "P5",
-              "P2"
+              "P2",
+              "P1"
             ]
           ]
         },
@@ -168,12 +168,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P6",
-              "P10"
+              "P5",
+              "P11"
             ],
             [
-              "P12",
-              "P1"
+              "P6",
+              "P9"
             ]
           ]
         },
@@ -181,12 +181,12 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P7",
-              "P3"
+              "P12",
+              "P4"
             ],
             [
-              "P4",
-              "P8"
+              "P7",
+              "P3"
             ]
           ]
         }
@@ -199,12 +199,12 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P6",
+              "P12",
               "P5"
             ],
             [
-              "P3",
-              "P1"
+              "P8",
+              "P4"
             ]
           ]
         },
@@ -212,12 +212,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P2",
-              "P7"
+              "P6",
+              "P1"
             ],
             [
-              "P10",
-              "P11"
+              "P7",
+              "P10"
             ]
           ]
         },
@@ -225,12 +225,12 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P12",
-              "P4"
+              "P9",
+              "P11"
             ],
             [
-              "P9",
-              "P8"
+              "P3",
+              "P2"
             ]
           ]
         }
@@ -243,12 +243,12 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P9",
-              "P1"
+              "P12",
+              "P6"
             ],
             [
-              "P12",
-              "P3"
+              "P9",
+              "P5"
             ]
           ]
         },
@@ -256,12 +256,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P8",
-              "P7"
+              "P7",
+              "P2"
             ],
             [
-              "P2",
-              "P6"
+              "P8",
+              "P11"
             ]
           ]
         },
@@ -269,12 +269,12 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P11",
-              "P5"
+              "P10",
+              "P1"
             ],
             [
-              "P10",
-              "P4"
+              "P4",
+              "P3"
             ]
           ]
         }
@@ -287,12 +287,12 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P1",
-              "P11"
+              "P8",
+              "P3"
             ],
             [
-              "P2",
-              "P9"
+              "P9",
+              "P1"
             ]
           ]
         },
@@ -300,12 +300,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P3",
-              "P8"
+              "P12",
+              "P7"
             ],
             [
-              "P7",
-              "P12"
+              "P10",
+              "P6"
             ]
           ]
         },
@@ -313,12 +313,12 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P4",
-              "P6"
+              "P11",
+              "P2"
             ],
             [
-              "P10",
-              "P5"
+              "P5",
+              "P4"
             ]
           ]
         }
@@ -331,12 +331,12 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P11",
-              "P6"
+              "P9",
+              "P4"
             ],
             [
-              "P12",
-              "P9"
+              "P10",
+              "P2"
             ]
           ]
         },
@@ -344,12 +344,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P3",
-              "P5"
+              "P12",
+              "P8"
             ],
             [
-              "P2",
-              "P8"
+              "P11",
+              "P7"
             ]
           ]
         },
@@ -357,12 +357,12 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P10",
-              "P7"
+              "P1",
+              "P3"
             ],
             [
-              "P4",
-              "P1"
+              "P6",
+              "P5"
             ]
           ]
         }
@@ -375,12 +375,12 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P4",
-              "P11"
+              "P10",
+              "P5"
             ],
             [
-              "P8",
-              "P6"
+              "P11",
+              "P3"
             ]
           ]
         },
@@ -388,12 +388,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P2",
-              "P12"
+              "P12",
+              "P9"
             ],
             [
-              "P7",
-              "P5"
+              "P1",
+              "P8"
             ]
           ]
         },
@@ -401,12 +401,12 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P1",
-              "P10"
+              "P2",
+              "P4"
             ],
             [
-              "P9",
-              "P3"
+              "P7",
+              "P6"
             ]
           ]
         }
@@ -419,11 +419,11 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P10",
-              "P12"
+              "P3",
+              "P5"
             ],
             [
-              "P9",
+              "P8",
               "P7"
             ]
           ]
@@ -432,12 +432,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P5",
-              "P4"
+              "P11",
+              "P6"
             ],
             [
-              "P2",
-              "P3"
+              "P1",
+              "P4"
             ]
           ]
         },
@@ -445,12 +445,12 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P1",
-              "P6"
+              "P12",
+              "P10"
             ],
             [
-              "P8",
-              "P11"
+              "P2",
+              "P9"
             ]
           ]
         }
@@ -463,12 +463,12 @@ window.schedule12p11r = {
           "court": 1,
           "teams": [
             [
-              "P11",
-              "P12"
+              "P1",
+              "P7"
             ],
             [
-              "P4",
-              "P3"
+              "P2",
+              "P5"
             ]
           ]
         },
@@ -476,12 +476,12 @@ window.schedule12p11r = {
           "court": 2,
           "teams": [
             [
-              "P10",
-              "P2"
+              "P12",
+              "P11"
             ],
             [
-              "P1",
-              "P8"
+              "P3",
+              "P10"
             ]
           ]
         },
@@ -489,12 +489,12 @@ window.schedule12p11r = {
           "court": 3,
           "teams": [
             [
-              "P5",
-              "P9"
+              "P4",
+              "P6"
             ],
             [
-              "P6",
-              "P7"
+              "P9",
+              "P8"
             ]
           ]
         }
