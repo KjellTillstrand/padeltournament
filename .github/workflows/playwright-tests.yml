@@ -24,7 +24,7 @@ jobs:
       # This job runs repository and third-party dependency code, so it must not
       # keep the token in .git/config after checkout.
       - name: Checkout repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -116,7 +116,7 @@ jobs:
       # the public repository anonymously, and deploy-pages receives its token
       # as an input, not from .git/config.
       - name: Checkout repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
