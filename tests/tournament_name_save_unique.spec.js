@@ -9,7 +9,7 @@ test.describe('Tournament Save Unique Name Functionality', () => {
     await page.reload();
   });
 
-  test('should save tournaments with unique names when duplicate names are entered', async ({ page }) => {
+  test('R-NAME-UNIQUE: should save tournaments with unique names when duplicate names are entered', async ({ page }) => {
     // Step 1: Start and save a tournament with "Test Tournament".
     await page.fill('#tournamentName', 'Test Tournament');
     await page.click('#startTournamentBtn');

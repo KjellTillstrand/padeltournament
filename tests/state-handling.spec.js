@@ -3,7 +3,7 @@ const { test, expect } = require('@playwright/test');
 
 test.describe('General Functionality of Tournament Manager', () => {
 
-  test('Default schedule is loaded when no state is saved', async ({ page }) => {
+  test('R-STATE-PERSIST, R-SCHEDULE-SELECT: Default schedule is loaded when no state is saved', async ({ page }) => {
    
     console.log('BASE URL:', process.env.BASE_URL);
     await page.goto(process.env.BASE_URL || 'http://localhost:3000/');
@@ -25,7 +25,7 @@ test.describe('General Functionality of Tournament Manager', () => {
     await expect(page.locator('#tournamentTitle')).toHaveText('Tournament Title');
   });
 
-  test('Tournament state persists across page reloads', async ({ page }) => {
+  test('R-STATE-PERSIST: Tournament state persists across page reloads', async ({ page }) => {
     // Given a tournament has been started with a specific tournament name.
     await page.goto('/');
     await page.fill('#tournamentName', 'Test Tournament');
@@ -50,7 +50,7 @@ test.describe('General Functionality of Tournament Manager', () => {
     expect(restoredScore).toBe('10');
   });
 
-  test('Auto-save state before unload', async ({ page, context }) => {
+  test('R-STATE-PERSIST: Auto-save state before unload', async ({ page, context }) => {
     // Given a tournament is in progress.
     await page.goto('/');
     await page.fill('#tournamentName', 'AutoSave Test');
