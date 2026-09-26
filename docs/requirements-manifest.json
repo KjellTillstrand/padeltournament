@@ -14,6 +14,7 @@
     { "tag": "R-SCORE-ENTRY", "id": 10, "title": "Auto-completing score entry", "method": "Automated Test" },
     { "tag": "R-TOURNAMENT-STORE", "id": 11, "title": "Save, load and delete tournaments", "method": "Automated Test" },
     { "tag": "R-SCOREBOARD", "id": 12, "title": "Ranked scoreboard with medal colors", "method": "Automated Test" },
+    { "tag": "R-PERFECT-MIX", "id": 23, "title": "Full-length tournaments mix everyone perfectly", "method": "Automated Test" },
     {
       "tag": "R-CLIENT-ONLY",
       "id": 13,
