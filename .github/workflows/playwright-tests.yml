@@ -4,6 +4,10 @@ name: Test and deploy
 # deploy job is granted write access, and only to Pages (no contents: write).
 # Actions are pinned to full commit SHAs (tag in the trailing comment); a tag
 # can be moved, a SHA cannot.
+# Pages source: the repository owner sets Settings > Pages > Source to "GitHub
+# Actions" (a one-time manual step). Automating it with actions/configure-pages
+# was evaluated and rejected: changing the source needs Administration: write,
+# which GITHUB_TOKEN cannot be granted.
 permissions:
   contents: read
 
@@ -84,7 +88,8 @@ jobs:
     # Publish only from a push to main (never from pull_request runs), after the
     # test job and its coverage gate are green.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    # Serialize publications so two runs can never race writing gh-pages.
+    # Serialize publications so two runs' Pages deployments never race. (No
+    # branch is written any more; the group keeps its historical name.)
     concurrency:
       group: deploy-gh-pages
       cancel-in-progress: false
@@ -93,12 +98,16 @@ jobs:
     # what actions/deploy-pages needs (the OIDC token proves the deployment
     # comes from this workflow run); contents: read is restated because a
     # job-level block replaces the top-level one, and checkout needs it.
+    # actions: read is for the artifact check below: listing a run's artifacts
+    # needs the Actions permission, not Pages.
     permissions:
       contents: read
+      actions: read
       pages: write
       id-token: write
     # The github-pages environment's deployment branch policy is a second,
-    # server-side check that only main can publish.
+    # server-side check on which branches may publish: main (and, until it is
+    # retired, gh-pages).
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -128,10 +137,31 @@ jobs:
           fi
 
       - name: Upload web/ as the Pages artifact
+        id: upload
         if: steps.freshness.outputs.current == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: web
+
+      # deploy-pages picks the run's artifact by name, not by id. Fail unless
+      # exactly one github-pages artifact exists in this run and it is the one
+      # uploaded above. This narrows the window for a swapped artifact to the
+      # moment between this check and the deploy; it does not close it
+      # (accepted residual).
+      - name: Verify the Pages artifact is the one just uploaded
+        if: steps.freshness.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ID: ${{ steps.upload.outputs.artifact_id }}
+        run: |
+          ids="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=github-pages&per_page=100" \
+            --jq '[.artifacts[] | select(.name == "github-pages") | .id | tostring] | join(" ")')"
+          count="$(printf '%s' "$ids" | wc -w | tr -d ' ')"
+          if [ -z "$EXPECTED_ID" ] || [ "$count" != "1" ] || [ "$ids" != "$EXPECTED_ID" ]; then
+            echo "::error::Expected exactly one github-pages artifact with id '$EXPECTED_ID' in run $GITHUB_RUN_ID; found $count: [$ids]."
+            exit 1
+          fi
+          echo "Verified: github-pages artifact $EXPECTED_ID is the only one in run $GITHUB_RUN_ID."
 
       - name: Deploy to GitHub Pages
         id: deployment
