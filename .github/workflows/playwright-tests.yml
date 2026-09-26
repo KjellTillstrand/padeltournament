@@ -40,6 +40,10 @@ jobs:
       - name: Start static server and run tests
         env:
           BASE_URL: "http://localhost:8080"
+          # JSON report consumed by the requirement coverage gate. It lives in
+          # test-results/, which Playwright empties at the start of every run,
+          # so the gate can only ever judge this run's results.
+          PLAYWRIGHT_JSON_OUTPUT_FILE: test-results/results.json
         run: |
           pkill -f "http-server" || true
           # Start the static server in the background on port 8080.
@@ -48,7 +52,7 @@ jobs:
           # Wait until the server is ready.
           npx wait-on http://localhost:8080
           # Run Playwright tests (they use BASE_URL from the env)
-          npx playwright test
+          npx playwright test --reporter=html,json
           # Kill the server after tests are done.
           kill $SERVER_PID
       
@@ -57,6 +61,13 @@ jobs:
         with:
           name: playwright-report
           path: playwright-report
+
+      # Release gate (R-RELEASE-GATE): fails, naming each uncovered tag, unless
+      # every "Automated Test" requirement in docs/requirements-manifest.json has
+      # a passing tagged test. deploy needs this job, so a red gate blocks
+      # publication on every route to main.
+      - name: Require requirement coverage
+        run: node scripts/check-req-coverage.mjs test-results/results.json
 
   deploy:
     runs-on: ubuntu-latest
