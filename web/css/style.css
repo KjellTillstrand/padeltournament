@@ -116,6 +116,27 @@ body {
     height: 1.5em;
 }
 
+/* Court Names – one input per court, same grid as the player names */
+.court-names-section {
+    margin-top: 20px;
+}
+.court-names-section label {
+    font-size: 1.1em;
+}
+.court-names-table {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+.court-names-table input {
+    font-size: 1em;
+    padding: 5px;
+    width: 100%;
+    max-width: 30ch;
+    height: 1.5em;
+}
+
 /* Scoreboard Table Styles */
 .scoreboard-container {
     flex: 0 0 25%;
@@ -243,6 +264,19 @@ body {
     border: 2px solid #000;
     border-radius: 8px;
     margin: 0 auto;
+}
+/* Court name label (rendered by index.html; custom name or "Court N") */
+.court-label {
+    position: absolute;
+    top: 5px;
+    left: 10px;
+    max-width: calc(100% - 20px);
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .center-line {
     position: absolute;

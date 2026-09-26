@@ -1,14 +1,4 @@
 // tests/court_names.spec.js
-//
-// NOTE (requirement gap): R-COURT-NAMES also specifies that the Organizer can
-// give a court a custom name (e.g. "Center Court") and that the custom name
-// persists across reloads. The app has no such affordance: court labels are
-// baked into a site's static courts.css as a `::before` pseudo-element per
-// court class, are not editable via any UI, and are not part of the
-// localStorage-persisted tournament state (see web/index.html and
-// web/sites/*/courts.css). Those two scenarios are therefore left untested
-// here rather than faked.
-// DEFERRED: AB#19 (implement custom court names) tracks closing this gap.
 const { test, expect } = require('@playwright/test');
 
 // --- Screenplay kernel (Actor / Task / Question) ---
@@ -32,15 +22,19 @@ const StartTheTournament = (tournamentName) => async (actor) => {
   await actor.page.click('#startTournamentBtn');
 };
 
+const NameACourt = (courtNumber, name) => async (actor) => {
+  await actor.page.fill(`#courtNameInput_${courtNumber}`, name);
+};
+
+const ReopenTheApp = async (actor) => {
+  await actor.page.reload();
+};
+
 // --- Questions ---
 const CourtLabel = (courtNumber) => async (actor) =>
-  actor.page.evaluate((n) => {
-    const el = document.querySelector(`.court-${n}`);
-    if (!el) return null;
-    return window.getComputedStyle(el, '::before').content;
-  }, courtNumber);
+  (await actor.page.locator(`.court-${courtNumber} .court-label`).textContent()).trim();
 
-test.describe('R-COURT-NAMES: Courts carry default names', () => {
+test.describe('R-COURT-NAMES: Custom court names', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => localStorage.clear());
@@ -55,8 +49,45 @@ test.describe('R-COURT-NAMES: Courts carry default names', () => {
     await organizer.attemptsTo(StartTheTournament('Court Naming Test'));
 
     // Then the courts shall be named "Court 1", "Court 2", and so on.
-    await expect.poll(() => organizer.asksFor(CourtLabel(1))).toBe('"Court 1"');
-    await expect.poll(() => organizer.asksFor(CourtLabel(2))).toBe('"Court 2"');
-    await expect.poll(() => organizer.asksFor(CourtLabel(3))).toBe('"Court 3"');
+    await expect(page.locator('.court-label')).toHaveCount(3);
+    expect(await organizer.asksFor(CourtLabel(1))).toBe('Court 1');
+    expect(await organizer.asksFor(CourtLabel(2))).toBe('Court 2');
+    expect(await organizer.asksFor(CourtLabel(3))).toBe('Court 3');
+  });
+
+  // @verifies REQ-7
+  test('R-COURT-NAMES: A custom court name is used in the matches', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given the Organizer has named a court "Center Court".
+    await expect(page.locator('#courtNamesContainer input')).toHaveCount(3);
+    await organizer.attemptsTo(NameACourt(1, 'Center Court'));
+
+    // When the rounds are rendered.
+    await organizer.attemptsTo(StartTheTournament('Court Naming Custom'));
+
+    // Then that court's matches shall show "Center Court".
+    expect(await organizer.asksFor(CourtLabel(1))).toBe('Center Court');
+    // And the courts left unnamed keep their default names.
+    expect(await organizer.asksFor(CourtLabel(2))).toBe('Court 2');
+    expect(await organizer.asksFor(CourtLabel(3))).toBe('Court 3');
+  });
+
+  // @verifies REQ-7
+  test('R-COURT-NAMES: Court names persist', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given the Organizer has named a court "Center Court".
+    await organizer.attemptsTo(NameACourt(1, 'Center Court'));
+    await organizer.attemptsTo(StartTheTournament('Court Naming Persist'));
+    expect(await organizer.asksFor(CourtLabel(1))).toBe('Center Court');
+
+    // When the returning Organizer reopens the app.
+    await organizer.attemptsTo(ReopenTheApp);
+
+    // Then the court shall still be named "Center Court".
+    await expect(page.locator('.round')).toBeVisible();
+    expect(await organizer.asksFor(CourtLabel(1))).toBe('Center Court');
+    await expect(page.locator('#courtNameInput_1')).toHaveValue('Center Court');
   });
 });

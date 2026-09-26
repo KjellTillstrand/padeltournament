@@ -1,43 +1,5 @@
-/* Custom court name styles for Libro */
-.court-1::before {
-    content: "Court 1";
-    position: absolute;
-    top: 5px;
-    left: 10px;
-    color: #fff;
-    font-weight: bold;
-    font-size: 14px;
-}
-.court-2::before {
-    content: "Court 2";
-    position: absolute;
-    top: 5px;
-    left: 10px;
-    color: #fff;
-    font-weight: bold;
-    font-size: 14px;
-}.court-3::before {
-    content: "Court 3";
-    position: absolute;
-    top: 5px;
-    left: 10px;
-    color: #fff;
-    font-weight: bold;
-    font-size: 14px;
-}.court-4::before {
-    content: "Court 4";
-    position: absolute;
-    top: 5px;
-    left: 10px;
-    color: #fff;
-    font-weight: bold;
-    font-size: 14px;
-}.court-5::before {
-    content: "Court 5";
-    position: absolute;
-    top: 5px;
-    left: 10px;
-    color: #fff;
-    font-weight: bold;
-    font-size: 14px;
-}
+/* Per-site court styles for the default site.
+   Court labels are DOM elements rendered by index.html (styled by .court-label in
+   css/style.css) so custom court names can replace them; do not reintroduce
+   `.court-N::before { content: ... }` labels here, they would render twice.
+   Site default court names live in courts.js. */

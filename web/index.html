@@ -53,6 +53,13 @@
       <!-- Player input fields will be generated here -->
     </div>
 
+    <div class="court-names-section">
+      <label>Court Names:</label>
+      <div id="courtNamesContainer">
+        <!-- Court name input fields (one per court) will be generated here -->
+      </div>
+    </div>
+
     <!-- New container to properly space the saved tournaments section -->
     <div class="saved-tournaments-container">
       <label for="savedTournamentSelect">Saved Tournaments:</label>
@@ -72,6 +79,7 @@
     let defaultPlayerNames = []; // stores original names from schedule load
     let tournamentStarted = false;
     let currentRoundIndex = 0; // 0-indexed
+    let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
 
     // Update header when tournament name changes.
     document.getElementById("tournamentName").addEventListener("input", function () {
@@ -84,7 +92,8 @@
         schedule: currentSchedule,
         currentRoundIndex: currentRoundIndex,
         tournamentStarted: tournamentStarted,
-        tournamentName: document.getElementById("tournamentName").value
+        tournamentName: document.getElementById("tournamentName").value,
+        courtNames: courtNames.slice()
       };
       localStorage.setItem("tournamentState", JSON.stringify(state));
     }
@@ -96,6 +105,7 @@
         currentSchedule = state.schedule;
         currentRoundIndex = state.currentRoundIndex;
         tournamentStarted = state.tournamentStarted;
+        courtNames = normalizeCourtNames(state.courtNames);
         document.getElementById("tournamentName").value = state.tournamentName || "";
         document.getElementById("tournamentTitle").textContent = state.tournamentName || "Tournament Title";
         // Update UI accordingly.
@@ -128,9 +138,10 @@
         loadScheduleFromModule(defaultModule);
       }
 
-      // 4. Generate the player name table.
+      // 4. Generate the player name table and the court name inputs.
       if (currentSchedule && currentSchedule.players) {
         generatePlayerInputs(currentSchedule.players);
+        generateCourtNameInputs();
       } else {
         console.error("No schedule loaded; please load a schedule first.");
       }
@@ -159,6 +170,7 @@
       const savedTournament = {
         tournamentName: tournamentName,
         schedule: currentSchedule,
+        courtNames: courtNames.slice(),
         savedAt: new Date().toISOString()
       };
       let savedTournaments = JSON.parse(localStorage.getItem("savedTournaments") || "[]");
@@ -183,6 +195,9 @@
         currentSchedule = selectedTournament.schedule;
         currentRoundIndex = 0;
         tournamentStarted = true;
+        // Tournaments saved before court names existed carry none: use the defaults.
+        courtNames = normalizeCourtNames(selectedTournament.courtNames);
+        generateCourtNameInputs();
         document.getElementById("tournamentName").value = selectedTournament.tournamentName;
         document.getElementById("tournamentTitle").textContent = selectedTournament.tournamentName;
         disableSettings();
@@ -327,6 +342,65 @@
       container.appendChild(table); // Append table to the container
     }
 
+    // --- Court Names ---
+    // Keep only strings; anything else (missing state, legacy saves) means "use the default".
+    function normalizeCourtNames(names) {
+      if (!Array.isArray(names)) return [];
+      return names.map(name => (typeof name === "string" ? name : ""));
+    }
+
+    // Every match needs its own court, so a schedule has one court per four players.
+    function getCourtCount() {
+      if (!currentSchedule || !currentSchedule.players) return 0;
+      return Math.floor(currentSchedule.players.length / 4);
+    }
+
+    // A site may declare its own default court names in sites/<site>/courts.js.
+    function getDefaultCourtName(courtNumber) {
+      const siteNames = window.siteDefaultCourtNames;
+      const siteName = Array.isArray(siteNames) ? siteNames[courtNumber - 1] : null;
+      return (typeof siteName === "string" && siteName.trim()) ? siteName : "Court " + courtNumber;
+    }
+
+    function getCourtName(courtNumber) {
+      const customName = (courtNames[courtNumber - 1] || "").trim();
+      return customName || getDefaultCourtName(courtNumber);
+    }
+
+    function generateCourtNameInputs() {
+      const container = document.getElementById("courtNamesContainer");
+      container.innerHTML = ""; // Clear previous content
+
+      const table = document.createElement("div");
+      table.className = "court-names-table";
+
+      for (let courtNumber = 1; courtNumber <= getCourtCount(); courtNumber++) {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.id = "courtNameInput_" + courtNumber;
+        input.maxLength = 30;
+        input.value = courtNames[courtNumber - 1] || "";
+        input.placeholder = getDefaultCourtName(courtNumber);
+        input.setAttribute("aria-label", "Name of court " + courtNumber);
+        input.addEventListener("input", function () {
+          courtNames[courtNumber - 1] = input.value;
+          updateCourtLabels();
+          saveTournamentState();
+        });
+        table.appendChild(input);
+      }
+
+      container.appendChild(table);
+    }
+
+    // Refresh the labels of the courts currently on screen (names may change mid-tournament).
+    function updateCourtLabels() {
+      document.querySelectorAll("#tournamentContainer .court[data-court]").forEach(courtDiv => {
+        const label = courtDiv.querySelector(".court-label");
+        if (label) label.textContent = getCourtName(parseInt(courtDiv.dataset.court, 10));
+      });
+    }
+
 
     function shuffleArray(arr) {
       for (let i = arr.length - 1; i > 0; i--) {
@@ -400,6 +474,13 @@
       courtDiv.className = 'court';
       if (match.court) {
         courtDiv.classList.add(`court-${match.court}`);
+        courtDiv.dataset.court = match.court;
+
+        // Court names are user input: always set via textContent, never innerHTML.
+        const courtLabel = document.createElement('div');
+        courtLabel.className = 'court-label';
+        courtLabel.textContent = getCourtName(match.court);
+        courtDiv.appendChild(courtLabel);
       }
 
       const resultOverlay = createResultOverlay(match);
@@ -604,6 +685,7 @@
         });
       });
       generatePlayerInputs(currentSchedule.players);
+      generateCourtNameInputs();
       document.getElementById("tournamentContainer").innerHTML = "";
       localStorage.removeItem("tournamentState");
     }
@@ -704,7 +786,10 @@
 
     function getSiteNameFromURL() {
       const urlParams = new URLSearchParams(window.location.search);
-      return urlParams.get('site') || 'default';
+      const site = urlParams.get('site') || 'default';
+      // The site name becomes part of asset and script paths: accept only a plain
+      // folder name so it can never traverse out of sites/ or point elsewhere.
+      return /^[A-Za-z0-9_-]+$/.test(site) ? site : 'default';
     }
 
     window.addEventListener('DOMContentLoaded', () => {
@@ -727,6 +812,12 @@
       link.rel = 'stylesheet';
       link.href = `./sites/${site}/courts.css`;
       document.head.appendChild(link);
+
+      // Load the site's default court names (sets window.siteDefaultCourtNames).
+      // Inserted before the load event, so it has run before any round is rendered.
+      const courtNamesScript = document.createElement('script');
+      courtNamesScript.src = `./sites/${site}/courts.js`;
+      document.head.appendChild(courtNamesScript);
 
       const logoImg = document.getElementById('siteLogo');
       logoImg.src = `sites/${site}/logo.png`;
