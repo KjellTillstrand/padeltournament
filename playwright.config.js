@@ -10,6 +10,14 @@ import { defineConfig, devices } from '@playwright/test';
 // dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 /**
+ * The suite always runs against a static server that Playwright itself starts
+ * from ./web. A dedicated port, bound to loopback only, keeps it clear of
+ * common dev ports; reuseExistingServer is false so a port that is already
+ * occupied is a hard error rather than a silent run against a foreign server.
+ */
+const TEST_SERVER_URL = 'http://127.0.0.1:8199';
+
+/**
  * @see https://playwright.dev/docs/test-configuration
  */
 export default defineConfig({
@@ -26,7 +34,7 @@ export default defineConfig({
   reporter: 'html',
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
-    baseURL: process.env.BASE_URL || 'http://localhost:3000', // fallback if not deployed
+    baseURL: TEST_SERVER_URL,
     headless: true,
     viewport: { width: 1280, height: 720 },
     ignoreHTTPSErrors: true,
@@ -65,12 +73,13 @@ export default defineConfig({
     // },
   ],
 
-  /* Run your local dev server before starting the tests 
+  /* Serve ./web for the tests. Never reuse: an occupied port must fail the run. */
   webServer: {
-    command: 'npm run start',
-    url: process.env.BASE_URL || 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120 * 1000, // Wait up to 2 minutes for the server to be up
-  },*/
+    // --no: run the pinned local http-server; never download one on the fly.
+    command: 'npx --no http-server ./web -p 8199 -a 127.0.0.1 -s',
+    url: TEST_SERVER_URL,
+    reuseExistingServer: false,
+    timeout: 30 * 1000,
+  },
 });
 

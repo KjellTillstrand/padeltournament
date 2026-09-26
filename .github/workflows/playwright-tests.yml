@@ -37,36 +37,17 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Install http-server and wait-on as dev dependencies (or globally if preferred)
-      - name: Install http-server and wait-on
-        run: npm install -D http-server wait-on
-
-      # Start the static server in the background on port 8080.
-      - name: Start static server
-        run: |
-          npx http-server . -p 8080 &
-          npx wait-on http://localhost:8080
-
       - name: Install playwright
         run: npx playwright install
 
-      - name: Start static server and run tests
+      # playwright.config.js starts (and stops) the static server itself and
+      # fails fast if its port is already occupied, so no server steps here.
+      - name: Run tests
         env:
-          BASE_URL: "http://localhost:8080"
           # JSON report consumed by the requirement coverage gate.
           PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ env.PW_JSON }}
-        run: |
-          pkill -f "http-server" || true
-          # Start the static server in the background on port 8080.
-          npx http-server ./web -p 8080 &
-          SERVER_PID=$!
-          # Wait until the server is ready.
-          npx wait-on http://localhost:8080
-          # Run Playwright tests (they use BASE_URL from the env)
-          npx playwright test --reporter=html,json
-          # Kill the server after tests are done.
-          kill $SERVER_PID
-      
+        run: npx playwright test --reporter=html,json
+
       - name: Upload Playwright Report
         uses: actions/upload-artifact@v4
         with:
