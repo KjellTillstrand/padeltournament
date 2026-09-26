@@ -17,14 +17,15 @@
  *
  * Full-length case (players = 4n, rounds = 4n - 1): the schedule is the
  * whist construction of scheduler/whist-generate.js, i.e. a perfect mix
- * (partners exactly once, opponents exactly twice). With the default seed its
+ * (partners exactly once, opponents exactly twice), with its rounds ordered
+ * by that script's spacing stage (spacedWhist). With the default seed its
  * rounds are exactly the shipped web/schedules/<N>p<N-1>r.js table.
  */
 
 import whist from '../whist-generate.js';
 import { minSumOfSquares, searchSchedule } from './search.mjs';
 
-const { defaultSeed, findBaseRound, buildSchedule, balanceCourts } = whist;
+const { defaultSeed, findBaseRound, buildSchedule, balanceCourts, spacedWhist } = whist;
 
 export const MIN_PLAYERS = 4;
 export const MAX_PLAYERS = 24;
@@ -164,17 +165,16 @@ export function generateSchedule({ players, rounds, seed } = {}) {
   if (seed === undefined) seed = defaultSeed(N);
   if (!Number.isInteger(seed)) throw new TypeError(`seed must be an integer, got ${seed}`);
 
-  // Found once and shared by both whist paths below, so a failed search is
-  // never re-run.
-  const found = N % 4 === 0 ? findBaseRound(N, seed) : null;
+  // Full length: the whist pipeline of whist-generate.js, including its
+  // spacing stage, so the default seed reproduces the shipped tables. It is
+  // null only if no whist base round was found; the search below then starts
+  // from scratch. Shorter: the search starts from truncated whist rounds.
+  const whole = N % 4 === 0 && R === N - 1 ? spacedWhist(N, seed) : null;
+  const found = N % 4 === 0 && R < N - 1 ? findBaseRound(N, seed) : null;
 
   let schedule;
-  if (found && R === N - 1) {
-    // Intentionally redundant perf shortcut, not dead code: the search path
-    // below, seeded with all N - 1 whist rounds, is already at the lower
-    // bound and would return the identical schedule. Removing this branch
-    // changes no output, so no test would notice; it only skips work.
-    schedule = renamed(balanceCourts(buildSchedule(N, found.base)), names);
+  if (whole) {
+    schedule = renamed(whole.schedule, names);
   } else {
     const C = Math.floor(N / 4);
     const result = searchSchedule({

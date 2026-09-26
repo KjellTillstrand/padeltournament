@@ -1,5 +1,6 @@
 /************************************************************
- * whist-generate.js — perfect-mix schedule generator (R-PERFECT-MIX)
+ * whist-generate.js — perfect-mix schedule generator (R-PERFECT-MIX,
+ * R-SPACED-MIX)
  *
  * Generates a whist tournament Wh(N) for N players (N divisible by 4):
  * N-1 rounds of N/4 matches in which every pair of players partners
@@ -14,14 +15,23 @@
  *   - the opponent differences +-(a-c) cover every non-zero residue twice.
  * (Pairs involving "inf" are balanced by the rotation automatically.)
  *
+ * A spacing stage then reorders the rounds so repeat encounters are spread
+ * out: no pair opposes in consecutive rounds, no pair partners in a round
+ * next to one where it opposes, and the smallest gap between two meetings
+ * of a pair is as large as the search finds. Reordering whole rounds cannot
+ * change who partners or opposes whom. Several base rounds (seeds seed,
+ * seed + 1, ...) are tried and the best-spaced one is kept. With fewer than
+ * 4 courts spacing is impossible (see spacingPossible) and the stage is
+ * skipped.
+ *
  * A court balancing pass then permutes court assignments within each
  * round (which cannot change who meets whom) so every player visits
  * every court.
  *
- * Every generated schedule is checked by an independent verifier that
- * counts partner and opponent meetings over the full round list. The
- * script refuses to write any file unless the partner matrix is all 1s,
- * the opponent matrix is all 2s, and no player misses a court.
+ * Every generated schedule is checked by independent verifiers that count
+ * meetings over the full round list. The script refuses to write any file
+ * unless the partner matrix is all 1s, the opponent matrix is all 2s, no
+ * player misses a court, and no pair meets back to back (verifySpacing).
  *
  * Usage:
  *   node scheduler/whist-generate.js            # writes all four tables
@@ -39,6 +49,12 @@ const SIZES = [12, 16, 20, 24];
 const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 const MAX_RESTARTS = 100000;
 const NODE_BUDGET_PER_RESTART = 20000;
+// Spacing stage budget: base rounds tried per size, and random restarts of
+// the round-order search per base round.
+const SPACING_CANDIDATES = 16;
+const SPACING_RESTARTS = 24;
+// Node budget of each depth-first search for a round order with a given gap.
+const SPACING_NODE_BUDGET = 200000;
 
 /** Fixed per-size seed, so regenerating a table reproduces the same file. */
 function defaultSeed(N) {
@@ -304,6 +320,291 @@ function courtSpread(schedule) {
 }
 
 /**
+ * Encounter weights between rounds, counted from the round list: for rounds
+ * a and b, opp[a][b] is the number of pairs that oppose each other in both,
+ * mixed[a][b] the number that partner in one and oppose in the other, and
+ * any[a][b] the number that meet (in any role) in both.
+ */
+function encounterWeights(schedule) {
+  const idx = new Map(schedule.players.map((p, i) => [p, i]));
+  const P = schedule.players.length;
+  const R = schedule.rounds.length;
+  // role[r][pair]: 0 = not met, 1 = partners, 2 = opponents in round r.
+  const role = schedule.rounds.map((round) => {
+    const row = new Uint8Array(P * P);
+    const set = (x, y, v) => {
+      const i = idx.get(x);
+      const j = idx.get(y);
+      row[i < j ? i * P + j : j * P + i] = v;
+    };
+    for (const { teams } of round.matches) {
+      const [[a, b], [c, d]] = teams;
+      set(a, b, 1);
+      set(c, d, 1);
+      for (const x of [a, b]) for (const y of [c, d]) set(x, y, 2);
+    }
+    return row;
+  });
+  const grid = () => Array.from({ length: R }, () => new Array(R).fill(0));
+  const opp = grid();
+  const mixed = grid();
+  const any = grid();
+  for (let a = 0; a < R; a++) {
+    for (let b = a + 1; b < R; b++) {
+      let o = 0;
+      let m = 0;
+      let n = 0;
+      for (let k = 0; k < P * P; k++) {
+        const x = role[a][k];
+        const y = role[b][k];
+        if (!x || !y) continue;
+        n++;
+        if (x === 2 && y === 2) o++;
+        else if (x !== y) m++;
+      }
+      opp[a][b] = opp[b][a] = o;
+      mixed[a][b] = mixed[b][a] = m;
+      any[a][b] = any[b][a] = n;
+    }
+  }
+  return { opp, mixed, any };
+}
+
+/**
+ * Spacing score of a round order (order[k] = original index of the round
+ * played k-th), as an array compared lexicographically, smaller is better:
+ *   [0] back-to-back oppositions: pairs opposing in consecutive rounds,
+ *   [1] partner-adjacent oppositions: pairs that partner in a round and
+ *       oppose in the round before or after,
+ *   [2..] for gap g = 2, 3, ...: the number of repeat meetings (any role)
+ *       exactly g rounds apart.
+ * Minimising [2..] lexicographically maximises the smallest gap between two
+ * meetings of the same pair, then makes that gap as rare as possible.
+ */
+function spacingScore(order, weights) {
+  const R = order.length;
+  const score = new Array(R + 1).fill(0);
+  for (let i = 0; i < R; i++) {
+    for (let j = i + 1; j < R; j++) {
+      const a = order[i];
+      const b = order[j];
+      if (j === i + 1) {
+        score[0] += weights.opp[a][b];
+        score[1] += weights.mixed[a][b];
+      } else {
+        score[j - i] += weights.any[a][b];
+      }
+    }
+  }
+  return score;
+}
+
+function compareScores(x, y) {
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return 0;
+}
+
+/** Smallest number of rounds between two meetings of the same pair. */
+function minMeetingGap(score) {
+  if (score[0] || score[1]) return 1;
+  for (let g = 2; g < score.length; g++) if (score[g]) return g;
+  return Infinity;
+}
+
+/**
+ * Randomized depth-first search for a round order in which every two rounds
+ * fewer than `gap` places apart share no pair of players, except that rounds
+ * next to each other may share pairs that meet as partners in both (which a
+ * whist tournament never has anyway). Returns the order, or null when the
+ * search is exhausted or runs out of its node budget.
+ */
+function orderWithGap(weights, gap, rand, nodeBudget) {
+  const R = weights.any.length;
+  const order = [];
+  const used = new Array(R).fill(false);
+  let nodes = 0;
+  const fits = (round) => {
+    for (let back = 1; back < gap && back <= order.length; back++) {
+      const prev = order[order.length - back];
+      const clash = back === 1
+        ? weights.opp[prev][round] + weights.mixed[prev][round]
+        : weights.any[prev][round];
+      if (clash) return false;
+    }
+    return true;
+  };
+  function extend() {
+    if (order.length === R) return true;
+    if (++nodes > nodeBudget) return false;
+    for (const round of shuffled([...Array(R).keys()], rand)) {
+      if (used[round] || !fits(round)) continue;
+      used[round] = true;
+      order.push(round);
+      if (extend()) return true;
+      order.pop();
+      used[round] = false;
+      if (nodes > nodeBudget) return false;
+    }
+    return false;
+  }
+  return extend() ? order : null;
+}
+
+/**
+ * Spacing stage. Searches for an order of the schedule's rounds that spreads
+ * repeat encounters (see spacingScore), in two steps:
+ *   1. Depth-first search for an order with no repeat meeting closer than
+ *      `gap` rounds, for gap = 2, 3, ... until the search fails; gap 2 is the
+ *      bar (no back-to-back or partner-adjacent oppositions).
+ *   2. Local search over swaps of two rounds (first improvement, random move
+ *      order), started from each order the first step found plus seeded
+ *      random orders, lowering the score lexicographically. A swap is taken
+ *      only if it improves the score, so it never loses the gap already won.
+ *
+ * Reordering whole rounds cannot change the perfect mix or court coverage:
+ * who partners or opposes whom, and on which court, travels with each round;
+ * only when things happen changes. Returns { order, score, gap, evaluations }
+ * where gap is the smallest distance between two meetings of the same pair.
+ */
+function searchRoundOrder(schedule, { seed, restarts = SPACING_RESTARTS } = {}) {
+  const weights = encounterWeights(schedule);
+  const R = schedule.rounds.length;
+  const rand = mulberry32(seed);
+  let evaluations = 0;
+
+  const starts = [];
+  for (let gap = 2; gap < R; gap++) {
+    const order = orderWithGap(weights, gap, rand, SPACING_NODE_BUDGET);
+    if (!order) break;
+    starts.push(order);
+  }
+  starts.reverse(); // widest gap first
+  for (let i = 0; i < restarts; i++) starts.push(shuffled([...Array(R).keys()], rand));
+
+  const swaps = [];
+  for (let i = 0; i < R; i++) for (let j = i + 1; j < R; j++) swaps.push([i, j]);
+  const delta = new Array(R + 1);
+  // Score contribution of rounds a and b placed g apart, added into acc.
+  const add = (acc, a, b, g, sign) => {
+    if (g === 1) {
+      acc[0] += sign * weights.opp[a][b];
+      acc[1] += sign * weights.mixed[a][b];
+    } else {
+      acc[g] += sign * weights.any[a][b];
+    }
+  };
+
+  let best = null;
+  for (const order of starts) {
+    const score = spacingScore(order, weights);
+    evaluations++;
+    let improved = true;
+    while (improved) {
+      improved = false;
+      for (const [i, j] of shuffled(swaps, rand)) {
+        // Only pairs involving positions i or j change distance.
+        delta.fill(0);
+        const a = order[i];
+        const b = order[j];
+        for (let k = 0; k < R; k++) {
+          if (k === i || k === j) continue;
+          const c = order[k];
+          const gi = Math.abs(i - k);
+          const gj = Math.abs(j - k);
+          add(delta, a, c, gi, -1);
+          add(delta, b, c, gj, -1);
+          add(delta, b, c, gi, 1);
+          add(delta, a, c, gj, 1);
+        }
+        evaluations++;
+        const firstChange = delta.findIndex((v) => v !== 0);
+        if (firstChange !== -1 && delta[firstChange] < 0) {
+          order[i] = b;
+          order[j] = a;
+          for (let g = 0; g <= R; g++) score[g] += delta[g];
+          improved = true;
+        }
+      }
+    }
+    if (!best || compareScores(score, best.score) < 0) best = { order, score };
+  }
+  return { ...best, gap: minMeetingGap(best.score), evaluations };
+}
+
+/** Put the rounds in the given order and renumber them 1..R. Mutates. */
+function applyRoundOrder(schedule, order) {
+  const rounds = order.map((k) => schedule.rounds[k]);
+  rounds.forEach((round, r) => { round.roundNumber = r + 1; });
+  schedule.rounds = rounds;
+  return schedule;
+}
+
+/**
+ * Can any schedule for N players avoid a pair meeting in consecutive rounds?
+ * Not with fewer than 4 courts: every match of round r + 1 seats 4 players,
+ * and with at most 3 matches in round r two of them shared a match there
+ * (pigeonhole), so they meet in both rounds. In a whist tournament partners
+ * never repeat, so that repeat is always a back-to-back opposition or a
+ * partnering next to an opposition.
+ */
+function spacingPossible(N) {
+  return N / 4 >= 4;
+}
+
+/**
+ * The full perfect-mix pipeline with spacing: whist construction, the
+ * spacing stage, then court balancing over the final order. Tries `candidates` base rounds (seeds
+ * seed, seed + 1, ...), orders each one's rounds with searchRoundOrder and
+ * keeps the best: first one that puts every player on every court, then the
+ * best spacing score, ties going to the earliest candidate. The result is
+ * deterministic for a given N and seed.
+ *
+ * Returns { schedule, score, spaced, candidate, restarts, evaluations } where
+ * spaced means zero back-to-back oppositions and zero partner-adjacent
+ * oppositions, candidate is the chosen base round's index (seed + candidate),
+ * restarts is that base round's search restarts and evaluations counts
+ * round-order scores over all candidates; or null if no base round was found. When spacing is
+ * impossible (spacingPossible(N) is false) the stage is skipped and the
+ * rounds keep their constructed order.
+ */
+function spacedWhist(N, seed, { candidates = SPACING_CANDIDATES, restarts = SPACING_RESTARTS } = {}) {
+  if (!spacingPossible(N)) {
+    const found = findBaseRound(N, seed);
+    if (!found) return null;
+    const schedule = balanceCourts(buildSchedule(N, found.base));
+    const score = spacingScore([...Array(N - 1).keys()], encounterWeights(schedule));
+    return { schedule, score, spaced: false, candidate: 0, restarts: found.restarts, evaluations: 0 };
+  }
+  let best = null;
+  let evaluations = 0;
+  for (let k = 0; k < candidates; k++) {
+    const found = findBaseRound(N, seed + k);
+    if (!found) continue;
+    const schedule = buildSchedule(N, found.base);
+    const result = searchRoundOrder(schedule, { seed: seed + k, restarts });
+    evaluations += result.evaluations;
+    // Courts are balanced over the final round order; like the reordering,
+    // this only moves matches between courts within a round.
+    balanceCourts(applyRoundOrder(schedule, result.order));
+    // A base round that leaves a player off a court ranks below any that
+    // does not, whatever its spacing.
+    const rank = [courtSpread(schedule).missing.length ? 1 : 0, ...result.score];
+    if (!best || compareScores(rank, best.rank) < 0) {
+      best = { schedule, score: result.score, rank, candidate: k, restarts: found.restarts };
+    }
+  }
+  if (!best) return null;
+  return {
+    schedule: best.schedule,
+    score: best.score,
+    spaced: best.score[0] === 0 && best.score[1] === 0,
+    candidate: best.candidate,
+    restarts: best.restarts,
+    evaluations,
+  };
+}
+
+/**
  * Independent verifier: counts meetings directly from the round list
  * (no knowledge of the cyclic construction). Returns a list of problems;
  * an empty list means the schedule is a perfect whist tournament.
@@ -370,6 +671,53 @@ function verifySchedule(schedule) {
   return problems;
 }
 
+/**
+ * Independent spacing verifier: lists, straight from the round list, every
+ * pair that opposes in two consecutive rounds and every pair that partners
+ * in a round and opposes in the round before or after. Also returns the
+ * smallest number of rounds between two meetings of the same pair.
+ * An empty problem list means the schedule meets R-SPACED-MIX.
+ */
+function verifySpacing(schedule) {
+  const meetings = new Map(); // "a|b" -> [[roundIndex, 'partner' | 'opponent']]
+  const meet = (x, y, r, kind) => {
+    const key = x.localeCompare(y, 'en', { numeric: true }) < 0 ? `${x}|${y}` : `${y}|${x}`;
+    if (!meetings.has(key)) meetings.set(key, []);
+    meetings.get(key).push([r, kind]);
+  };
+  schedule.rounds.forEach((round, r) => {
+    for (const { teams } of round.matches) {
+      const [[a, b], [c, d]] = teams;
+      meet(a, b, r, 'partner');
+      meet(c, d, r, 'partner');
+      for (const x of [a, b]) for (const y of [c, d]) meet(x, y, r, 'opponent');
+    }
+  });
+  const problems = [];
+  let backToBack = 0;
+  let minGap = Infinity;
+  for (const [key, list] of meetings) {
+    const pair = key.replace('|', '-');
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const [r1, k1] = list[i];
+        const [r2, k2] = list[j];
+        const gap = Math.abs(r1 - r2);
+        if (gap < minGap) minGap = gap;
+        if (gap !== 1) continue;
+        const [first, second] = r1 < r2 ? [[r1, k1], [r2, k2]] : [[r2, k2], [r1, k1]];
+        if (k1 === 'opponent' && k2 === 'opponent') {
+          backToBack++;
+          problems.push(`${pair} opposed in rounds ${first[0] + 1} and ${second[0] + 1}`);
+        } else if (k1 !== k2) {
+          problems.push(`${pair} ${first[1]}s in round ${first[0] + 1}, ${second[1]}s in round ${second[0] + 1}`);
+        }
+      }
+    }
+  }
+  return { problems, backToBack, partnerAdjacent: problems.length - backToBack, minGap };
+}
+
 function main() {
   const args = process.argv.slice(2);
   const checkOnly = args.includes('--check');
@@ -383,20 +731,34 @@ function main() {
       failed = true;
       continue;
     }
-    const found = findBaseRound(N, defaultSeed(N));
-    if (!found) {
+    const result = spacedWhist(N, defaultSeed(N));
+    if (!result) {
       console.error(`Wh(${N}): no base round found within the search budget; nothing written`);
       failed = true;
       continue;
     }
-    const schedule = balanceCourts(buildSchedule(N, found.base));
+    const { schedule } = result;
     const problems = verifySchedule(schedule);
     const spread = courtSpread(schedule);
     if (spread.missing.length) {
       problems.push(`players missing a court: ${spread.missing.join(', ')}`);
     }
+    const spacing = verifySpacing(schedule);
+    const spacingLine =
+      `  spacing: ${spacing.backToBack} back-to-back oppositions, ` +
+      `${spacing.partnerAdjacent} partner-adjacent oppositions, min meeting gap ${spacing.minGap} ` +
+      `(base round ${result.candidate + 1} of ${spacingPossible(N) ? SPACING_CANDIDATES : 1}, ` +
+      `${result.evaluations} order evaluations)`;
+    if (!spacingPossible(N)) {
+      problems.push(
+        `spacing is impossible with ${N / 4} courts: two players who shared a match always ` +
+          'share one again in the next round (pigeonhole)'
+      );
+    }
+    problems.push(...spacing.problems);
     if (problems.length) {
       console.error(`Wh(${N}): VERIFICATION FAILED (${problems.length} problems); nothing written`);
+      console.error(spacingLine);
       problems.slice(0, 20).forEach((p) => console.error(`  ${p}`));
       failed = true;
       continue;
@@ -404,9 +766,10 @@ function main() {
     const pairs = (N * (N - 1)) / 2;
     console.log(
       `Wh(${N}): verified — ${N - 1} rounds x ${N / 4} courts; ` +
-        `${pairs} pairs all partnered 1x and opposed 2x (search restarts: ${found.restarts})`
+        `${pairs} pairs all partnered 1x and opposed 2x (search restarts: ${result.restarts})`
     );
     console.log(`  court visits per player per court: min ${spread.min}, max ${spread.max}`);
+    console.log(spacingLine);
     if (!checkOnly) {
       const name = `${N}p${N - 1}r`;
       const file = path.join(SCHEDULE_DIR, `${name}.js`);
@@ -428,4 +791,12 @@ module.exports = {
   balanceCourts,
   courtSpread,
   verifySchedule,
+  encounterWeights,
+  spacingScore,
+  searchRoundOrder,
+  applyRoundOrder,
+  minMeetingGap,
+  spacingPossible,
+  spacedWhist,
+  verifySpacing,
 };
