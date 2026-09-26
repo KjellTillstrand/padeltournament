@@ -1,7 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 
 // R-PERFECT-MIX: every shipped full-length schedule is a whist tournament —
 // over all rounds each pair of players partners exactly once and opposes
@@ -9,12 +8,15 @@ const vm = require('vm');
 
 const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 
-// Load a schedule module the way the browser does: it assigns to window.
+// Read a schedule module as pure data, never executing it: the file must be
+// exactly `window.schedule<name> = ` followed by a JSON document. JSON.parse
+// rejects anything else (embedded or trailing code), so a table that is code
+// rather than data fails here.
 function loadSchedule(name) {
   const source = fs.readFileSync(path.join(SCHEDULE_DIR, `${name}.js`), 'utf8');
-  const sandbox = { window: {} };
-  vm.runInNewContext(source, sandbox, { filename: `${name}.js` });
-  return sandbox.window[`schedule${name}`];
+  const prefix = `window.schedule${name} = `;
+  expect(source.startsWith(prefix), `${name}.js starts with "${prefix}"`).toBe(true);
+  return JSON.parse(source.slice(prefix.length));
 }
 
 // Count partner and opponent meetings for every unordered pair of players.
@@ -84,6 +86,21 @@ test.describe('Perfect-mix schedules', () => {
       const { partner, opponent } = meetingCounts(schedule);
       expect(offTarget(partner, 1), 'pairs not partnered exactly once').toEqual([]);
       expect(offTarget(opponent, 2), 'pairs not opposed exactly twice').toEqual([]);
+    });
+
+    test(`R-PERFECT-MIX: ${n}-player schedule puts every player on every court`, () => {
+      const name = `${n}p${rounds}r`;
+      const schedule = loadSchedule(name);
+      const missed = [];
+      for (const player of schedule.players) {
+        for (let court = 1; court <= n / 4; court++) {
+          const plays = schedule.rounds.some((round) =>
+            round.matches.some((m) => m.court === court && m.teams.flat().includes(player))
+          );
+          if (!plays) missed.push(`${player}@court${court}`);
+        }
+      }
+      expect(missed, 'players who never play a court').toEqual([]);
     });
   }
 });

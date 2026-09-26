@@ -14,10 +14,14 @@
  *   - the opponent differences +-(a-c) cover every non-zero residue twice.
  * (Pairs involving "inf" are balanced by the rotation automatically.)
  *
+ * A court balancing pass then permutes court assignments within each
+ * round (which cannot change who meets whom) so every player visits
+ * every court.
+ *
  * Every generated schedule is checked by an independent verifier that
  * counts partner and opponent meetings over the full round list. The
- * script refuses to write any file unless the partner matrix is all 1s
- * and the opponent matrix is all 2s.
+ * script refuses to write any file unless the partner matrix is all 1s,
+ * the opponent matrix is all 2s, and no player misses a court.
  *
  * Usage:
  *   node scheduler/whist-generate.js            # writes all four tables
@@ -192,9 +196,7 @@ function buildSchedule(N, base) {
   const label = (x, r) => (x === INF ? `P${N}` : `P${((x + r) % m) + 1}`);
   const rounds = [];
   for (let r = 0; r < m; r++) {
-    // Base table i is always court i+1. Every rotating player therefore
-    // visits court 1 three times and each other court four times; the
-    // fixed player (P<N>) stays on court 1. Courts do not affect mixing.
+    // Base table i starts on court i+1; balanceCourts() reassigns courts.
     rounds.push({
       roundNumber: r + 1,
       matches: base.map(([t1, t2], i) => ({
@@ -211,6 +213,91 @@ function buildSchedule(N, base) {
   };
 }
 
+/** All permutations of [0..n-1], in lexicographic order. */
+function permutations(n) {
+  if (n === 0) return [[]];
+  const out = [];
+  for (const rest of permutations(n - 1)) {
+    for (let pos = 0; pos <= rest.length; pos++) {
+      out.push([...rest.slice(0, pos), n - 1, ...rest.slice(pos)]);
+    }
+  }
+  return out.sort((x, y) => {
+    for (let i = 0; i < n; i++) if (x[i] !== y[i]) return x[i] - y[i];
+    return 0;
+  });
+}
+
+/**
+ * Court balancing pass. Within each round, permutes which match is played
+ * on which court; this cannot change who partners or opposes whom. Greedy,
+ * round by round: choose the assignment minimising (1) the largest
+ * per-player court-visit count so far, then (2) the sum of squared visit
+ * counts. Ties go to the first permutation in lexicographic order, so the
+ * result is deterministic. Mutates and returns the schedule.
+ */
+function balanceCourts(schedule) {
+  const courts = schedule.rounds[0].matches.length;
+  const perms = permutations(courts);
+  const visits = new Map(schedule.players.map((p) => [p, new Array(courts).fill(0)]));
+
+  for (const round of schedule.rounds) {
+    const seats = round.matches.map((m) => m.teams.flat());
+    let best = null;
+    let bestMax = Infinity;
+    let bestSq = Infinity;
+    for (const perm of perms) {
+      // perm[i] = court index for match i.
+      let max = 0;
+      let sq = 0;
+      seats.forEach((players, i) => {
+        for (const p of players) {
+          const v = visits.get(p)[perm[i]] + 1;
+          if (v > max) max = v;
+          sq += v * v - (v - 1) * (v - 1);
+        }
+      });
+      if (max < bestMax || (max === bestMax && sq < bestSq)) {
+        best = perm;
+        bestMax = max;
+        bestSq = sq;
+      }
+    }
+    seats.forEach((players, i) => players.forEach((p) => visits.get(p)[best[i]]++));
+    round.matches.forEach((m, i) => { m.court = best[i] + 1; });
+    round.matches.sort((x, y) => x.court - y.court);
+  }
+  return schedule;
+}
+
+/**
+ * Court-visit spread: for every player and court, how many rounds that
+ * player plays on that court. Returns { min, max, missing } where missing
+ * lists "player@court" entries with zero visits.
+ */
+function courtSpread(schedule) {
+  const courts = schedule.playerCount / 4;
+  const visits = new Map(schedule.players.map((p) => [p, new Array(courts).fill(0)]));
+  for (const round of schedule.rounds) {
+    for (const m of round.matches) {
+      for (const p of m.teams.flat()) {
+        if (visits.has(p) && m.court >= 1 && m.court <= courts) visits.get(p)[m.court - 1]++;
+      }
+    }
+  }
+  let min = Infinity;
+  let max = 0;
+  const missing = [];
+  for (const [p, counts] of visits) {
+    counts.forEach((v, c) => {
+      if (v < min) min = v;
+      if (v > max) max = v;
+      if (v === 0) missing.push(`${p}@court${c + 1}`);
+    });
+  }
+  return { min, max, missing };
+}
+
 /**
  * Independent verifier: counts meetings directly from the round list
  * (no knowledge of the cyclic construction). Returns a list of problems;
@@ -224,8 +311,10 @@ function verifySchedule(schedule) {
   if (schedule.totalRounds !== N - 1) problems.push(`totalRounds ${schedule.totalRounds} != ${N - 1}`);
   if (schedule.rounds.length !== N - 1) problems.push(`rounds.length ${schedule.rounds.length} != ${N - 1}`);
   const idx = new Map(players.map((p, i) => [p, i]));
-  const partner = Array.from({ length: N }, () => new Array(N).fill(0));
-  const opponent = Array.from({ length: N }, () => new Array(N).fill(0));
+  // Sized by the actual player list so a wrong playerCount cannot index out of range.
+  const P = players.length;
+  const partner = Array.from({ length: P }, () => new Array(P).fill(0));
+  const opponent = Array.from({ length: P }, () => new Array(P).fill(0));
 
   schedule.rounds.forEach((round, r) => {
     if (round.roundNumber !== r + 1) problems.push(`round ${r + 1}: roundNumber ${round.roundNumber}`);
@@ -233,12 +322,27 @@ function verifySchedule(schedule) {
     const seen = new Set();
     round.matches.forEach((match, c) => {
       if (match.court !== c + 1) problems.push(`round ${r + 1}: court ${match.court} at index ${c}`);
-      const [t1, t2] = match.teams;
+      const teams = match.teams;
+      const wellFormed =
+        Array.isArray(teams) && teams.length === 2 &&
+        teams.every((t) => Array.isArray(t) && t.length === 2);
+      if (!wellFormed) {
+        problems.push(`round ${r + 1}, court ${match.court}: teams is not two pairs`);
+        return;
+      }
+      const [t1, t2] = teams;
+      let known = true;
       for (const p of [...t1, ...t2]) {
-        if (!idx.has(p)) problems.push(`round ${r + 1}: unknown player ${p}`);
+        if (!idx.has(p)) {
+          problems.push(`round ${r + 1}: unknown player ${p}`);
+          known = false;
+        }
         if (seen.has(p)) problems.push(`round ${r + 1}: ${p} plays twice`);
         seen.add(p);
       }
+      // Skip counting a match with an unknown label (already reported) so
+      // verification runs to completion and reports every problem.
+      if (!known) return;
       const [a, b] = t1.map((p) => idx.get(p));
       const [c2, d] = t2.map((p) => idx.get(p));
       partner[a][b]++; partner[b][a]++;
@@ -252,8 +356,8 @@ function verifySchedule(schedule) {
     if (seen.size !== N) problems.push(`round ${r + 1}: ${seen.size} distinct players`);
   });
 
-  for (let i = 0; i < N; i++) {
-    for (let j = i + 1; j < N; j++) {
+  for (let i = 0; i < P; i++) {
+    for (let j = i + 1; j < P; j++) {
       if (partner[i][j] !== 1) problems.push(`${players[i]}-${players[j]} partnered ${partner[i][j]}x`);
       if (opponent[i][j] !== 2) problems.push(`${players[i]}-${players[j]} opposed ${opponent[i][j]}x`);
     }
@@ -280,8 +384,12 @@ function main() {
       failed = true;
       continue;
     }
-    const schedule = buildSchedule(N, found.base);
+    const schedule = balanceCourts(buildSchedule(N, found.base));
     const problems = verifySchedule(schedule);
+    const spread = courtSpread(schedule);
+    if (spread.missing.length) {
+      problems.push(`players missing a court: ${spread.missing.join(', ')}`);
+    }
     if (problems.length) {
       console.error(`Wh(${N}): VERIFICATION FAILED (${problems.length} problems); nothing written`);
       problems.slice(0, 20).forEach((p) => console.error(`  ${p}`));
@@ -293,6 +401,7 @@ function main() {
       `Wh(${N}): verified — ${N - 1} rounds x ${N / 4} courts; ` +
         `${pairs} pairs all partnered 1x and opposed 2x (search restarts: ${found.restarts})`
     );
+    console.log(`  court visits per player per court: min ${spread.min}, max ${spread.max}`);
     if (!checkOnly) {
       const name = `${N}p${N - 1}r`;
       const file = path.join(SCHEDULE_DIR, `${name}.js`);
@@ -305,4 +414,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { findBaseRound, buildSchedule, verifySchedule };
+module.exports = { findBaseRound, buildSchedule, balanceCourts, courtSpread, verifySchedule };
