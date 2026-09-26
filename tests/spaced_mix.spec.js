@@ -3,11 +3,13 @@ const fs = require('fs');
 const path = require('path');
 
 // R-SPACED-MIX: the shipped full-length schedules spread repeat encounters
-// across the tournament — no pair opposes in two consecutive rounds, and no
-// pair that partners in a round opposes each other in the round before or
-// after — while keeping the perfect mix (partners once, opponents twice) and
-// putting every player on every court. These checks read the schedule data
-// directly and count meetings themselves; no page needed.
+// across the tournament — with 4 or more courts no pair opposes in two
+// consecutive rounds, and no pair that partners in a round opposes each other
+// in the round before or after; with 3 courts (12 players) such adjacent
+// repeats are unavoidable and the table holds exactly the proven minimum —
+// while keeping the perfect mix (partners once, opponents twice) and putting
+// every player on every court. These checks read the schedule data directly
+// and count meetings themselves; no page needed.
 
 const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 
@@ -71,19 +73,34 @@ function partnerNextToOpposition(schedule) {
   return bad;
 }
 
-// 12 players are not covered: with only 3 courts every match of a round seats
-// two players who shared a match in the round before (4 players drawn from 3
-// matches), so no 12-player schedule can meet this requirement. The 12-player
-// table is left as it was pending a requirement amendment; see
-// spacingPossible() in scheduler/whist-generate.js.
-const SIZES = [
+// Sizes with 4 or more courts: zero adjacent repeats. 12 players (3 courts)
+// are held to the minimum instead, per the REQ-34 amendment: every match of a
+// round seats 4 players drawn from the 3 matches of the round before, so at
+// least two of them shared a match there and meet again (pigeonhole). That is
+// at least 1 repeat per match, 3 per round change, 3 x 10 = 30 over 11
+// rounds; see adjacentRepeatBound() in scheduler/whist-generate.js.
+const SPACED_SIZES = [
   { players: 16, rounds: 15 },
   { players: 20, rounds: 19 },
   { players: 24, rounds: 23 },
 ];
+const TWELVE = { players: 12, rounds: 11, minimumAdjacentRepeats: 30 };
 
 test.describe('Spaced-mix schedules', () => {
-  for (const { players: n, rounds } of SIZES) {
+  test(`R-SPACED-MIX: 12-player schedule has exactly the minimum ${TWELVE.minimumAdjacentRepeats} adjacent repeat encounters`, () => {
+    const schedule = loadSchedule('12p11r');
+    expect(schedule.rounds).toHaveLength(TWELVE.rounds);
+    schedule.rounds.forEach((round, r) => expect(round.roundNumber).toBe(r + 1));
+    const backToBack = backToBackOppositions(schedule);
+    const partnerAdjacent = partnerNextToOpposition(schedule);
+    expect(
+      backToBack.length + partnerAdjacent.length,
+      `adjacent repeats: ${backToBack.length} back-to-back oppositions + ` +
+        `${partnerAdjacent.length} partner-adjacent oppositions`
+    ).toBe(TWELVE.minimumAdjacentRepeats);
+  });
+
+  for (const { players: n, rounds } of SPACED_SIZES) {
     const name = `${n}p${rounds}r`;
 
     test(`R-SPACED-MIX: ${n}-player schedule never has a pair oppose in consecutive rounds`, () => {
@@ -98,6 +115,10 @@ test.describe('Spaced-mix schedules', () => {
       expect(schedule.rounds).toHaveLength(rounds);
       expect(partnerNextToOpposition(schedule), 'partners opposing in an adjacent round').toEqual([]);
     });
+  }
+
+  for (const { players: n, rounds } of [TWELVE, ...SPACED_SIZES]) {
+    const name = `${n}p${rounds}r`;
 
     test(`R-SPACED-MIX: ${n}-player schedule keeps the perfect mix and every player on every court`, () => {
       const schedule = loadSchedule(name);

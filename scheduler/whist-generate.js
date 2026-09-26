@@ -21,8 +21,9 @@
  * of a pair is as large as the search finds. Reordering whole rounds cannot
  * change who partners or opposes whom. Several base rounds (seeds seed,
  * seed + 1, ...) are tried and the best-spaced one is kept. With fewer than
- * 4 courts spacing is impossible (see spacingPossible) and the stage is
- * skipped.
+ * 4 courts some adjacent repeats are unavoidable (see adjacentRepeatBound)
+ * and the stage is skipped: the constructed 12-player order already has
+ * exactly the minimum, 30.
  *
  * A court balancing pass then permutes court assignments within each
  * round (which cannot change who meets whom) so every player visits
@@ -31,7 +32,8 @@
  * Every generated schedule is checked by independent verifiers that count
  * meetings over the full round list. The script refuses to write any file
  * unless the partner matrix is all 1s, the opponent matrix is all 2s, no
- * player misses a court, and no pair meets back to back (verifySpacing).
+ * player misses a court, and adjacent repeat encounters (verifySpacing) are
+ * none with 4+ courts, or exactly the proven minimum with fewer.
  *
  * Usage:
  *   node scheduler/whist-generate.js            # writes all four tables
@@ -540,15 +542,37 @@ function applyRoundOrder(schedule, order) {
 }
 
 /**
- * Can any schedule for N players avoid a pair meeting in consecutive rounds?
- * Not with fewer than 4 courts: every match of round r + 1 seats 4 players,
- * and with at most 3 matches in round r two of them shared a match there
- * (pigeonhole), so they meet in both rounds. In a whist tournament partners
- * never repeat, so that repeat is always a back-to-back opposition or a
- * partnering next to an opposition.
+ * Lower bound on adjacent repeat encounters (back-to-back oppositions plus
+ * partner-adjacent oppositions) for any full-length schedule of N players.
+ *
+ * Every match of round r + 1 seats 4 players, drawn from the C = N / 4
+ * matches of round r; two players drawn from the same match there meet in
+ * both rounds. The fewest such pairs a match can hold comes from spreading
+ * its 4 players as evenly as possible over the C matches: with q = floor(4/C)
+ * and s = 4 mod C, that is s * (q+1 choose 2) + (C - s) * (q choose 2). So
+ * each of the N - 2 round-to-round transitions has at least C times that:
+ *
+ *   bound = (N - 2) * C * [s * (q+1 choose 2) + (C - s) * (q choose 2)]
+ *
+ * With 4 or more courts the bound is 0; with 3 courts (12 players) each
+ * match holds at least 1 such pair, 3 per transition, 30 over 10
+ * transitions. In a whist tournament partners never repeat, so every such
+ * repeat is a back-to-back opposition or a partnering next to an opposition.
+ */
+function adjacentRepeatBound(N) {
+  const C = N / 4;
+  const q = Math.floor(4 / C);
+  const s = 4 % C;
+  const choose2 = (k) => (k * (k - 1)) / 2;
+  return (N - 2) * C * (s * choose2(q + 1) + (C - s) * choose2(q));
+}
+
+/**
+ * Can a schedule for N players avoid every adjacent repeat encounter? Only
+ * with 4 or more courts; see adjacentRepeatBound.
  */
 function spacingPossible(N) {
-  return N / 4 >= 4;
+  return adjacentRepeatBound(N) === 0;
 }
 
 /**
@@ -561,11 +585,12 @@ function spacingPossible(N) {
  *
  * Returns { schedule, score, spaced, candidate, restarts, evaluations } where
  * spaced means zero back-to-back oppositions and zero partner-adjacent
- * oppositions, candidate is the chosen base round's index (seed + candidate),
+ * oppositions (possible only with 4+ courts), candidate is the chosen base round's index (seed + candidate),
  * restarts is that base round's search restarts and evaluations counts
  * round-order scores over all candidates; or null if no base round was found. When spacing is
  * impossible (spacingPossible(N) is false) the stage is skipped and the
- * rounds keep their constructed order.
+ * rounds keep their constructed order; for 12 players that order already
+ * meets adjacentRepeatBound exactly, which verifySpacing's caller checks.
  */
 function spacedWhist(N, seed, { candidates = SPACING_CANDIDATES, restarts = SPACING_RESTARTS } = {}) {
   if (!spacingPossible(N)) {
@@ -744,18 +769,24 @@ function main() {
       problems.push(`players missing a court: ${spread.missing.join(', ')}`);
     }
     const spacing = verifySpacing(schedule);
-    const spacingLine =
-      `  spacing: ${spacing.backToBack} back-to-back oppositions, ` +
-      `${spacing.partnerAdjacent} partner-adjacent oppositions, min meeting gap ${spacing.minGap} ` +
-      `(base round ${result.candidate + 1} of ${spacingPossible(N) ? SPACING_CANDIDATES : 1}, ` +
-      `${result.evaluations} order evaluations)`;
-    if (!spacingPossible(N)) {
+    const adjacent = spacing.backToBack + spacing.partnerAdjacent;
+    const bound = adjacentRepeatBound(N);
+    if (bound === 0) {
+      problems.push(...spacing.problems);
+    } else if (adjacent !== bound) {
+      // Fewer than the bound is impossible, so anything else is above it.
       problems.push(
-        `spacing is impossible with ${N / 4} courts: two players who shared a match always ` +
-          'share one again in the next round (pigeonhole)'
+        `${adjacent} adjacent repeat encounters; with ${N / 4} courts the minimum is ${bound} ` +
+          '(adjacentRepeatBound) and a table must meet it exactly',
+        ...spacing.problems
       );
     }
-    problems.push(...spacing.problems);
+    const spacingLine =
+      `  spacing: ${spacing.backToBack} back-to-back oppositions, ` +
+      `${spacing.partnerAdjacent} partner-adjacent oppositions ` +
+      `(${adjacent} adjacent repeats, minimum possible ${bound}), min meeting gap ${spacing.minGap} ` +
+      `(base round ${result.candidate + 1} of ${spacingPossible(N) ? SPACING_CANDIDATES : 1}, ` +
+      `${result.evaluations} order evaluations)`;
     if (problems.length) {
       console.error(`Wh(${N}): VERIFICATION FAILED (${problems.length} problems); nothing written`);
       console.error(spacingLine);
@@ -796,6 +827,7 @@ module.exports = {
   searchRoundOrder,
   applyRoundOrder,
   minMeetingGap,
+  adjacentRepeatBound,
   spacingPossible,
   spacedWhist,
   verifySpacing,
