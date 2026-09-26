@@ -46,6 +46,15 @@ none — static app; the Playwright workflow is the only pipeline.
   the classic failure mode here.
 - Schedule modules are generated data — regenerate via `scheduler/combined.js` rather
   than hand-editing round arrays.
+- Local Playwright runs need a static server; port 8080 is often held by another
+  app on this machine (observed: VLC), and testing against the wrong server reads
+  as an all-red suite. Until AB#22 (Playwright-managed webServer, fail-fast on
+  collision) lands: serve on a free port and curl-verify it is the app first.
+- Board operations from inside a worktree MUST pin
+  `MOCK_BOARD_STATE=<main checkout>/.claude/mock-board.json` — the mock adapter
+  resolves state at the current git toplevel, which in a worktree would fork the
+  board. (Adapter-level fix proposed for dotfiles-claude: resolve via
+  `git rev-parse --git-common-dir`.)
 
 ## Agent Overrides
 none
