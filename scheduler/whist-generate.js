@@ -40,6 +40,11 @@ const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 const MAX_RESTARTS = 100000;
 const NODE_BUDGET_PER_RESTART = 20000;
 
+/** Fixed per-size seed, so regenerating a table reproduces the same file. */
+function defaultSeed(N) {
+  return N * 7919;
+}
+
 // Small deterministic PRNG (mulberry32) so regeneration is reproducible.
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -378,7 +383,7 @@ function main() {
       failed = true;
       continue;
     }
-    const found = findBaseRound(N, N * 7919);
+    const found = findBaseRound(N, defaultSeed(N));
     if (!found) {
       console.error(`Wh(${N}): no base round found within the search budget; nothing written`);
       failed = true;
@@ -414,4 +419,13 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { findBaseRound, buildSchedule, balanceCourts, courtSpread, verifySchedule };
+module.exports = {
+  defaultSeed,
+  mulberry32,
+  shuffled,
+  findBaseRound,
+  buildSchedule,
+  balanceCourts,
+  courtSpread,
+  verifySchedule,
+};

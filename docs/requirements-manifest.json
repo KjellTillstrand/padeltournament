@@ -21,6 +21,7 @@
       "method": "Demonstration",
       "note": "Demonstrated by the acceptance suite itself: it runs against a static http-server serving ./web with no backend (see .github/workflows/playwright-tests.yml), so every passing test shows the app operating fully client-side."
     },
-    { "tag": "R-PERFECT-MIX", "id": 23, "title": "Full-length tournaments mix everyone perfectly", "method": "Automated Test" }
+    { "tag": "R-PERFECT-MIX", "id": 23, "title": "Full-length tournaments mix everyone perfectly", "method": "Automated Test" },
+    { "tag": "R-EQUITABLE-MIX", "id": 24, "title": "Any-length schedules stay equitable", "method": "Automated Test" }
   ]
 }
