@@ -21,6 +21,19 @@ jobs:
         with:
           node-version: '16'
 
+      # Single source of truth for the Playwright JSON report path. It lives in
+      # the runner's temp dir, outside the checkout, so no committed file can be
+      # mistaken for this run's results. (runner.temp is not available in
+      # job-level env, hence GITHUB_ENV.)
+      - name: Set coverage report path
+        run: |
+          echo "PW_JSON=$RUNNER_TEMP/pw-results.json" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/pw-results.json"
+
+      # Prove the gate itself still fails closed before trusting its verdict.
+      - name: Self-test requirement coverage gate
+        run: node scripts/check-req-coverage.test.mjs
+
       - name: Install dependencies
         run: npm install
 
@@ -40,10 +53,8 @@ jobs:
       - name: Start static server and run tests
         env:
           BASE_URL: "http://localhost:8080"
-          # JSON report consumed by the requirement coverage gate. It lives in
-          # test-results/, which Playwright empties at the start of every run,
-          # so the gate can only ever judge this run's results.
-          PLAYWRIGHT_JSON_OUTPUT_FILE: test-results/results.json
+          # JSON report consumed by the requirement coverage gate.
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ env.PW_JSON }}
         run: |
           pkill -f "http-server" || true
           # Start the static server in the background on port 8080.
@@ -65,13 +76,23 @@ jobs:
       # Release gate (R-RELEASE-GATE): fails, naming each uncovered tag, unless
       # every "Automated Test" requirement in docs/requirements-manifest.json has
       # a passing tagged test. deploy needs this job, so a red gate blocks
-      # publication on every route to main.
+      # publication on every route to main. Runs even when the test step fails
+      # so the uncovered requirements are still named (a missing or partial
+      # report exits 2; the job is already red either way).
       - name: Require requirement coverage
-        run: node scripts/check-req-coverage.mjs test-results/results.json
+        if: ${{ !cancelled() }}
+        run: node scripts/check-req-coverage.mjs "$PW_JSON"
 
   deploy:
     runs-on: ubuntu-latest
     needs: test
+    # Publish only from a push to main (never from pull_request runs), after the
+    # test job and its coverage gate are green.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Serialize publications so two runs can never race writing gh-pages.
+    concurrency:
+      group: deploy-gh-pages
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
