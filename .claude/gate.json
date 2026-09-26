@@ -3,7 +3,10 @@
     "web/**",
     "scheduler/**",
     ".github/**",
-    ".claude/gate.json"
+    ".claude/gate.json",
+    "scripts/**",
+    "docs/requirements-manifest.json",
+    "playwright.config.js"
   ],
   "verify_allowlist": [
     "npm test",
