@@ -26,6 +26,30 @@ const NameAPlayer = (index, name) => async (actor) => {
   await actor.page.fill(`#playerInput_${index}`, name);
 };
 
+// Simulates tampered storage: the 20-character name limit only guards the
+// start button, so a restored tournamentState can carry any player name.
+// The seed is derived from the app's own live state (so it tracks the state
+// shape) and installed by an init script, which runs before the app on the
+// next load. Writing localStorage from the live page would not stick: the
+// app re-saves its in-memory state on beforeunload.
+const TamperWithAStoredPlayerName = (hostileName) => async (actor) => {
+  const state = JSON.parse(
+    await actor.page.evaluate(() => localStorage.getItem('tournamentState'))
+  );
+  const originalName = state.schedule.players[0];
+  const rename = (name) => (name === originalName ? hostileName : name);
+  state.schedule.players = state.schedule.players.map(rename);
+  state.schedule.rounds.forEach((round) => {
+    round.matches.forEach((match) => {
+      match.teams = match.teams.map((team) => team.map(rename));
+    });
+  });
+  await actor.page.addInitScript((seed) => {
+    localStorage.setItem('tournamentState', seed);
+  }, JSON.stringify(state));
+  await actor.page.reload();
+};
+
 const RecordDescendingScores = async (actor) => {
   // Give each match a different, decreasing left-side score so the standings
   // have a distinct, verifiable order.
@@ -118,8 +142,37 @@ test.describe('R-SCOREBOARD: Standings ranking and colour coding', () => {
     // Then no element shall be injected into the scoreboard,
     await expect(scoreboard.locator('svg')).toHaveCount(0);
     // the name shall render as literal text in a player cell,
-    await expect(scoreboard.locator('td', { hasText: payload })).toHaveCount(1);
+    const playerCell = scoreboard.locator('td', { hasText: payload });
+    await expect(playerCell).toHaveCount(1);
+    expect(await playerCell.textContent()).toBe(payload);
     // and no injected handler shall have run.
     expect(await page.evaluate(() => window.p)).toBeUndefined();
+  });
+
+  // @verifies REQ-12
+  test('R-SCOREBOARD: a player name restored from tampered storage renders as text, never as markup', async ({ page }) => {
+    const organizer = theOrganizer(page);
+    // Longer than the 20-character input limit: only reachable via storage.
+    const payload = '<img src=x onerror=window.q=1>';
+
+    // Given a started tournament whose stored player name was tampered with.
+    await organizer.attemptsTo(StartTheTournament('Tampered Storage'));
+    await organizer.attemptsTo(TamperWithAStoredPlayerName(payload));
+
+    // When the returning Organizer's app restores it and shows the standings.
+    await expect(page.locator('.round')).toBeVisible();
+    const scoreboard = page.locator('.scoreboard-container');
+    await expect(scoreboard.locator('table tr')).toHaveCount(
+      1 + (await page.locator('#playerInputsContainer input').count())
+    );
+
+    // Then no element shall be injected into the scoreboard,
+    await expect(scoreboard.locator('img')).toHaveCount(0);
+    // the name shall render as literal text in a player cell,
+    const playerCell = scoreboard.locator('td', { hasText: payload });
+    await expect(playerCell).toHaveCount(1);
+    expect(await playerCell.textContent()).toBe(payload);
+    // and no injected handler shall have run.
+    expect(await page.evaluate(() => window.q)).toBeUndefined();
   });
 });
