@@ -1,0 +1,5 @@
+/* Per-site court styles for Libro.
+   Court labels are DOM elements rendered by index.html (styled by .court-label in
+   css/style.css) so custom court names can replace them; do not reintroduce
+   `.court-N::before { content: ... }` labels here, they would render twice.
+   Libro's default court names live in courts.js. */
