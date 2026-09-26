@@ -28,6 +28,7 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+          cache: 'npm'
 
       # Single source of truth for the Playwright JSON report path. It lives in
       # the runner's temp dir, outside the checkout, so no committed file can be
@@ -47,8 +48,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Only the bundled browsers the projects use, plus their OS libraries.
+      # The "Microsoft Edge" project runs the runner's installed Edge (channel
+      # msedge); WebKit is unused.
       - name: Install playwright
-        run: npx playwright install
+        run: npx playwright install --with-deps chromium firefox
 
       # playwright.config.js starts (and stops) the static server itself and
       # fails fast if its port is already occupied, so no server steps here.
@@ -93,7 +97,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # concurrency serializes deploys but does not order them: a slower older
+      # run must not force-push stale content over a newer deploy, so publish
+      # only if this commit is still the head of main.
+      - name: Skip publishing if main has moved on
+        id: freshness
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          head_sha="$(git rev-parse FETCH_HEAD)"
+          if [ "$head_sha" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping publish: $GITHUB_SHA is no longer the head of main ($head_sha); the newer run publishes instead."
+          fi
+
       - name: Publish current workdir (which contains generated content) to GitHub Pages
+        if: steps.freshness.outputs.current == 'true'
         uses: rayluo/github-pages-overwriter@c394294cfbfd3f239625a54b6c2b36e6a47bbfee # v1.3
 
         with:
