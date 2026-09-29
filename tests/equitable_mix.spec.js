@@ -8,12 +8,16 @@ const path = require('path');
 // same inputs and seed always give the same schedule. These checks call the
 // engine directly and count meetings from its output; no page needed.
 
-const ENGINE = path.join(__dirname, '..', 'scheduler', 'engine', 'index.mjs');
+const ENGINE_DIR = path.join(__dirname, '..', 'scheduler', 'engine');
 const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 
 let generateSchedule;
+let feasibility;
+let exhaustive;
 test.beforeAll(async () => {
-  ({ generateSchedule } = await import(ENGINE));
+  ({ generateSchedule } = await import(path.join(ENGINE_DIR, 'index.mjs')));
+  feasibility = await import(path.join(ENGINE_DIR, 'feasibility.mjs'));
+  ({ exhaustive } = await import(path.join(ENGINE_DIR, 'prove-infeasible.mjs')));
 });
 
 // Structural check: every round seats each player exactly once, on courts
@@ -131,15 +135,125 @@ test.describe('Equitable schedules for any length', () => {
   });
 
   test('R-EQUITABLE-MIX: a shape the search cannot balance still succeeds and says so', () => {
-    // Known-hard shapes at the default seed: the search budget runs out above
-    // the optimum. The contract is honest degradation — the hard guarantees
-    // hold and equity reports the miss — never a silent "equitable" claim.
-    for (const { players: n, rounds } of [{ players: 20, rounds: 9 }, { players: 14, rounds: 8 }]) {
+    // Known-hard shapes at the default seed, not proven impossible: the
+    // search budget runs out above the optimum. The contract is honest
+    // degradation — the hard guarantees hold and equity reports the miss —
+    // never a silent "equitable" claim. (A tripwire: if the engine closes
+    // these, move the test to shapes that still miss.)
+    for (const { players: n, rounds } of [{ players: 17, rounds: 9 }, { players: 21, rounds: 11 }]) {
       const schedule = generateSchedule({ players: n, rounds });
       const { min, max } = expectSound(schedule, n, rounds, `${n}/${rounds}`);
       expect(schedule.equity.optimal, `${n}/${rounds}: equity.optimal`).toBe(false);
+      expect(schedule.equity.infeasible, `${n}/${rounds}: equity.infeasible`).toBe(false);
       expect(schedule.equity.cost).toBeGreaterThan(schedule.equity.lowerBound);
       expect(max - min, `${n}/${rounds}: opponent counts range ${min}..${max}`).toBeGreaterThan(1);
+    }
+  });
+
+  test('R-EQUITABLE-MIX: formerly unbalanced shapes now keep opponent counts within one', () => {
+    // Each of these missed the optimum at the default seed before the
+    // constructions of scheduler/engine/construct.mjs (AB#32). One or more
+    // per construction: cyclic development (14/7, 16/7, 18/9, 20/9, 22/11,
+    // 24/10), one matching round past it (16/8, 20/10, 24/12), whist subsets
+    // (17/15, 20/16, 21/19, 24/20), the 4n + 2 near-whist design with its
+    // sit-out trade (18/17, 22/21), and the search alone (13/11). About 1.5 s.
+    const shapes = [
+      [13, 11], [14, 7], [16, 7], [16, 8], [17, 15], [18, 9], [18, 17], [20, 9], [20, 10],
+      [20, 16], [21, 19], [22, 11], [22, 21], [24, 10], [24, 12], [24, 20],
+    ];
+    for (const [n, rounds] of shapes) {
+      expectEquitable(generateSchedule({ players: n, rounds }), n, rounds, `${n}/${rounds}`);
+    }
+  });
+
+  test('R-EQUITABLE-MIX: a provably unbalanceable shape returns at once and says so', () => {
+    // 5 players over 2 rounds cannot keep opponent counts within one (proven
+    // by exhaustive search); the engine used to spend its whole budget (about
+    // a second) finding that out. Now it stops at the proven least cost.
+    const start = performance.now();
+    const schedule = generateSchedule({ players: 5, rounds: 2 });
+    const elapsed = performance.now() - start;
+    const { min, max } = expectSound(schedule, 5, 2, '5/2');
+    expect(schedule.equity).toEqual(expect.objectContaining({ optimal: false, infeasible: true }));
+    expect(schedule.equity.cost, '5/2: the least cost any schedule has').toBe(schedule.equity.lowerBound + 2);
+    expect(max - min, `5/2: opponent counts range ${min}..${max}`).toBe(2);
+    expect(elapsed, '5/2: returns without a search budget burn').toBeLessThan(100);
+
+    // Proven by counting alone (14 players over 8 rounds; too large for the
+    // exhaustive search): flagged, still sound.
+    const counted = generateSchedule({ players: 14, rounds: 8 });
+    expectSound(counted, 14, 8, '14/8');
+    expect(counted.equity).toEqual(expect.objectContaining({ optimal: false, infeasible: true }));
+  });
+
+  // Independent check of an exhaustive search witness (seat rows): no
+  // repeated partner, sit-outs within one, opponent cost within the bound.
+  function witnessProblems(n, rows, excess) {
+    const courts = Math.floor(n / 4);
+    const partner = new Map();
+    const opponent = new Map();
+    const byes = new Array(n).fill(0);
+    const key = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const bump = (map, a, b) => map.set(key(a, b), (map.get(key(a, b)) || 0) + 1);
+    for (const row of rows) {
+      expect([...row].sort((a, b) => a - b)).toEqual(Array.from({ length: n }, (_, i) => i));
+      for (let c = 0; c < courts; c++) {
+        const [a, b, x, y] = row.slice(4 * c, 4 * c + 4);
+        bump(partner, a, b);
+        bump(partner, x, y);
+        for (const [u, v] of [[a, x], [a, y], [b, x], [b, y]]) bump(opponent, u, v);
+      }
+      for (const p of row.slice(4 * courts)) byes[p]++;
+    }
+    const problems = [];
+    if ([...partner.values()].some((v) => v > 1)) problems.push('repeated partner');
+    if (Math.max(...byes) - Math.min(...byes) > 1) problems.push('sit-outs not within one');
+    const pairs = (n * (n - 1)) / 2;
+    const counts = [...opponent.values()];
+    const total = counts.reduce((a, b) => a + b, 0);
+    const q = Math.floor(total / pairs);
+    const lowerBound = pairs * q * q + (total - q * pairs) * (2 * q + 1);
+    const cost = counts.reduce((a, o) => a + o * o, 0);
+    if (cost > lowerBound + excess) problems.push(`cost ${cost} above ${lowerBound} + ${excess}`);
+    return problems;
+  }
+
+  test('R-EQUITABLE-MIX: the infeasible table is re-proven by exhaustive search', () => {
+    // scheduler/engine/prove-infeasible.mjs is a complete search; re-run it
+    // for the table entries that take under a second (the rest: run the
+    // script, a few minutes). For each: nothing below the floor, and a
+    // witness at the floor. Controls: shapes the engine does balance are
+    // found feasible, with a checked witness — the prover is not vacuous.
+    const quick = ['5/2', '5/3', '6/3', '6/4', '7/5', '9/4', '9/5', '12/5'];
+    for (const shape of quick) {
+      const [n, rounds] = shape.split('/').map(Number);
+      const floor = feasibility.EXHAUSTIVE_FLOORS.get(shape);
+      expect(exhaustive(n, rounds, floor - 2).feasible, `${shape}: below lowerBound + ${floor}`).toBe(false);
+      const { feasible, rounds: witness } = exhaustive(n, rounds, floor);
+      expect(feasible, `${shape}: at lowerBound + ${floor}`).toBe(true);
+      expect(witnessProblems(n, witness, floor), `${shape}: witness`).toEqual([]);
+      expect(generateSchedule({ players: n, rounds }).equity.infeasible, `${shape}: engine flag`).toBe(true);
+    }
+    for (const [n, rounds] of [[8, 4], [9, 3], [9, 6], [12, 4]]) {
+      const { feasible, rounds: witness } = exhaustive(n, rounds, 0);
+      expect(feasible, `${n}/${rounds}: equitable schedule exists`).toBe(true);
+      expect(witnessProblems(n, witness, 0), `${n}/${rounds}: witness`).toEqual([]);
+    }
+  });
+
+  test('R-EQUITABLE-MIX: the counting argument agrees with the exhaustive search', () => {
+    // feasibility.countingInfeasible is a closed-form proof (a degree sequence
+    // no simple graph has); every shape it rules out that is small enough for
+    // the exhaustive search is also in the exhaustively proven table.
+    const ruledOut = [];
+    for (let n = 4; n <= 24; n++) {
+      for (let rounds = 1; rounds < n; rounds++) {
+        if (feasibility.countingInfeasible(n, rounds)) ruledOut.push(`${n}/${rounds}`);
+      }
+    }
+    expect(ruledOut).toEqual(['5/2', '5/3', '6/4', '7/5', '10/6', '11/7', '14/8', '18/10', '22/12']);
+    for (const shape of ruledOut.filter((s) => Number(s.split('/')[0]) <= 12)) {
+      expect(feasibility.EXHAUSTIVE_FLOORS.has(shape), `${shape}: exhaustively proven too`).toBe(true);
     }
   });
 

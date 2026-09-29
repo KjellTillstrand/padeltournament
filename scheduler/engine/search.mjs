@@ -14,15 +14,17 @@
  *   - opponent spread sum over pairs of o^2      minimal iff opponent counts differ by <= 1
  * The total of o is fixed by N and R alone, so the sum of squares is at its
  * lower bound exactly when every count is floor or ceil of the mean. The
- * partner term is weighted so the search treats it as hard.
+ * partner term is a hard rule: arrangements rank by partner excess first
+ * (see improves), and the search only stops at an arrangement without one.
  *
  * Moves swap two players within one round. A swap touches at most two
  * matches, so its cost delta is computed by un-counting those matches,
  * swapping, and re-counting them: O(1) per candidate, never a full recount.
  * The search is a tabu search over conflict-directed swaps (see below); it
- * stops as soon as the cost reaches the provable lower bound, or when its
- * work budget (candidate evaluations, so the cut-off is deterministic) runs
- * out, returning the best arrangement seen.
+ * stops as soon as the cost reaches the provable lower bound (plus
+ * targetExcess, for shapes proven unable to reach it), or when its work
+ * budget (candidate evaluations, so the cut-off is deterministic) runs out,
+ * returning the best arrangement seen.
  */
 
 import whist from '../whist-generate.js';
@@ -33,9 +35,15 @@ const { mulberry32, shuffled } = whist;
 /** Uniform integer in [0, n). */
 const randInt = (rand, n) => Math.floor(rand() * n);
 
-const PARTNER_WEIGHT = 16;
+// A repeated partnership costs as much as one unit of opponent imbalance.
+// The hard rule is enforced by the best-arrangement order (fewest repeated
+// partners first) and by the stopping test, not by the weight; a light
+// weight lets the search pass through a repeat on its way to a better mix.
+// Of 16, 2 and 1, weight 1 closed the most shapes (all 273 shapes x 4 seeds).
+const PARTNER_WEIGHT = 1;
 // Tabu parameters, tuned on the 12/6, 14/10 and 20/8 shapes (24 seeds each
-// reach the optimum within ~0.6M candidate evaluations).
+// reach the optimum within ~0.6M candidate evaluations); retuning them on
+// the hard shapes of AB#32 changed nothing beyond noise.
 const MAX_CONFLICTS = 2; // violating pairs attacked per step
 const TENURE_BASE = 2; // steps a moved player stays tabu in its round ...
 const TENURE_RAND = 3; // ... plus 0..TENURE_RAND-1 more
@@ -52,17 +60,19 @@ export function minSumOfSquares(total, count) {
 /**
  * Search for an equitable arrangement.
  * @param {{N: number, R: number, seed: number, maxEvaluations: number,
- *          initial?: number[][]}} opts
+ *          initial?: number[][], targetExcess?: number}} opts
  *   initial: optional starting arrangement, R rows of N player indices in
  *   seat order (courts first, then byes), with bye counts at most one apart;
  *   by default a seeded random one.
+ *   targetExcess: stop once the cost is within this much of the lower bound
+ *   (default 0: only the optimum stops the search early).
  * @returns {{seats: Int32Array[], optimal: boolean, iterations: number,
  *            evaluations: number, partnerExcess: number, cost: number,
  *            lowerBound: number}}
  *   seats[r][s] = player index in seat s of round r; optimal means every
  *   partner and opponent count is within the equitable band.
  */
-export function searchSchedule({ N, R, seed, maxEvaluations, initial }) {
+export function searchSchedule({ N, R, seed, maxEvaluations, initial, targetExcess = 0 }) {
   const C = Math.floor(N / 4);
   const A = 4 * C; // active seats per round
   const B = N - A; // byes per round
@@ -248,16 +258,30 @@ export function searchSchedule({ N, R, seed, maxEvaluations, initial }) {
     bestPartnerExcess = partnerExcess;
   };
   snapshot();
+  // Reset the whole state to the arrangement `rows` (flat seat array).
+  const load = (rows) => {
+    partner.fill(0);
+    opp.fill(0);
+    bye.fill(0);
+    partnerExcess = 0;
+    for (let r = 0; r < R; r++) place(r, rows.subarray(r * N, (r + 1) * N));
+    cost = 0;
+    for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) cost += matchUpdate(r, c, 1);
+  };
+  const goal = lowerBound + targetExcess;
+  const done = () => bestPartnerExcess === 0 && bestCost <= goal;
 
   // Tabu search: take the best non-tabu candidate each step (ties broken at
   // random); a player just moved in a round stays put there for a few steps
   // unless moving it again beats the best cost so far (aspiration). After a
-  // long stall, a few random swaps kick the search out of its basin.
+  // long stall the search restarts from the best arrangement so far with a
+  // few random swaps (perturb and re-descend, rather than drift on from
+  // wherever the stall left it).
   const tabuUntil = new Int32Array(R * N);
   let iterations = 0;
   let evaluations = 0;
   let lastImprovement = 0;
-  while (bestCost > lowerBound && evaluations < maxEvaluations) {
+  while (!done() && evaluations < maxEvaluations) {
     iterations++;
     collectCandidates();
     evaluations += cr.length + 1;
@@ -292,6 +316,7 @@ export function searchSchedule({ N, R, seed, maxEvaluations, initial }) {
       snapshot();
       lastImprovement = iterations;
     } else if (pick < 0 || iterations - lastImprovement > STALL) {
+      load(best);
       for (let n = 0; n < KICK; n++) {
         const r = randInt(rand, R);
         const s1 = randInt(rand, A);

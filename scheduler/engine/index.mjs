@@ -10,10 +10,15 @@
  *   { playerCount, totalRounds, players,
  *     rounds: [{ roundNumber, matches: [{ court, teams: [[a, b], [c, d]] }],
  *                byes: [...] }],
- *     equity: { optimal, cost, lowerBound, opponentSpread } }
+ *     equity: { optimal, infeasible, cost, lowerBound, opponentSpread } }
  * `byes` (the players sitting out that round) is present only when the
  * player count is not a multiple of 4. `equity` reports how close the
  * opponent mix came to the equitable target; see generateSchedule.
+ *
+ * Shorter schedules start from the algebraic constructions of construct.mjs
+ * (often already equitable) and are finished by the local search of
+ * search.mjs. Shapes proven unable to be equitable (feasibility.mjs) are
+ * reported as such, without spending the search budget on the impossible.
  *
  * Full-length case (players = 4n, rounds = 4n - 1): the schedule is the
  * whist construction of scheduler/whist-generate.js, i.e. a perfect mix
@@ -24,19 +29,26 @@
 
 import whist from '../whist-generate.js';
 import { minSumOfSquares, searchSchedule } from './search.mjs';
+import { startArrangement } from './construct.mjs';
+import { costFloor } from './feasibility.mjs';
 
-const { defaultSeed, findBaseRound, buildSchedule, balanceCourts, spacedWhist } = whist;
+const { defaultSeed, balanceCourts, spacedWhist } = whist;
 
 export const MIN_PLAYERS = 4;
 export const MAX_PLAYERS = 24;
 
-// Work budget for the local search, in candidate-move evaluations (a
-// deterministic cut-off, unlike wall time). ~3M evaluations is roughly one
-// second on a laptop; the acceptance shapes need well under 1M. It governs
-// only the search for shorter schedules: the full-length path runs
+// Work budget for the constructions plus the local search, in candidate-move
+// evaluations (a deterministic cut-off, unlike wall time). ~3M evaluations is
+// roughly one second on a laptop; most shapes need well under 1M. It governs
+// only shorter schedules: the full-length path runs
 // whist-generate.js's spacedWhist under that script's own fixed budgets
 // (SPACING_CANDIDATES base rounds, etc.), about 5 s at 24 players.
 const MAX_EVALUATIONS = 3000000;
+// Budget for a shape that provably cannot be equitable (feasibility.mjs):
+// the search stops at the proven least cost, for the small shapes within a
+// few thousand evaluations (about a millisecond); this caps, at about 0.1 s,
+// the shapes whose least cost is only a lower bound (e.g. 18/10, 22/12).
+const INFEASIBLE_EVALUATIONS = 300000;
 
 /** The per-size seed whist-generate.js uses; the default here as well. */
 export { defaultSeed };
@@ -85,26 +97,14 @@ function renamed(schedule, names) {
 }
 
 /**
- * The first R rounds of the whist tournament with base round `base`, as seat
- * rows for the local search. Dropping rounds from a whist tournament never
- * repeats a partner and lowers each opponent count by at most one per
- * dropped round, so this is an excellent start: already equitable at N - 2.
- */
-function truncatedWhistSeats(N, R, base) {
-  const index = (label) => Number(label.slice(1)) - 1;
-  return buildSchedule(N, base)
-    .rounds.slice(0, R)
-    .map((round) => round.matches.flatMap((m) => m.teams.flat().map(index)));
-}
-
-/**
  * Opponent equity of a finished schedule, counted from its matches:
  * cost is the sum over all player pairs of (times opposed)^2, lowerBound the
  * smallest cost possible for this player and round count, and optimal means
  * cost === lowerBound, i.e. every pair's opponent count is the floor or ceil
- * of the mean (opponentSpread = max - min <= 1).
+ * of the mean (opponentSpread = max - min <= 1). infeasible is passed
+ * through: whether the shape is proven unable to be optimal.
  */
-function opponentEquity(schedule) {
+function opponentEquity(schedule, infeasible) {
   const N = schedule.playerCount;
   const idx = new Map(schedule.players.map((p, i) => [p, i]));
   const opp = new Int32Array(N * N);
@@ -133,7 +133,7 @@ function opponentEquity(schedule) {
     }
   }
   const lowerBound = minSumOfSquares(total, (N * (N - 1)) / 2);
-  return { optimal: cost === lowerBound, cost, lowerBound, opponentSpread: max - min };
+  return { optimal: cost === lowerBound, infeasible, cost, lowerBound, opponentSpread: max - min };
 }
 
 /**
@@ -143,10 +143,12 @@ function opponentEquity(schedule) {
  * once, and sit-out counts differ by at most one. The same inputs and seed
  * always return the identical schedule.
  *
- * NOT always guaranteed: opponent counts within one of each other. The local
- * search stops at the provable optimum or when its fixed work budget runs
- * out, and for some shapes (e.g. 20 players over 9 rounds, or 5 over 2,
- * where it is impossible) it ends above the optimum. The call still
+ * NOT always guaranteed: opponent counts within one of each other. Some
+ * shapes provably cannot have it (e.g. 5 players over 2 rounds, 14 over 8;
+ * see feasibility.mjs): for those `equity.infeasible` is true and the
+ * search stops at the least cost possible, or after a small budget. A few
+ * others (e.g. 17 players over 9 rounds) are not known to be impossible but
+ * the search budget runs out above the optimum. Either way the call still
  * succeeds; check `schedule.equity.optimal` (and `opponentSpread`) before
  * relying on the equitable-mix property.
  *
@@ -154,8 +156,9 @@ function opponentEquity(schedule) {
  *   players: a count (players are then named P1..PN) or the list of names.
  *   rounds:  1 .. players - 1.
  *   seed:    any integer; defaults to defaultSeed(player count).
- * @returns the schedule, with `equity: {optimal, cost, lowerBound,
- *   opponentSpread}` describing its opponent mix (see opponentEquity).
+ * @returns the schedule, with `equity: {optimal, infeasible, cost,
+ *   lowerBound, opponentSpread}` describing its opponent mix (see
+ *   opponentEquity); infeasible: the shape provably cannot be optimal.
  */
 export function generateSchedule({ players, rounds, seed } = {}) {
   const names = normalizePlayers(players);
@@ -171,21 +174,25 @@ export function generateSchedule({ players, rounds, seed } = {}) {
   // Full length: the whist pipeline of whist-generate.js, including its
   // spacing stage, so the default seed reproduces the shipped tables. It is
   // null only if no whist base round was found; the search below then starts
-  // from scratch. Shorter: the search starts from truncated whist rounds.
+  // from scratch. Shorter: the search starts from the best construction,
+  // unless the shape provably cannot be equitable (floor > 0, the proven
+  // least excess over the lower bound): then it goes straight for the floor.
   const whole = N % 4 === 0 && R === N - 1 ? spacedWhist(N, seed) : null;
-  const found = N % 4 === 0 && R < N - 1 ? findBaseRound(N, seed) : null;
+  const floor = costFloor(N, R);
 
   let schedule;
   if (whole) {
     schedule = renamed(whole.schedule, names);
   } else {
     const C = Math.floor(N / 4);
+    const start = floor ? { evaluations: 0 } : startArrangement(N, R, seed);
     const result = searchSchedule({
       N,
       R,
       seed,
-      maxEvaluations: MAX_EVALUATIONS,
-      initial: found ? truncatedWhistSeats(N, R, found.base) : undefined,
+      maxEvaluations: floor ? INFEASIBLE_EVALUATIONS : Math.max(0, MAX_EVALUATIONS - start.evaluations),
+      initial: start.rows,
+      targetExcess: floor,
     });
     if (result.partnerExcess !== 0) {
       throw new Error(
@@ -215,6 +222,6 @@ export function generateSchedule({ players, rounds, seed } = {}) {
     // a round, so who partners or opposes whom is unchanged.
     balanceCourts(schedule);
   }
-  schedule.equity = opponentEquity(schedule);
+  schedule.equity = opponentEquity(schedule, floor > 0);
   return schedule;
 }
