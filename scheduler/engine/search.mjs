@@ -33,7 +33,7 @@ import whist from '../whist-generate.js';
 const { mulberry32, shuffled } = whist;
 
 /** Uniform integer in [0, n). */
-const randInt = (rand, n) => Math.floor(rand() * n);
+export const randInt = (rand, n) => Math.floor(rand() * n);
 
 // A repeated partnership costs as much as one unit of opponent imbalance.
 // The hard rule is enforced by the best-arrangement order (fewest repeated

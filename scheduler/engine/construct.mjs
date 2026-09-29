@@ -40,11 +40,9 @@
 
 import whist from '../whist-generate.js';
 import { costFloor } from './feasibility.mjs';
+import { minSumOfSquares, randInt } from './search.mjs';
 
 const { mulberry32, shuffled } = whist;
-
-/** Uniform integer in [0, n). */
-const randInt = (rand, n) => Math.floor(rand() * n);
 
 /** Opponent pairs of a seat row, as pair keys i * N + j with i < j. */
 function opponentKeys(row, N, C) {
@@ -162,7 +160,9 @@ function parityObstructed(plan) {
   const { m, f, C, t, q } = plan;
   if (m % 2 !== 0 || f > 0) return false;
   const { mult, odd } = pairOrbits(plan);
-  // Allowed uses per orbit: count = mult * uses must lie in q..q+1.
+  // Allowed uses per orbit: count = mult * uses must lie in q..q+1. mult is
+  // 1 or 2, so ceil(q / mult) <= floor((q + 1) / mult): every orbit has at
+  // least one allowed use count, and only the parity can obstruct.
   let oddLo = 0;
   let oddHi = 0;
   let evenLo = 0;
@@ -170,7 +170,6 @@ function parityObstructed(plan) {
   for (let o = 0; o < mult.length; o++) {
     const lo = Math.ceil(q / mult[o]);
     const hi = Math.floor((q + 1) / mult[o]);
-    if (lo > hi) return true; // a half orbit that cannot land in the band
     if (odd[o]) {
       oddLo += lo;
       oddHi += hi;
@@ -401,10 +400,7 @@ export function bestRoundSubset(N, rows, R, seed, maxEvaluations) {
     return d;
   };
   for (let r = 0; r < R; r++) cost += toggle(r, 1);
-  const pairs = (N * (N - 1)) / 2;
-  const q = Math.floor((4 * C * R) / pairs);
-  const rem = 4 * C * R - q * pairs;
-  const lowerBound = pairs * q * q + rem * (2 * q + 1);
+  const lowerBound = minSumOfSquares(4 * C * R, (N * (N - 1)) / 2);
 
   const rand = mulberry32(seed);
   const tabuUntil = new Int32Array(total);
@@ -544,6 +540,26 @@ function balanceByes(rows, N, A) {
 const CYCLIC_BUDGET = 300000;
 const WHIST_BUDGET = 1000000; // a whole whist-like design: the hardest base rounds
 const SUBSET_BUDGET = 100000;
+// Base rounds tried for the matching round (seed, seed + 1, ...); up to 11
+// were needed over 17 seeds of 8..24 players.
+const MATCHING_ATTEMPTS = 32;
+// Evaluations a search may overrun its budget by: it checks the budget once
+// per step, and a step scores one full neighbourhood (at most 2 base rounds
+// x 24 x 24 seat pairs for a cyclic search, fewer for a subset search).
+const STEP_OVERRUN = 2 * 24 * 24;
+
+/**
+ * Upper bound on the evaluations startArrangement ever spends: every
+ * construction path it can take in one call, each at its full budget plus
+ * one step of overrun per search call. index.mjs checks at load that this
+ * leaves the local search a minimum budget.
+ */
+export const MAX_START_EVALUATIONS =
+  CYCLIC_BUDGET + // the matching round's base rounds, all attempts together
+  2 * CYCLIC_BUDGET + // cyclic developments from one and from two base rounds
+  WHIST_BUDGET + // one whist-like design (4n + 1 or 4n + 2)
+  SUBSET_BUDGET +
+  (MATCHING_ATTEMPTS + 4) * STEP_OVERRUN;
 // Whist subsets pay off near full length: with few rounds dropped a subset
 // is often already equitable, while shorter subsets of these cyclic designs
 // start far from it (every short run of shifts repeats the same oppositions)
@@ -559,7 +575,8 @@ const MAX_DROPPED = 5;
  * @returns {{rows: number[][]|null, evaluations: number}}
  */
 function nearWhistRows(N, seed) {
-  return cyclicRows(cyclicPlan(N, N - 1, 1, true), seed, WHIST_BUDGET);
+  const plan = cyclicPlan(N, N - 1, 1, true);
+  return plan ? cyclicRows(plan, seed, WHIST_BUDGET) : { rows: null, evaluations: 0 };
 }
 
 /** All N - 1 rounds of the whist tournament Wh(N), N = 4n, as seat rows. */
@@ -586,10 +603,12 @@ export function startArrangement(N, R, seed) {
   const before = N % 4 === 0 && R === N / 2 && !costFloor(N, R - 1) ? cyclicPlan(N, R - 1, 1) : null;
   if (before && before.q === 0) {
     // One matching round past the q = 0 development of R - 1 rounds; not
-    // every base round admits one, so base rounds are retried (seed + 1, ...).
-    for (let attempt = 0; evaluations < CYCLIC_BUDGET; attempt++) {
+    // every base round admits one, so base rounds are retried (seed + 1, ...)
+    // up to MATCHING_ATTEMPTS times. Each attempt counts at least one
+    // evaluation, so the loop ends even if base rounds come for free.
+    for (let attempt = 0; attempt < MATCHING_ATTEMPTS && evaluations < CYCLIC_BUDGET; attempt++) {
       const found = cyclicRows(before, seed + attempt, CYCLIC_BUDGET - evaluations);
-      evaluations += found.evaluations;
+      evaluations += Math.max(1, found.evaluations);
       const extra = found.rows && matchingRound(N, found.rows);
       if (extra) return { rows: [...found.rows, extra], evaluations };
     }
@@ -608,7 +627,8 @@ export function startArrangement(N, R, seed) {
   } else if (N % 4 === 1 && N > 9 && N - R <= MAX_DROPPED) {
     // Wh(N) for N = 4n + 1: the cyclic development over Z_N, N rounds. Z_9
     // has none (each of the 315 possible base rounds fails), so 9 is skipped.
-    const found = cyclicRows(cyclicPlan(N, N, 1), seed, WHIST_BUDGET);
+    const plan = cyclicPlan(N, N, 1);
+    const found = plan ? cyclicRows(plan, seed, WHIST_BUDGET) : { rows: null, evaluations: 0 };
     evaluations += found.evaluations;
     design = found.rows;
   } else if (N % 4 === 2 && N - 1 - R <= MAX_DROPPED) {

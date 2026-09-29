@@ -25,11 +25,31 @@
  * (partners exactly once, opponents exactly twice), with its rounds ordered
  * by that script's spacing stage (spacedWhist). With the default seed its
  * rounds are exactly the shipped web/schedules/<N>p<N-1>r.js table.
+ *
+ * Latency budget (for running in a browser). The engine is synchronous and
+ * CPU-bound; the cut-offs are evaluation counts, so results do not depend on
+ * machine speed but wall time does. Measured on a laptop (Node 22):
+ *   - Shorter schedules: at most MAX_EVALUATIONS = 3M candidate evaluations
+ *     for the constructions plus the search together, about 1 s. Shapes the
+ *     constructions solve return in milliseconds; at the default seed the
+ *     slowest shorter shape takes about 1.1 s. Proven-impossible shapes are
+ *     capped at INFEASIBLE_EVALUATIONS, about 0.1 s.
+ *   - Outside that budget: for 4n players below full length the whist base
+ *     round search of whist-generate.js (findBaseRound, its own node budget)
+ *     runs as well; unlucky seeds at 24 players take up to about 1.35 s
+ *     there, and the slowest whole call seen was about 1.9 s (24/19, seed 5).
+ *   - Full length (4n players, 4n - 1 rounds): spacedWhist's own budgets,
+ *     about 5 s at 24 players (0.3 s at 16, 0.7 s at 20).
+ *   - Evaluation cost is not uniform: a candidate costs about 0.25-0.45 us
+ *     in the search and the cyclic constructions, more on the 4n + 2
+ *     "trade" shapes (construct.mjs re-scans the sit-outs per move there).
+ * Recommendation: call it from a Web Worker, not the UI thread; the budgets
+ * are constants here and can be made configurable when the app needs it.
  */
 
 import whist from '../whist-generate.js';
 import { minSumOfSquares, searchSchedule } from './search.mjs';
-import { startArrangement } from './construct.mjs';
+import { MAX_START_EVALUATIONS, startArrangement } from './construct.mjs';
 import { costFloor } from './feasibility.mjs';
 
 const { defaultSeed, balanceCourts, spacedWhist } = whist;
@@ -44,10 +64,20 @@ export const MAX_PLAYERS = 24;
 // whist-generate.js's spacedWhist under that script's own fixed budgets
 // (SPACING_CANDIDATES base rounds, etc.), about 5 s at 24 players.
 const MAX_EVALUATIONS = 3000000;
+// The local search always gets at least this much of MAX_EVALUATIONS, however
+// much the constructions spent (they are capped well below; checked at load).
+const MIN_SEARCH_EVALUATIONS = 900000;
+if (MAX_EVALUATIONS - MAX_START_EVALUATIONS < MIN_SEARCH_EVALUATIONS) {
+  throw new Error(
+    `construction budgets (${MAX_START_EVALUATIONS}) leave the search less than ${MIN_SEARCH_EVALUATIONS} of ${MAX_EVALUATIONS} evaluations`
+  );
+}
 // Budget for a shape that provably cannot be equitable (feasibility.mjs):
-// the search stops at the proven least cost, for the small shapes within a
-// few thousand evaluations (about a millisecond); this caps, at about 0.1 s,
-// the shapes whose least cost is only a lower bound (e.g. 18/10, 22/12).
+// the search stops as soon as it reaches the shape's cost floor, a proven
+// lower bound. Where that floor is tight (a schedule at the floor is known)
+// this takes a few thousand evaluations, about a millisecond; where it is a
+// lower bound only (11/7, 18/10, 22/12) the search cannot know it is done
+// and runs to this cap, about 0.1 s. See feasibility.mjs for the trade-off.
 const INFEASIBLE_EVALUATIONS = 300000;
 
 /** The per-size seed whist-generate.js uses; the default here as well. */
@@ -146,7 +176,8 @@ function opponentEquity(schedule, infeasible) {
  * NOT always guaranteed: opponent counts within one of each other. Some
  * shapes provably cannot have it (e.g. 5 players over 2 rounds, 14 over 8;
  * see feasibility.mjs): for those `equity.infeasible` is true and the
- * search stops at the least cost possible, or after a small budget. A few
+ * search stops at the shape's cost floor (a proven lower bound), or after a
+ * small budget where the floor is not reached. A few
  * others (e.g. 17 players over 9 rounds) are not known to be impossible but
  * the search budget runs out above the optimum. Either way the call still
  * succeeds; check `schedule.equity.optimal` (and `opponentSpread`) before
@@ -175,8 +206,9 @@ export function generateSchedule({ players, rounds, seed } = {}) {
   // spacing stage, so the default seed reproduces the shipped tables. It is
   // null only if no whist base round was found; the search below then starts
   // from scratch. Shorter: the search starts from the best construction,
-  // unless the shape provably cannot be equitable (floor > 0, the proven
-  // least excess over the lower bound): then it goes straight for the floor.
+  // unless the shape provably cannot be equitable (floor > 0, a proven lower
+  // bound on its excess over the equitable cost; see feasibility.mjs): then
+  // it searches from scratch and stops as soon as it reaches the floor.
   const whole = N % 4 === 0 && R === N - 1 ? spacedWhist(N, seed) : null;
   const floor = costFloor(N, R);
 
@@ -190,7 +222,9 @@ export function generateSchedule({ players, rounds, seed } = {}) {
       N,
       R,
       seed,
-      maxEvaluations: floor ? INFEASIBLE_EVALUATIONS : Math.max(0, MAX_EVALUATIONS - start.evaluations),
+      maxEvaluations: floor
+        ? INFEASIBLE_EVALUATIONS
+        : Math.max(MIN_SEARCH_EVALUATIONS, MAX_EVALUATIONS - start.evaluations),
       initial: start.rows,
       targetExcess: floor,
     });
@@ -198,6 +232,13 @@ export function generateSchedule({ players, rounds, seed } = {}) {
       throw new Error(
         `no schedule without repeated partners found for ${N} players and ${R} rounds (seed ${seed})`
       );
+    }
+    // The search keeps sit-outs within one by construction; check anyway, as
+    // for partners, rather than return a schedule that breaks the guarantee.
+    const sitOuts = new Int32Array(N);
+    for (const row of result.seats) for (let s = 4 * C; s < N; s++) sitOuts[row[s]]++;
+    if (Math.max(...sitOuts) - Math.min(...sitOuts) > 1) {
+      throw new Error(`sit-out counts more than one apart for ${N} players and ${R} rounds (seed ${seed})`);
     }
     schedule = {
       playerCount: N,
