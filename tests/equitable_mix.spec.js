@@ -197,7 +197,9 @@ test.describe('Equitable schedules for any length', () => {
     // runs the search as below (default seed, no start, a 300k budget,
     // targetExcess = the floor). With the floor it stops after a handful of
     // evaluations; without it the same search burns its whole budget and
-    // ends at the same cost. The engine's result matches the stopped search.
+    // ends no lower (the floor is a proven lower bound, so a retuned search
+    // may match it but never beat it). The engine's result matches the
+    // stopped search.
     const budget = 300000;
     for (const [n, rounds] of [[5, 2], [5, 3], [6, 3], [6, 4], [7, 5], [9, 4], [9, 5], [10, 6], [12, 5]]) {
       const label = `${n}/${rounds}`;
@@ -208,7 +210,7 @@ test.describe('Equitable schedules for any length', () => {
       expect(stopped.cost - stopped.lowerBound, `${label}: stopped at the floor`).toBe(floor);
       expect(stopped.evaluations, `${label}: evaluations with the floor`).toBeLessThan(25000);
       expect(burned.evaluations, `${label}: evaluations without it`).toBeGreaterThanOrEqual(budget);
-      expect(burned.cost, `${label}: no better without the floor`).toBe(stopped.cost);
+      expect(burned.cost, `${label}: no better without the floor`).toBeGreaterThanOrEqual(stopped.cost);
       const equity = generateSchedule({ players: n, rounds }).equity;
       expect(equity.cost, `${label}: engine cost`).toBe(stopped.cost);
       expect(equity.infeasible, `${label}: engine flag`).toBe(true);

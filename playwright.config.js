@@ -18,6 +18,17 @@ import { defineConfig, devices } from '@playwright/test';
 const TEST_SERVER_URL = 'http://127.0.0.1:8199';
 
 /**
+ * Specs that read schedule data or call the engine directly and never touch a
+ * page. They behave identically in every browser, so they run once, in the
+ * browserless "unit" project, and every browser project ignores them.
+ */
+const NODE_ONLY_SPECS = [
+  '**/perfect_mix.spec.js',
+  '**/equitable_mix.spec.js',
+  '**/spaced_mix.spec.js',
+];
+
+/**
  * @see https://playwright.dev/docs/test-configuration
  */
 export default defineConfig({
@@ -30,8 +41,10 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   /* Opt out of parallel tests on CI. */
   workers: process.env.CI ? 1 : undefined,
-  /* Reporter to use. See https://playwright.dev/docs/test-reporters */
-  reporter: 'html',
+  /* Reporter to use. See https://playwright.dev/docs/test-reporters
+   * The html report is written but never auto-opened, so a non-interactive run
+   * cannot block on a report server; `npx playwright show-report` opens it. */
+  reporter: [['html', { open: 'never' }], ['list']],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     baseURL: TEST_SERVER_URL,
@@ -42,13 +55,23 @@ export default defineConfig({
 
   /* Configure projects for major browsers */
   projects: [
+    /* Node-only specs: no page fixture is used, so no browser is launched. */
+    {
+      name: 'unit',
+      testMatch: NODE_ONLY_SPECS,
+      // No real browser: a browser fixture here fails loudly instead of launching one.
+      use: { launchOptions: { executablePath: '/nonexistent/unit-project-is-browserless' } },
+    },
+
     {
       name: 'chromium',
+      testIgnore: NODE_ONLY_SPECS,
       use: { ...devices['Desktop Chrome'] },
     },
 
     {
       name: 'firefox',
+      testIgnore: NODE_ONLY_SPECS,
       use: { ...devices['Desktop Firefox'] },
     },
 
@@ -65,6 +88,7 @@ export default defineConfig({
     /* Test against branded browsers. */
     {
       name: 'Microsoft Edge',
+      testIgnore: NODE_ONLY_SPECS,
       use: { ...devices['Desktop Edge'], channel: 'msedge' },
     },
     // {
