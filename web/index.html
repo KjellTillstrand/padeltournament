@@ -200,8 +200,9 @@
 
 
     // Save current tournament.
+    // Returns whether the tournament was stored.
     function saveTournament() {
-      if (!currentSchedule) return;
+      if (!currentSchedule) return false;
       const tournamentName = document.getElementById("tournamentName").value.trim() || "Unnamed Tournament";
       const savedTournament = {
         tournamentName: tournamentName,
@@ -220,6 +221,7 @@
       const saved = writeStoredJson("savedTournaments", savedTournaments);
       populateSavedTournamentDropdown();
       alert(saved ? "Tournament saved!" : "The tournament could not be saved.");
+      return saved;
     }
 
     // Load tournament.
@@ -312,7 +314,11 @@
     // New tournament.
     function newTournament() {
       if (confirm("Do you want to save the current tournament before creating a new one?")) {
-        saveTournament();
+        // The Organizer asked to keep it: if it could not be stored, do not discard it.
+        if (!saveTournament()) {
+          alert("The current tournament was kept, because it could not be saved.");
+          return;
+        }
       }
       resetTournamentState();
       document.getElementById("settingsContainer").style.display = "block";

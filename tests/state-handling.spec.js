@@ -398,6 +398,41 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
+  test('When saving fails, "save first?" on New Tournament keeps the running tournament', async ({ page }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given storage that refuses the saved-tournament list, as when it is full
+    // (the live tournament state still saves, so the tournament runs normally).
+    await page.addInitScript(() => {
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === 'savedTournaments') throw new DOMException('Storage is full', 'QuotaExceededError');
+        return setItem.call(this, key, value);
+      };
+    });
+    await page.goto('/');
+    await expectATournamentCanStart(page, 'Kept Cup');
+    await page.locator('.result-overlay-left input').first().fill('10');
+
+    // When the Organizer starts a new tournament and asks to save the current one first.
+    await page.click('#newTournamentBtn');
+
+    // Then the save failure is reported and the running tournament is kept.
+    await expect.poll(() => dialogs.length).toBe(3);
+    expect(dialogs).toEqual([
+      'Do you want to save the current tournament before creating a new one?',
+      'The tournament could not be saved.',
+      'The current tournament was kept, because it could not be saved.',
+    ]);
+    await expect(page.locator('#tournamentTitle')).toHaveText('Kept Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.result-overlay-left input').first()).toHaveValue('10');
+    const live = await storedJson(page, 'tournamentState');
+    expect(live.tournamentStarted).toBe(true);
+    expect(live.tournamentName).toBe('Kept Cup');
+    expect(errors).toEqual([]);
+  });
+
   // --- Round trip: the checks are never stricter than the app's own writers ---
   test('Anything the app itself can write survives a reload', async ({ page }) => {
     const errors = collectErrors(page);
