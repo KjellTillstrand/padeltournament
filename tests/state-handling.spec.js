@@ -68,22 +68,33 @@ test.describe('General Functionality of Tournament Manager', () => {
 // The app is served from a shared GitHub Pages origin, so any sibling project
 // can write this origin's localStorage. Whatever is planted there must never
 // leave the app blank or broken: it either restores sanely or starts a fresh
-// setup, on every path that reads persisted state.
+// setup, on every path that reads persisted state. And the validation must
+// never be stricter than the app's own writers: the app's data always survives.
 test.describe('Malformed or hostile persisted state', () => {
   // An object whose conversion to a string throws: JSON cannot carry
   // functions, but it can shadow toString/valueOf with non-callable values.
   const UNPRINTABLE = { toString: 'x', valueOf: 'y' };
 
-  // A genuine started-tournament state, taken from the app itself so the seed
-  // tracks the real state shape. Read from a throwaway page so the page under
-  // test has never run the app before its planted state is in place.
-  async function captureARealTournamentState(context) {
+  // Nesting deep enough that JSON.stringify overflows in Firefox (~20k levels)
+  // and WebKit (~100k) while JSON.parse still accepts it. Spliced into the seed
+  // as raw text: building it as an object would overflow here too.
+  const DEEP = '__DEEP__';
+  const DEEP_JSON = '['.repeat(150000) + ']'.repeat(150000);
+  const toSeedWithDeepValues = (value) => JSON.stringify(value).split(`"${DEEP}"`).join(DEEP_JSON);
+
+  // A genuine tournament state, taken from the app itself so the seed tracks
+  // the real state shape. Read from a throwaway page so the page under test
+  // has never run the app before its planted state is in place. A not-started
+  // state is captured by naming a court (which saves) before starting.
+  async function captureARealTournamentState(context, { started = true } = {}) {
     const donor = await context.newPage();
     await donor.goto('/');
     await donor.fill('#tournamentName', 'Base Cup');
-    await donor.click('#startTournamentBtn');
+    if (started) await donor.click('#startTournamentBtn');
+    else await donor.fill('#courtNameInput_1', 'Centre');
     const state = JSON.parse(await donor.evaluate(() => localStorage.getItem('tournamentState')));
     await donor.close();
+    expect(state.tournamentStarted).toBe(started);
     return state;
   }
 
@@ -98,10 +109,33 @@ test.describe('Malformed or hostile persisted state', () => {
     }, entries);
   }
 
-  function collectPageErrors(page) {
+  // Uncaught exceptions AND console errors. The load handler's last-resort
+  // catch logs a console error, while rejecting bad data only warns, so this
+  // tells "validated" apart from "crashed and was rescued".
+  function collectErrors(page) {
     const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+    });
     return errors;
+  }
+
+  function collectDialogs(page) {
+    const messages = [];
+    page.on('dialog', (dialog) => {
+      messages.push(dialog.message());
+      dialog.accept();
+    });
+    return messages;
+  }
+
+  async function storedJson(page, key) {
+    return page.evaluate((k) => JSON.parse(localStorage.getItem(k)), key);
+  }
+
+  async function scoreboardCells(page) {
+    return page.locator('.scoreboard-container td').allTextContents();
   }
 
   async function expectAFreshSetup(page) {
@@ -131,7 +165,7 @@ test.describe('Malformed or hostile persisted state', () => {
   ];
   for (const [description, raw] of UNREADABLE_STATES) {
     test(`A tournament state holding ${description} falls back to a fresh setup`, async ({ page }) => {
-      const pageErrors = collectPageErrors(page);
+      const errors = collectErrors(page);
       // Given the stored tournament state is unreadable.
       await plantStorage(page, { tournamentState: raw });
 
@@ -141,7 +175,7 @@ test.describe('Malformed or hostile persisted state', () => {
       // Then it shows a fresh setup that works.
       await expectAFreshSetup(page);
       await expectATournamentCanStart(page, 'Recovered Cup');
-      expect(pageErrors).toEqual([]);
+      expect(errors).toEqual([]);
     });
   }
 
@@ -157,17 +191,16 @@ test.describe('Malformed or hostile persisted state', () => {
     ['a court number containing whitespace', (s) => { s.rounds[0].matches[0].court = '1 2'; }],
     ['an out-of-bounds court number', (s) => { s.rounds[0].matches[0].court = 99; }],
     ['an oversized player name', (s) => { renamePlayer(s, s.players[0], 'X'.repeat(5000)); }],
-    ['a player name with control characters', (s) => { renamePlayer(s, s.players[0], 'Ada\u0000\u001b[2J'); }],
+    ['duplicate player names', (s) => { s.players[1] = s.players[0]; }],
     ['a team naming an unknown player', (s) => { s.rounds[0].matches[0].teams[0][0] = 'Nobody'; }],
     ['a player count that is not a multiple of four', (s) => { s.players.push('Extra'); }],
-    ['a score that is not a string', (s) => { s.rounds[0].matches[0].result = { left: 10, right: 14 }; }],
     ['matches that are not a list', (s) => { s.rounds[0].matches = 'x'; }],
     ['no rounds', (s) => { s.rounds = []; }],
     ['a round number that cannot be printed', (s) => { s.rounds[0].roundNumber = UNPRINTABLE; }],
   ];
   for (const [description, corrupt] of HOSTILE_SCHEDULES) {
     test(`A tournament state with ${description} falls back to a fresh setup`, async ({ page, context }) => {
-      const pageErrors = collectPageErrors(page);
+      const errors = collectErrors(page);
       // Given a running tournament whose stored schedule has been tampered with.
       const state = await captureARealTournamentState(context);
       corrupt(state.schedule);
@@ -179,21 +212,43 @@ test.describe('Malformed or hostile persisted state', () => {
       // Then it shows a fresh setup that works.
       await expectAFreshSetup(page);
       await expectATournamentCanStart(page, 'Recovered Cup');
-      expect(pageErrors).toEqual([]);
+      expect(errors).toEqual([]);
     });
   }
 
-  // --- tournamentState with a sound schedule but bad side fields: sane restore ---
+  // --- tournamentState with a sound structure but bad fields: sane restore ---
   const REPAIRABLE_FIELDS = [
-    ['an out-of-range round index', (st) => { st.currentRoundIndex = 9999; }],
-    ['a round index that is not an integer', (st) => { st.currentRoundIndex = '2'; }],
-    ['a tournament name that cannot be printed', (st) => { st.tournamentName = UNPRINTABLE; }],
-    ['hostile court names', (st) => { st.courtNames = [UNPRINTABLE, 'Y'.repeat(5000), 'Centre\u0000Court']; }],
+    {
+      description: 'an out-of-range round index',
+      corrupt: (st) => { st.currentRoundIndex = 9999; },
+      title: 'Base Cup',
+    },
+    {
+      description: 'a round index that is not an integer',
+      corrupt: (st) => { st.currentRoundIndex = '2'; },
+      title: 'Base Cup',
+    },
+    {
+      description: 'a tournament name that cannot be printed',
+      corrupt: (st) => { st.tournamentName = UNPRINTABLE; },
+      title: 'Tournament Title',
+    },
+    {
+      description: 'hostile court names',
+      corrupt: (st) => { st.courtNames = [UNPRINTABLE, 'Y'.repeat(5000), 42]; },
+      title: 'Base Cup',
+      courts: ['Court 1', 'Y'.repeat(30), 'Court 3'],
+    },
+    {
+      description: 'a score that is not a string',
+      corrupt: (st) => { st.schedule.rounds[0].matches[0].result = { left: 10, right: 14 }; },
+      title: 'Base Cup',
+    },
   ];
-  for (const [description, corrupt] of REPAIRABLE_FIELDS) {
+  for (const { description, corrupt, title, courts = ['Court 1', 'Court 2', 'Court 3'] } of REPAIRABLE_FIELDS) {
     test(`A tournament state with ${description} restores the tournament sanely`, async ({ page, context }) => {
-      const pageErrors = collectPageErrors(page);
-      // Given a running tournament whose stored side fields have been tampered with.
+      const errors = collectErrors(page);
+      // Given a running tournament whose stored fields have been tampered with.
       const state = await captureARealTournamentState(context);
       corrupt(state);
       await plantStorage(page, { tournamentState: JSON.stringify(state) });
@@ -201,21 +256,49 @@ test.describe('Malformed or hostile persisted state', () => {
       // When the app loads.
       await page.goto('/');
 
-      // Then the tournament is restored with the bad fields replaced by defaults.
+      // Then the tournament is restored with the bad fields reset to defaults.
+      await expect(page.locator('#tournamentTitle')).toHaveText(title);
       await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-      await expect(page.locator('.court-label')).toHaveText(['Court 1', 'Court 2', 'Court 3']);
+      expect(await page.locator('.court-label').allTextContents()).toEqual(courts);
       await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
-      const title = await page.locator('#tournamentTitle').textContent();
-      expect(['Base Cup', 'Tournament Title']).toContain(title);
-      expect(pageErrors).toEqual([]);
+      await expect(page.locator('.result-overlay-left input').first()).toHaveValue('');
+      expect(errors).toEqual([]);
     });
   }
+
+  test('An unchecked, deeply nested extra property in a not-started state is dropped, so the tournament still starts', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a not-started tournament whose stored schedule carries extra,
+    // deeply nested properties that the app itself cannot re-serialize.
+    const state = await captureARealTournamentState(context, { started: false });
+    state.schedule.x = DEEP;
+    state.schedule.rounds[0].matches[0].y = DEEP;
+    await plantStorage(page, { tournamentState: toSeedWithDeepValues(state) });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the not-started tournament is restored.
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
+    await expect(page.locator('#courtNameInput_1')).toHaveValue('Centre');
+    await expect(page.locator('.round')).toHaveCount(0);
+
+    // And it can be started, which saves a state without the extra properties.
+    await page.click('#startTournamentBtn');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    const saved = await storedJson(page, 'tournamentState');
+    expect(saved.tournamentStarted).toBe(true);
+    expect(saved.schedule).not.toHaveProperty('x');
+    expect(saved.schedule.rounds[0].matches[0]).not.toHaveProperty('y');
+    expect(errors).toEqual([]);
+  });
 
   // --- savedTournaments ---
   for (const [description, raw] of [['invalid JSON', '[{"tournamentName": '], ['a non-list', '{"0": {}}']]) {
     test(`Saved tournaments holding ${description} leave an empty, working saved-tournament list`, async ({ page }) => {
-      const pageErrors = collectPageErrors(page);
-      page.on('dialog', (dialog) => dialog.accept());
+      const errors = collectErrors(page);
+      const dialogs = collectDialogs(page);
       // Given the stored saved-tournament list is unreadable.
       await plantStorage(page, { tournamentState: null, savedTournaments: raw });
 
@@ -230,12 +313,13 @@ test.describe('Malformed or hostile persisted state', () => {
       await page.click('#saveTournamentBtn');
       await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
       await expect(page.locator('#savedTournamentSelect option')).toContainText('Recovered Cup');
-      expect(pageErrors).toEqual([]);
+      expect(dialogs).toEqual(['Tournament saved!']);
+      expect(errors).toEqual([]);
     });
   }
 
   test('Hostile saved tournaments are skipped while a sound one still lists, names and loads', async ({ page, context }) => {
-    const pageErrors = collectPageErrors(page);
+    const errors = collectErrors(page);
     // Given the saved-tournament list mixes one sound save with hostile entries.
     const { schedule } = await captureARealTournamentState(context);
     const withBadCourt = JSON.parse(JSON.stringify(schedule));
@@ -246,7 +330,6 @@ test.describe('Malformed or hostile persisted state', () => {
       'Spring Cup',
       { tournamentName: UNPRINTABLE, schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' },
       { tournamentName: 'Bad Court Cup', schedule: withBadCourt, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' },
-      { tournamentName: 'Z'.repeat(5000), schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' },
       { tournamentName: 'No Schedule Cup', currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' },
       // Sound, apart from a timestamp that cannot be printed.
       { tournamentName: 'Spring Cup', schedule, currentRoundIndex: 1, courtNames: ['Centre'], savedAt: UNPRINTABLE },
@@ -272,6 +355,95 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#tournamentTitle')).toHaveText('Spring Cup');
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expect(page.locator('.court-label').first()).toHaveText('Centre');
-    expect(pageErrors).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('An unchecked, deeply nested extra property in a saved tournament is dropped, so saving still works', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given a saved tournament carrying extra, deeply nested properties that
+    // the app itself cannot re-serialize.
+    const { schedule } = await captureARealTournamentState(context);
+    const saved = [{
+      tournamentName: 'Spring Cup',
+      schedule: { ...schedule, x: DEEP },
+      currentRoundIndex: 0,
+      savedAt: '2026-01-01T00:00:00.000Z',
+      y: DEEP,
+    }];
+    await plantStorage(page, { tournamentState: null, savedTournaments: toSeedWithDeepValues(saved) });
+
+    // When the app loads, the save is listed.
+    await page.goto('/');
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+
+    // Then another tournament can be started and saved alongside it,
+    await expectATournamentCanStart(page, 'Summer Cup');
+    await page.click('#saveTournamentBtn');
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(2);
+    const stored = await storedJson(page, 'savedTournaments');
+    expect(stored.map((t) => t.tournamentName)).toEqual(['Spring Cup', 'Summer Cup']);
+    expect(stored[0]).not.toHaveProperty('y');
+    expect(stored[0].schedule).not.toHaveProperty('x');
+
+    // and "save first?" on New Tournament goes through to a fresh setup.
+    await page.click('#newTournamentBtn');
+    await expectAFreshSetup(page);
+    expect(dialogs).toEqual([
+      'Tournament saved!',
+      'Do you want to save the current tournament before creating a new one?',
+      'Tournament saved!',
+      'Ready for a new tournament!',
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  // --- Round trip: the checks are never stricter than the app's own writers ---
+  test('Anything the app itself can write survives a reload', async ({ page }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    const longName = 'T'.repeat(200);
+    await page.goto('/');
+    // The tournament name input is capped, so the name the app writes is bounded.
+    await expect(page.locator('#tournamentName')).toHaveAttribute('maxlength', '200');
+
+    // Given a tournament started with the longest name the input takes, a pasted
+    // control character in a player name and a court name, and a player named
+    // "__proto__",
+    await page.fill('#tournamentName', longName);
+    await page.fill('#playerInput_0', 'Ada\u0085');
+    await page.fill('#playerInput_1', '__proto__');
+    await page.fill('#courtNameInput_1', 'Centre\u0085');
+    await page.click('#startTournamentBtn');
+    expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
+    await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
+    // with an absurdly long score typed into a score box, then saved.
+    await page.locator('.result-overlay-left input').first().fill('1'.repeat(33));
+    await page.waitForTimeout(300);
+    await page.click('#saveTournamentBtn');
+
+    // When the app is reloaded.
+    await page.reload();
+
+    // Then all of it is restored as written.
+    await expect(page.locator('#tournamentTitle')).toHaveText(longName);
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.result-overlay-left input').first()).toHaveValue('1'.repeat(33));
+    expect(await page.locator('.court-1 .court-label').textContent()).toBe('Centre\u0085');
+    await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
+    expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+
+    // And a second tournament of the same name, whose unique-name suffix takes
+    // it past the input cap, is saved and restored too.
+    await page.click('#newTournamentBtn');
+    await page.fill('#tournamentName', longName);
+    await page.click('#startTournamentBtn');
+    await expect(page.locator('#tournamentName')).toHaveValue(`${longName}-1`);
+    await page.click('#saveTournamentBtn');
+    await page.reload();
+    await expect(page.locator('#tournamentTitle')).toHaveText(`${longName}-1`);
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(2);
+    expect(errors).toEqual([]);
   });
 });

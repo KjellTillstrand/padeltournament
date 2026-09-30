@@ -41,7 +41,7 @@
 
     <div class="tournament-info">
       <label for="tournamentName">Tournament Name:</label>
-      <input type="text" id="tournamentName" placeholder="Enter tournament name" />
+      <input type="text" id="tournamentName" placeholder="Enter tournament name" maxlength="200" />
     </div>
 
     <!-- Move Start Tournament Button Below -->
@@ -82,14 +82,11 @@
     let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
 
     // Limits for anything read back from localStorage (see "Persisted-state validation").
-    const MAX_PLAYER_NAME_LENGTH = 30; // the player name inputs' maxLength
+    // Each is at least as loose as what the app itself can write.
+    const MAX_PLAYER_NAME_LENGTH = 30; // the player name inputs' maxLength (start allows 20)
     const MAX_COURT_NAME_LENGTH = 30; // the court name inputs' maxLength
-    const MAX_TOURNAMENT_NAME_LENGTH = 200;
-    const MAX_PLAYERS = 64;
-    const MAX_ROUNDS = 128;
-    const MAX_SCORE_LENGTH = 32;
-    // Control characters other than tab (a text input can hold a pasted tab).
-    const CONTROL_CHARS = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
+    const MAX_PLAYERS = 64; // shipped schedules have 12-24
+    const MAX_ROUNDS = 128; // shipped schedules have 11-23
 
     // Update header when tournament name changes.
     document.getElementById("tournamentName").addEventListener("input", function () {
@@ -105,7 +102,20 @@
         tournamentName: document.getElementById("tournamentName").value,
         courtNames: courtNames.slice()
       };
-      localStorage.setItem("tournamentState", JSON.stringify(state));
+      writeStoredJson("tournamentState", state);
+    }
+
+    // Store a value as JSON. A failed write (storage full or unavailable, a value
+    // that cannot be serialized) is logged and reported as false; it never aborts
+    // the action that triggered it.
+    function writeStoredJson(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+        return true;
+      } catch (err) {
+        console.warn("Could not write localStorage value:", key, err);
+        return false;
+      }
     }
 
     // Restore the saved tournament state into memory. Returns false (and drops the
@@ -207,9 +217,9 @@
       } else {
         savedTournaments.push(savedTournament);
       }
-      localStorage.setItem("savedTournaments", JSON.stringify(savedTournaments));
+      const saved = writeStoredJson("savedTournaments", savedTournaments);
       populateSavedTournamentDropdown();
-      alert("Tournament saved!");
+      alert(saved ? "Tournament saved!" : "The tournament could not be saved.");
     }
 
     // Load tournament.
@@ -246,7 +256,7 @@
       if (confirm(`Are you sure you want to delete "${tournamentName}"? Your secret sauce will vanish forever!`)) {
         let savedTournaments = readSavedTournaments();
         savedTournaments = savedTournaments.filter(t => t.tournamentName !== tournamentName);
-        localStorage.setItem("savedTournaments", JSON.stringify(savedTournaments));
+        writeStoredJson("savedTournaments", savedTournaments);
         populateSavedTournamentDropdown();
         resetTournamentState();
         alert(`Tournament "${tournamentName}" deleted!`);
@@ -374,10 +384,13 @@
     // --- Persisted-state validation ---
     // localStorage is shared by every page on this origin, including the other
     // GitHub Pages projects served from it, so everything read back is untrusted:
-    // it is parsed defensively and shape-checked before any of it reaches the app.
-    // A schedule that fails the check is rejected whole (a stored tournamentState
-    // then falls back to a fresh setup; a saved tournament is skipped); side fields
-    // that can be repaired (round index, names) are normalized to their defaults.
+    // it is parsed defensively, shape-checked, and REBUILT from only the checked
+    // fields, so nothing unchecked (extra properties, deep nesting) ever reaches the
+    // app or is written back by it. A schedule whose structure is unusable is
+    // rejected whole (a stored tournamentState then falls back to a fresh setup; a
+    // saved tournament is skipped); fields that can be repaired (round index,
+    // names, scores) are reset to their defaults. The checks are never stricter than
+    // what the app itself writes, so the app's own data always survives a reload.
 
     function isPlainObject(value) {
       return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -395,105 +408,123 @@
       }
     }
 
-    function isCleanString(value, maxLength) {
-      return typeof value === "string" && value.length <= maxLength && !CONTROL_CHARS.test(value);
-    }
-
+    // Player names are rendered as text only, so any string the name inputs can
+    // produce is acceptable; it just has to be a non-blank string of bounded length.
     function isValidPlayerName(name) {
-      return isCleanString(name, MAX_PLAYER_NAME_LENGTH) && name.trim() !== "";
+      return typeof name === "string" && name.length <= MAX_PLAYER_NAME_LENGTH && name.trim() !== "";
     }
 
-    function isValidTournamentName(name) {
-      return isCleanString(name, MAX_TOURNAMENT_NAME_LENGTH);
-    }
-
+    // Tournament names are rendered as text only; anything but a string means "no name".
     function normalizeTournamentName(name) {
-      return isValidTournamentName(name) ? name : "";
-    }
-
-    // Scores are the raw values of the score inputs: strings ("" when not entered).
-    function isValidScore(score) {
-      return isCleanString(score, MAX_SCORE_LENGTH);
+      return typeof name === "string" ? name : "";
     }
 
     // Two teams of two, each entry an integer index into the player list.
-    function isValidTeamIndices(teamIndices, playerCount) {
-      return Array.isArray(teamIndices) && teamIndices.length === 2 && teamIndices.every(team =>
+    // Returns a copy, or null when the shape is wrong.
+    function copyTeamIndices(teamIndices, playerCount) {
+      const valid = Array.isArray(teamIndices) && teamIndices.length === 2 && teamIndices.every(team =>
         Array.isArray(team) && team.length === 2 &&
         team.every(i => Number.isInteger(i) && i >= 0 && i < playerCount));
+      return valid ? teamIndices.map(team => team.slice()) : null;
     }
 
-    function isValidMatch(match, players, courtCount, requireTeamIndices) {
-      if (!isPlainObject(match)) return false;
+    // Scores are the raw values of the score inputs: strings ("" when not entered).
+    // Anything else is repaired to "no result recorded".
+    function copyResult(result) {
+      if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return null;
+      return { left: result.left, right: result.right };
+    }
+
+    // A rebuilt match, or null when its structure is unusable.
+    function copyMatch(match, players, courtCount, requireTeamIndices) {
+      if (!isPlainObject(match)) return null;
       // The court number becomes a CSS class and a data attribute: an in-range integer only.
-      if (!Number.isInteger(match.court) || match.court < 1 || match.court > courtCount) return false;
-      if (!Array.isArray(match.teams) || match.teams.length !== 2) return false;
+      if (!Number.isInteger(match.court) || match.court < 1 || match.court > courtCount) return null;
+      if (!Array.isArray(match.teams) || match.teams.length !== 2) return null;
       const teamsValid = match.teams.every(team =>
         Array.isArray(team) && team.length === 2 &&
         team.every(player => typeof player === "string" && players.has(player)));
-      if (!teamsValid) return false;
-      if (match.result !== undefined && match.result !== null) {
-        if (!isPlainObject(match.result) || !isValidScore(match.result.left) || !isValidScore(match.result.right)) return false;
-      }
-      // teamIndices maps players to schedule slots when names are assigned at start;
-      // a tournament that has not started yet cannot do without it.
-      if (requireTeamIndices || match.teamIndices !== undefined) {
-        if (!isValidTeamIndices(match.teamIndices, players.size)) return false;
-      }
-      return true;
+      if (!teamsValid) return null;
+      const copy = {
+        court: match.court,
+        teams: match.teams.map(team => team.slice()),
+        result: copyResult(match.result)
+      };
+      // teamIndices maps players to schedule slots when names are assigned at start:
+      // a tournament that has not started yet cannot do without it; a started one
+      // never uses it again, so a bad one is simply dropped.
+      const teamIndices = copyTeamIndices(match.teamIndices, players.size);
+      if (teamIndices) copy.teamIndices = teamIndices;
+      else if (requireTeamIndices) return null;
+      return copy;
     }
 
-    // True when every part of the schedule the rounds, scoreboard and start flow
-    // read is present, of the right type and in range.
-    function isValidSchedule(schedule, requireTeamIndices) {
-      if (!isPlainObject(schedule)) return false;
+    // A copy of the schedule holding only the fields the rounds, scoreboard and start
+    // flow read, each of the right type and in range; null when it is unusable.
+    function copySchedule(schedule, requireTeamIndices) {
+      if (!isPlainObject(schedule)) return null;
       const playerList = schedule.players;
       // Every match needs its own court, so players come in whole courts of four.
       if (!Array.isArray(playerList) || playerList.length < 4 || playerList.length > MAX_PLAYERS ||
-        playerList.length % 4 !== 0) return false;
-      if (!playerList.every(isValidPlayerName)) return false;
+        playerList.length % 4 !== 0) return null;
+      if (!playerList.every(isValidPlayerName)) return null;
       const players = new Set(playerList);
-      if (players.size !== playerList.length) return false; // names must be unique
+      if (players.size !== playerList.length) return null; // names must be unique
       const courtCount = playerList.length / 4;
       const rounds = schedule.rounds;
-      if (!Array.isArray(rounds) || rounds.length < 1 || rounds.length > MAX_ROUNDS) return false;
-      return rounds.every(round =>
-        isPlainObject(round) &&
-        Number.isInteger(round.roundNumber) && round.roundNumber >= 1 && round.roundNumber <= MAX_ROUNDS &&
-        Array.isArray(round.matches) && round.matches.length >= 1 && round.matches.length <= courtCount &&
-        round.matches.every(match => isValidMatch(match, players, courtCount, requireTeamIndices)));
+      if (!Array.isArray(rounds) || rounds.length < 1 || rounds.length > MAX_ROUNDS) return null;
+      const roundCopies = [];
+      for (const round of rounds) {
+        if (!isPlainObject(round) || !Number.isInteger(round.roundNumber) ||
+          round.roundNumber < 1 || round.roundNumber > MAX_ROUNDS) return null;
+        if (!Array.isArray(round.matches) || round.matches.length < 1 || round.matches.length > courtCount) return null;
+        const matchCopies = round.matches.map(match => copyMatch(match, players, courtCount, requireTeamIndices));
+        if (matchCopies.includes(null)) return null;
+        roundCopies.push({ roundNumber: round.roundNumber, matches: matchCopies });
+      }
+      return { players: playerList.slice(), rounds: roundCopies };
     }
 
-    // The stored tournamentState with repairable fields normalized, or null when it
-    // is missing or unusable.
+    // A rebuilt copy of the stored tournamentState, or null when it is missing or
+    // unusable.
     function readTournamentState() {
       const state = readStoredJson("tournamentState");
       if (!isPlainObject(state)) return null;
       const started = state.tournamentStarted === true;
-      if (!isValidSchedule(state.schedule, !started)) return null;
+      const schedule = copySchedule(state.schedule, !started);
+      if (!schedule) return null;
       return {
-        schedule: state.schedule,
-        currentRoundIndex: normalizeRoundIndex(state.currentRoundIndex, state.schedule),
+        schedule: schedule,
+        currentRoundIndex: normalizeRoundIndex(state.currentRoundIndex, schedule),
         tournamentStarted: started,
         tournamentName: normalizeTournamentName(state.tournamentName),
         courtNames: normalizeCourtNames(state.courtNames)
       };
     }
 
-    // A saved tournament needs a usable name (it is the save's key) and schedule;
-    // loadTournament normalizes the rest. Loaded tournaments are always started,
-    // so teamIndices is not required.
-    function isValidSavedTournament(entry) {
-      return isPlainObject(entry) &&
-        isValidTournamentName(entry.tournamentName) && entry.tournamentName.trim() !== "" &&
-        isValidSchedule(entry.schedule, false);
+    // A rebuilt saved tournament, or null when it has no usable name (the save's
+    // key) or schedule. Loaded tournaments are always started, so teamIndices is
+    // not required.
+    function copySavedTournament(entry) {
+      if (!isPlainObject(entry) || typeof entry.tournamentName !== "string" || entry.tournamentName.trim() === "") return null;
+      const schedule = copySchedule(entry.schedule, false);
+      if (!schedule) return null;
+      const copy = {
+        tournamentName: entry.tournamentName,
+        schedule: schedule,
+        currentRoundIndex: normalizeRoundIndex(entry.currentRoundIndex, schedule),
+        courtNames: normalizeCourtNames(entry.courtNames)
+      };
+      if (typeof entry.savedAt === "string") copy.savedAt = entry.savedAt;
+      return copy;
     }
 
-    // The usable saved tournaments; unusable entries are skipped (and dropped from
-    // storage the next time the list is written).
+    // The usable saved tournaments, rebuilt; unusable entries are skipped (and
+    // dropped from storage the next time the list is written).
     function readSavedTournaments() {
       const saved = readStoredJson("savedTournaments");
-      return Array.isArray(saved) ? saved.filter(isValidSavedTournament) : [];
+      if (!Array.isArray(saved)) return [];
+      return saved.map(copySavedTournament).filter(entry => entry !== null);
     }
 
     function formatSavedAt(savedAt) {
@@ -503,11 +534,12 @@
     }
 
     // --- Court Names ---
-    // Keep only usable strings; anything else (missing state, legacy saves, oversized
-    // or hostile values) means "use the default".
+    // Keep only strings, cut to the inputs' maxLength; anything else (missing state,
+    // legacy saves, hostile values) means "use the default".
     function normalizeCourtNames(names) {
       if (!Array.isArray(names)) return [];
-      return names.slice(0, MAX_PLAYERS / 4).map(name => (isCleanString(name, MAX_COURT_NAME_LENGTH) ? name : ""));
+      return names.slice(0, MAX_PLAYERS / 4).map(name =>
+        (typeof name === "string" ? name.slice(0, MAX_COURT_NAME_LENGTH) : ""));
     }
 
     // A missing/non-numeric/out-of-range round index (legacy saves predate this field,
@@ -780,7 +812,8 @@
     }
 
     function updateAllScoreboards() {
-      const scores = {};
+      // No prototype, so a player named "__proto__" is scored like any other.
+      const scores = Object.create(null);
       if (currentSchedule && currentSchedule.players) {
         currentSchedule.players.forEach(player => { scores[player] = 0; });
       }
