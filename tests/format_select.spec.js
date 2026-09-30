@@ -125,7 +125,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     await expectTheMexicanoSetup(page, 12);
     const counts = await page.locator('#playerCountSelect option').allTextContents();
     expect(counts).toEqual(Array.from({ length: 17 }, (_, i) => String(i + 8)));
-    await expect(page.locator('#globalTotalPoints option')).toHaveText(['24', '32']);
+    await expect(page.locator('#globalTotalPoints option')).toHaveText(['16', '21', '24', '32']);
 
     // And the active format shall read Mexicano.
     expect(await organizer.asksFor(ActiveFormat)).toBe('Mexicano');
