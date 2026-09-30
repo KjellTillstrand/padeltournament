@@ -23,8 +23,9 @@
  * seed + 1, ...) are tried and the best-spaced one is kept. With fewer than
  * 4 courts some adjacent repeats are unavoidable (see adjacentRepeatBound)
  * and the stage instead brings their total down to that proven minimum
- * (30 for 12 players), keeping the constructed order when it is already
- * there.
+ * (24 for 8 players, 30 for 12), keeping the constructed order when it is
+ * already there. With 2 courts the minimum must also be met with no
+ * back-to-back opposition at all (see zeroBackToBackRequired).
  *
  * A court balancing pass then permutes court assignments within each
  * round (which cannot change who meets whom) so every player visits
@@ -34,10 +35,11 @@
  * meetings over the full round list. The script refuses to write any file
  * unless the partner matrix is all 1s, the opponent matrix is all 2s, no
  * player misses a court, and adjacent repeat encounters (verifySpacing) are
- * none with 4+ courts, or exactly the proven minimum with fewer.
+ * none with 4+ courts, or exactly the proven minimum with fewer (with 2
+ * courts: all of them partner-adjacent, none back-to-back).
  *
  * Usage:
- *   node scheduler/whist-generate.js            # writes all four tables
+ *   node scheduler/whist-generate.js            # writes all five tables
  *   node scheduler/whist-generate.js 16 20      # writes selected sizes
  *   node scheduler/whist-generate.js --check    # generate + verify, no write
  *
@@ -48,7 +50,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SIZES = [12, 16, 20, 24];
+const SIZES = [8, 12, 16, 20, 24];
 const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 const MAX_RESTARTS = 100000;
 const NODE_BUDGET_PER_RESTART = 20000;
@@ -587,8 +589,12 @@ function applyRoundOrder(schedule, order) {
  *
  * With 4 or more courts the bound is 0; with 3 courts (12 players) each
  * match holds at least 1 such pair, 3 per transition, 30 over 10
- * transitions. In a whist tournament partners never repeat, so every such
- * repeat is a back-to-back opposition or a partnering next to an opposition.
+ * transitions; with 2 courts (8 players) each match takes at best 2 players
+ * from each match before, so holds at least 2 such pairs, 4 per transition,
+ * 24 over 6 transitions. In a whist tournament partners never repeat, so
+ * every such repeat is a back-to-back opposition or a partnering next to an
+ * opposition. The bound counts both kinds together; it holds for every
+ * schedule, whatever its design or round order.
  */
 function adjacentRepeatBound(N) {
   const C = N / 4;
@@ -607,17 +613,37 @@ function spacingPossible(N) {
 }
 
 /**
+ * Must a table for N players have no back-to-back oppositions at all? With
+ * 4+ courts, yes (spacingPossible). With 2 courts (8 players), also yes:
+ * the adjacentRepeatBound minimum of 24 cannot be beaten, but it can always
+ * be met with every one of those repeats partner-adjacent and none
+ * back-to-back. tests/spaced_mix.spec.js shows this by exhaustive check:
+ * every one of the 720 labeled 8-player whist tournaments, in all 5040
+ * round orders, has at least 24 adjacent repeats, and every one has an order
+ * with exactly 24 and none back-to-back. Such a table therefore holds
+ * exactly 24 partner-adjacent oppositions. (Without the zero back-to-back
+ * rule there is no floor on partner-adjacent oppositions alone: back-to-back
+ * oppositions can take their place.) With 3 courts (12 players) nothing
+ * like this is established, so only the total is held to the bound.
+ */
+function zeroBackToBackRequired(N) {
+  return spacingPossible(N) || N / 4 === 2;
+}
+
+/**
  * The full perfect-mix pipeline with spacing: whist construction, the
  * spacing stage, then court balancing over the final order. Tries up to
  * `candidates` base rounds (seeds seed, seed + 1, ...), orders each one's
  * rounds with searchRoundOrder and keeps the best: first one that puts every
- * player on every court, then the best spacing score, ties going to the
+ * player on every court, then (where zeroBackToBackRequired) one with no
+ * back-to-back oppositions, then the best spacing score, ties going to the
  * earliest candidate. The result is deterministic for a given N and seed.
  *
  * With 4 or more courts every candidate is searched and the widest spacing
  * wins. With fewer, adjacent repeats cannot drop below adjacentRepeatBound(N),
  * so the search targets that total (adjacentTotal, stopAt) and stops at the
- * first candidate that reaches it with full court coverage; the constructed
+ * first candidate that reaches it with full court coverage (and, with 2
+ * courts, no back-to-back opposition); the constructed
  * order is tried first, so a construction already at the bound is kept as is.
  *
  * Returns { schedule, score, spaced, candidate, tried, built, restarts,
@@ -647,12 +673,15 @@ function spacedWhist(N, seed, { candidates = SPACING_CANDIDATES, restarts = SPAC
     // this only moves matches between courts within a round.
     balanceCourts(applyRoundOrder(schedule, result.order));
     // A base round that leaves a player off a court ranks below any that
-    // does not, whatever its spacing.
-    const rank = [courtSpread(schedule).missing.length ? 1 : 0, ...result.score];
+    // does not, whatever its spacing; next, where zero back-to-back
+    // oppositions are required (zeroBackToBackRequired), one with any ranks
+    // below one without. (With 4+ courts that count is score[0] already.)
+    const backToBack = zeroBackToBackRequired(N) ? verifySpacing(schedule).backToBack : 0;
+    const rank = [courtSpread(schedule).missing.length ? 1 : 0, backToBack, ...result.score];
     if (!best || compareScores(rank, best.rank) < 0) {
       best = { schedule, score: result.score, rank, candidate: k, restarts: found.restarts };
     }
-    if (bound > 0 && best.rank[0] === 0 && best.score[0] <= bound) break;
+    if (bound > 0 && best.rank[0] === 0 && best.rank[1] === 0 && best.score[0] <= bound) break;
   }
   if (!best) return null;
   return {
@@ -818,6 +847,12 @@ function main() {
           '(adjacentRepeatBound) and a table must meet it exactly',
         ...spacing.problems
       );
+    } else if (zeroBackToBackRequired(N) && spacing.backToBack > 0) {
+      problems.push(
+        `${spacing.backToBack} back-to-back oppositions; with ${N / 4} courts the ${bound} ` +
+          'adjacent repeats must all be partner-adjacent (zeroBackToBackRequired)',
+        ...spacing.problems
+      );
     }
     const spacingLine =
       `  spacing: ${spacing.backToBack} back-to-back oppositions, ` +
@@ -867,6 +902,7 @@ module.exports = {
   minMeetingGap,
   adjacentRepeatBound,
   spacingPossible,
+  zeroBackToBackRequired,
   spacedWhist,
   verifySpacing,
 };
