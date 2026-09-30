@@ -130,9 +130,87 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     // And the active format shall read Mexicano.
     expect(await organizer.asksFor(ActiveFormat)).toBe('Mexicano');
 
-    // And nothing can be started yet: no round is shown.
-    await page.locator('#startTournamentBtn').click({ force: true });
+    // And the choice is stored at once, not only when the page unloads.
+    let stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    expect(stored.format).toBe('mexicano');
+    expect(stored.mexicanoPlayerCount).toBe(12);
+    await organizer.attemptsTo(ChooseThePlayerCount(9));
+    stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    expect(stored.mexicanoPlayerCount).toBe(9);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: A Mexicano tournament cannot be started even with the disabled Start re-enabled', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a Mexicano setup with a tournament name,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
+    await page.fill('#tournamentName', 'Tampered Cup');
+    await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+
+    // When the disabled Start button is re-enabled (as with devtools) and clicked,
+    await page.evaluate(() => document.getElementById('startTournamentBtn').removeAttribute('disabled'));
+    await page.click('#startTournamentBtn');
+
+    // Then nothing starts: no round is shown and the stored state is not started.
     await expect(page.locator('.round')).toHaveCount(0);
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await expect(page.locator('#tournamentName')).toHaveValue('Tampered Cup');
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    expect(stored.tournamentStarted).toBe(false);
+    expect(stored.format).toBe('mexicano');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: Resetting the setup stores the kept format at once', async ({ page }) => {
+    const errors = collectErrors(page);
+    page.on('dialog', (dialog) => dialog.accept());
+    const organizer = theOrganizer(page);
+
+    // Given a Mexicano setup with a tournament name,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(14));
+    await page.fill('#tournamentName', 'Reset Cup');
+
+    // When the Organizer deletes it (which resets the setup),
+    await page.click('#deleteTournamentBtn');
+
+    // Then the reset setup, still Mexicano, is stored at once.
+    await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
+    await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    expect(stored).not.toBeNull();
+    expect(stored.tournamentStarted).toBe(false);
+    expect(stored.format).toBe('mexicano');
+    expect(stored.mexicanoPlayerCount).toBe(14);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: New Tournament stores the fresh Americano setup at once', async ({ page }) => {
+    const errors = collectErrors(page);
+    const dialogs = [];
+    page.on('dialog', (dialog) => {
+      dialogs.push(dialog.message());
+      // Decline "save first?"; accept the notice.
+      if (dialog.type() === 'confirm') dialog.dismiss(); else dialog.accept();
+    });
+    const organizer = theOrganizer(page);
+
+    // Given a running Americano tournament,
+    await organizer.attemptsTo(StartTheTournament('Old Cup'));
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+
+    // When the Organizer starts a new one without saving,
+    await page.click('#newTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(2);
+
+    // Then the fresh, nameless Americano setup is stored at once.
+    await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    expect(stored).not.toBeNull();
+    expect(stored.tournamentStarted).toBe(false);
+    expect(stored.tournamentName).toBe('');
+    expect(stored.format).toBe('americano');
     expect(errors).toEqual([]);
   });
 
@@ -180,8 +258,11 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
 
-    // Given a setup with Mexicano chosen for 10 players,
+    // Given a setup with Mexicano chosen for 10 players (stored at once),
     await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(10));
+    const before = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    expect(before.format).toBe('mexicano');
+    expect(before.mexicanoPlayerCount).toBe(10);
 
     // When the page reloads,
     await organizer.attemptsTo(ReloadThePage);
@@ -195,9 +276,38 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(errors).toEqual([]);
   });
 
+  // Site assets a variant is known not to ship; their 404 is expected and
+  // nothing else may fail to load.
+  const MISSING_SITE_ASSETS = {
+    default: [],
+    libro: [],
+    was: ['/sites/was/courts.css', '/sites/was/logo.png'],
+  };
+  const isExpectedMissing = (site, url) => {
+    let path;
+    try { path = new URL(url).pathname; } catch { return false; }
+    return MISSING_SITE_ASSETS[site].includes(path);
+  };
+
   for (const site of ['default', 'libro', 'was']) {
     test(`R-FORMAT-SELECT: The format choice renders on the ${site} site`, async ({ page }) => {
-      const errors = collectErrors(page);
+      // Script errors, and failed loads of anything but this site's known-missing assets.
+      const errors = [];
+      page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+      page.on('console', (message) => {
+        if (message.type() !== 'error') return;
+        const url = message.location().url;
+        if (message.text().includes('Failed to load resource') && isExpectedMissing(site, url)) return;
+        errors.push(`console.error: ${message.text()} (${url})`);
+      });
+      page.on('response', (response) => {
+        if (response.status() >= 400 && !isExpectedMissing(site, response.url())) {
+          errors.push(`HTTP ${response.status()}: ${response.url()}`);
+        }
+      });
+      page.on('requestfailed', (request) => {
+        if (!isExpectedMissing(site, request.url())) errors.push(`request failed: ${request.url()}`);
+      });
       const organizer = theOrganizer(page);
 
       // Given the app is opened for a site variant.
@@ -211,9 +321,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
       // And Mexicano switches the setup there too.
       await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
       await expectTheMexicanoSetup(page, 12);
-      // A missing site asset (the was site ships no courts.css) is a network
-      // 404, not a script error; only script errors count here.
-      expect(errors.filter((e) => !e.includes('Failed to load resource'))).toEqual([]);
+      expect(errors).toEqual([]);
     });
   }
 });

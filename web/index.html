@@ -100,6 +100,7 @@
     // can be started today); Mexicano is set up by player count, and its rounds will be
     // generated from the standings during play (not available yet).
     const FORMATS = ["americano", "mexicano"];
+    const STARTABLE_FORMATS = ["americano"]; // formats a tournament can be started (and saved) in
     const DEFAULT_FORMAT = "americano";
     const MIN_MEXICANO_PLAYERS = 8;
     const MAX_MEXICANO_PLAYERS = 24;
@@ -362,10 +363,11 @@
           return;
         }
       }
-      resetTournamentState();
-      document.getElementById("settingsContainer").style.display = "block";
+      // Clear the name first: resetTournamentState saves the new, empty setup.
       document.getElementById("tournamentName").value = "";
       document.getElementById("tournamentTitle").textContent = "Tournament Title";
+      resetTournamentState();
+      document.getElementById("settingsContainer").style.display = "block";
       alert("Ready for a new tournament!");
     }
 
@@ -386,6 +388,7 @@
       localStorage.removeItem("tournamentState");
       loadScheduleFromModule(document.getElementById("scheduleSelect").value);
       applyFormatUI(); // the chosen format is kept; Mexicano keeps Start disabled
+      saveTournamentState(); // persist the kept format now, not only on unload
     }
 
     function populateSavedTournamentDropdown() {
@@ -477,6 +480,13 @@
     }
 
     // The Mexicano player count is an integer in the range the setup offers, else the default.
+    // The format of a started (or saved) tournament: only a format that can be started
+    // is kept. The app never writes a started tournament in any other format.
+    function normalizeStartedFormat(format) {
+      const known = normalizeFormat(format);
+      return STARTABLE_FORMATS.includes(known) ? known : DEFAULT_FORMAT;
+    }
+
     function normalizeMexicanoPlayerCount(count) {
       return Number.isInteger(count) && count >= MIN_MEXICANO_PLAYERS && count <= MAX_MEXICANO_PLAYERS
         ? count : DEFAULT_MEXICANO_PLAYERS;
@@ -562,7 +572,7 @@
         tournamentStarted: started,
         tournamentName: normalizeTournamentName(state.tournamentName),
         courtNames: normalizeCourtNames(state.courtNames),
-        format: normalizeFormat(state.format),
+        format: started ? normalizeStartedFormat(state.format) : normalizeFormat(state.format),
         mexicanoPlayerCount: normalizeMexicanoPlayerCount(state.mexicanoPlayerCount)
       };
     }
@@ -579,7 +589,7 @@
         schedule: schedule,
         currentRoundIndex: normalizeRoundIndex(entry.currentRoundIndex, schedule),
         courtNames: normalizeCourtNames(entry.courtNames),
-        format: normalizeFormat(entry.format)
+        format: normalizeStartedFormat(entry.format) // saved tournaments are always started
       };
       if (typeof entry.savedAt === "string") copy.savedAt = entry.savedAt;
       return copy;

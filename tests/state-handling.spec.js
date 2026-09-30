@@ -289,6 +289,75 @@ test.describe('Malformed or hostile persisted state', () => {
     });
   }
 
+  // The settings panel of a running tournament: open it unless it already is.
+  async function showTheSettings(page) {
+    if (!(await page.locator('#settingsContainer').isVisible())) await page.click('#toggleSettingsBtn');
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+  }
+
+  // --- A started tournament in a format that cannot be started yet ---
+  // The app only ever starts (and saves) Americano, so a started Mexicano state
+  // can only have been planted: it is restored, and loaded, as Americano.
+  test('A started state claiming Mexicano restores as a normal Americano tournament', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a running tournament whose stored format claims Mexicano.
+    const state = await captureARealTournamentState(context);
+    state.format = 'mexicano';
+    state.mexicanoPlayerCount = 16;
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then it runs as an Americano tournament,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#formatSelect')).toHaveValue('americano');
+    // with the Americano settings (locked, as for any running tournament),
+    await showTheSettings(page);
+    await expect(page.locator('#scheduleSelect')).toBeVisible();
+    await expect(page.locator('#scheduleSelect')).toBeDisabled();
+    await expect(page.locator('#playerCountSelect')).toBeHidden();
+    await expect(page.locator('#playerInput_0')).toBeVisible();
+    await expect(page.locator('#courtNameInput_1')).toBeVisible();
+    await expect(page.locator('#mexicanoComingSoon')).toBeHidden();
+    // and the state it saves reads Americano, as does a save of it.
+    expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+    collectDialogs(page);
+    await page.click('#saveTournamentBtn');
+    expect((await storedJson(page, 'savedTournaments'))[0].format).toBe('americano');
+    expect(errors).toEqual([]);
+  });
+
+  test('A saved tournament claiming Mexicano loads as a normal Americano tournament', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given a saved tournament whose format claims Mexicano.
+    const { schedule } = await captureARealTournamentState(context);
+    const saved = [{ tournamentName: 'Winter Cup', schedule, currentRoundIndex: 1, format: 'mexicano', savedAt: '2026-01-01T00:00:00.000Z' }];
+    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+
+    // When the app loads and the Organizer loads the save.
+    await page.goto('/');
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    await page.click('#loadTournamentBtn');
+
+    // Then it runs as an Americano tournament at its saved round,
+    await expect(page.locator('#tournamentTitle')).toHaveText('Winter Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expect(page.locator('#formatSelect')).toHaveValue('americano');
+    // with the Americano settings,
+    await showTheSettings(page);
+    await expect(page.locator('#scheduleSelect')).toBeVisible();
+    await expect(page.locator('#playerCountSelect')).toBeHidden();
+    await expect(page.locator('#courtNameInput_1')).toBeVisible();
+    await expect(page.locator('#mexicanoComingSoon')).toBeHidden();
+    // and what it stores and re-saves reads Americano.
+    expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+    await page.click('#saveTournamentBtn');
+    expect((await storedJson(page, 'savedTournaments'))[0].format).toBe('americano');
+    expect(errors).toEqual([]);
+  });
+
   // --- The tournament format in a not-started state ---
   const NOT_STARTED_FORMATS = [
     // [description, stored format, stored player count, restored format, restored count]
