@@ -25,7 +25,17 @@
 
   <div id="settingsContainer">
     <div class="global-controls">
-      <label for="scheduleSelect">Select Schedule:</label>
+      <label for="formatSelect">Format:</label>
+      <select id="formatSelect">
+        <option value="americano" selected>Americano</option>
+        <option value="mexicano">Mexicano</option>
+      </select>
+      <!-- Mexicano: the Organizer picks a player count; rounds are generated during play. -->
+      <label for="playerCountSelect" id="playerCountLabel" style="display:none;">Players:</label>
+      <select id="playerCountSelect" style="display:none;">
+        <!-- Options (MIN_MEXICANO_PLAYERS..MAX_MEXICANO_PLAYERS) are generated below. -->
+      </select>
+      <label for="scheduleSelect" id="scheduleSelectLabel">Select Schedule:</label>
       <select id="scheduleSelect">
         <option value="8p7r.js">8 Player, 7 Round Schedule</option>
         <option value="12p11r.js" selected>12 Player, 11 Round Schedule</option>
@@ -49,6 +59,9 @@
     <!-- Move Start Tournament Button Below -->
     <div class="start-button-container">
       <button id="startTournamentBtn">Start Tournament</button>
+      <p id="mexicanoComingSoon" role="status" style="display:none;">
+        Mexicano is coming soon: rounds cannot be generated yet, so a Mexicano tournament cannot be started.
+      </p>
     </div>
 
     <div id="playerInputsContainer">
@@ -83,6 +96,18 @@
     let currentRoundIndex = 0; // 0-indexed
     let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
 
+    // Tournament format. Americano plays a precomputed schedule (the only format that
+    // can be started today); Mexicano is set up by player count, and its rounds will be
+    // generated from the standings during play (not available yet).
+    const FORMATS = ["americano", "mexicano"];
+    const STARTABLE_FORMATS = ["americano"]; // formats a tournament can be started (and saved) in
+    const DEFAULT_FORMAT = "americano";
+    const MIN_MEXICANO_PLAYERS = 8;
+    const MAX_MEXICANO_PLAYERS = 24;
+    const DEFAULT_MEXICANO_PLAYERS = 12;
+    let tournamentFormat = DEFAULT_FORMAT;
+    let mexicanoPlayerCount = DEFAULT_MEXICANO_PLAYERS;
+
     // Limits for anything read back from localStorage (see "Persisted-state validation").
     // Each is at least as loose as what the app itself can write.
     const MAX_PLAYER_NAME_LENGTH = 30; // the player name inputs' maxLength (start allows 20)
@@ -102,7 +127,9 @@
         currentRoundIndex: currentRoundIndex,
         tournamentStarted: tournamentStarted,
         tournamentName: document.getElementById("tournamentName").value,
-        courtNames: courtNames.slice()
+        courtNames: courtNames.slice(),
+        format: tournamentFormat,
+        mexicanoPlayerCount: mexicanoPlayerCount
       };
       writeStoredJson("tournamentState", state);
     }
@@ -136,6 +163,8 @@
       currentRoundIndex = state.currentRoundIndex;
       tournamentStarted = state.tournamentStarted;
       courtNames = state.courtNames;
+      tournamentFormat = state.format;
+      mexicanoPlayerCount = state.mexicanoPlayerCount;
       document.getElementById("tournamentName").value = state.tournamentName;
       document.getElementById("tournamentTitle").textContent = state.tournamentName || "Tournament Title";
       return true;
@@ -144,6 +173,8 @@
     // Discard whatever is in memory and show the setup for a new tournament.
     function startFreshSetup() {
       courtNames = [];
+      tournamentFormat = DEFAULT_FORMAT;
+      mexicanoPlayerCount = DEFAULT_MEXICANO_PLAYERS;
       document.getElementById("tournamentName").value = "";
       document.getElementById("tournamentTitle").textContent = "Tournament Title";
       resetTournamentState(); // also drops the stored state and loads the default schedule
@@ -187,7 +218,10 @@
         console.error("No schedule loaded; please load a schedule first.");
       }
 
-      // 5. Show either the tournament round (if running) or the settings for new tournament.
+      // 5. Show the setup controls of the active format (restored or the default).
+      applyFormatUI();
+
+      // 6. Show either the tournament round (if running) or the settings for new tournament.
       if (tournamentStarted) {
         disableSettings();
         document.getElementById("toggleSettingsBtn").style.display = "block";
@@ -211,6 +245,7 @@
         schedule: currentSchedule,
         currentRoundIndex: currentRoundIndex,
         courtNames: courtNames.slice(),
+        format: tournamentFormat,
         savedAt: new Date().toISOString()
       };
       let savedTournaments = readSavedTournaments();
@@ -241,6 +276,9 @@
         // Tournaments saved before court names existed carry none: use the defaults.
         courtNames = normalizeCourtNames(selectedTournament.courtNames);
         generateCourtNameInputs();
+        // Tournaments saved before formats existed carry none: they are Americano.
+        tournamentFormat = selectedTournament.format;
+        applyFormatUI();
         document.getElementById("tournamentName").value = selectedTournament.tournamentName;
         document.getElementById("tournamentTitle").textContent = selectedTournament.tournamentName;
         disableSettings();
@@ -284,6 +322,9 @@
 
 
     document.getElementById("startTournamentBtn").addEventListener("click", function () {
+      // Only Americano can be started for now (the button is disabled for Mexicano).
+      if (tournamentFormat !== "americano") return;
+
       // Get and trim tournament name.
       let tournamentName = document.getElementById("tournamentName").value.trim();
       if (!tournamentName) {
@@ -322,10 +363,11 @@
           return;
         }
       }
-      resetTournamentState();
-      document.getElementById("settingsContainer").style.display = "block";
+      // Clear the name first: resetTournamentState saves the new, empty setup.
       document.getElementById("tournamentName").value = "";
       document.getElementById("tournamentTitle").textContent = "Tournament Title";
+      resetTournamentState();
+      document.getElementById("settingsContainer").style.display = "block";
       alert("Ready for a new tournament!");
     }
 
@@ -334,6 +376,8 @@
       tournamentStarted = false;
       currentSchedule = null;
       currentRoundIndex = 0;
+      document.getElementById("formatSelect").disabled = false;
+      document.getElementById("playerCountSelect").disabled = false;
       document.getElementById("scheduleSelect").disabled = false;
       document.getElementById("globalTotalPoints").disabled = false;
       document.getElementById("tournamentName").disabled = false;
@@ -343,6 +387,8 @@
       document.getElementById("toggleSettingsBtn").style.display = "none";
       localStorage.removeItem("tournamentState");
       loadScheduleFromModule(document.getElementById("scheduleSelect").value);
+      applyFormatUI(); // the chosen format is kept; Mexicano keeps Start disabled
+      saveTournamentState(); // persist the kept format now, not only on unload
     }
 
     function populateSavedTournamentDropdown() {
@@ -427,6 +473,25 @@
       return typeof name === "string" ? name : "";
     }
 
+    // Only a known format is kept; anything else (state saved before formats existed,
+    // hostile values) means Americano, the format every older tournament was played in.
+    function normalizeFormat(format) {
+      return typeof format === "string" && FORMATS.includes(format) ? format : DEFAULT_FORMAT;
+    }
+
+    // The Mexicano player count is an integer in the range the setup offers, else the default.
+    // The format of a started (or saved) tournament: only a format that can be started
+    // is kept. The app never writes a started tournament in any other format.
+    function normalizeStartedFormat(format) {
+      const known = normalizeFormat(format);
+      return STARTABLE_FORMATS.includes(known) ? known : DEFAULT_FORMAT;
+    }
+
+    function normalizeMexicanoPlayerCount(count) {
+      return Number.isInteger(count) && count >= MIN_MEXICANO_PLAYERS && count <= MAX_MEXICANO_PLAYERS
+        ? count : DEFAULT_MEXICANO_PLAYERS;
+    }
+
     // Two teams of two, each entry an integer index into the player list.
     // Returns a copy, or null when the shape is wrong.
     function copyTeamIndices(teamIndices, playerCount) {
@@ -506,7 +571,9 @@
         currentRoundIndex: normalizeRoundIndex(state.currentRoundIndex, schedule),
         tournamentStarted: started,
         tournamentName: normalizeTournamentName(state.tournamentName),
-        courtNames: normalizeCourtNames(state.courtNames)
+        courtNames: normalizeCourtNames(state.courtNames),
+        format: started ? normalizeStartedFormat(state.format) : normalizeFormat(state.format),
+        mexicanoPlayerCount: normalizeMexicanoPlayerCount(state.mexicanoPlayerCount)
       };
     }
 
@@ -521,7 +588,8 @@
         tournamentName: entry.tournamentName,
         schedule: schedule,
         currentRoundIndex: normalizeRoundIndex(entry.currentRoundIndex, schedule),
-        courtNames: normalizeCourtNames(entry.courtNames)
+        courtNames: normalizeCourtNames(entry.courtNames),
+        format: normalizeStartedFormat(entry.format) // saved tournaments are always started
       };
       if (typeof entry.savedAt === "string") copy.savedAt = entry.savedAt;
       return copy;
@@ -873,6 +941,8 @@
     }
 
     function disableSettings() {
+      document.getElementById("formatSelect").disabled = true;
+      document.getElementById("playerCountSelect").disabled = true;
       document.getElementById("scheduleSelect").disabled = true;
       document.getElementById("globalTotalPoints").disabled = true;
       // Remove or comment out the next line so the tournament name remains enabled.
@@ -920,6 +990,54 @@
       document.getElementById("tournamentContainer").innerHTML = "";
       localStorage.removeItem("tournamentState");
     }
+
+    // --- Tournament format ---
+    function populatePlayerCountSelect() {
+      const select = document.getElementById("playerCountSelect");
+      for (let count = MIN_MEXICANO_PLAYERS; count <= MAX_MEXICANO_PLAYERS; count++) {
+        const option = document.createElement("option");
+        option.value = String(count);
+        option.textContent = String(count);
+        select.appendChild(option);
+      }
+    }
+    populatePlayerCountSelect();
+
+    // Show the setup controls of the active format. Americano: the precomputed
+    // schedules, player names and court names, exactly as before formats existed.
+    // Mexicano: a player count instead of a schedule, and Start stays disabled until
+    // Mexicano rounds can be generated. The points control is shared by both.
+    // Visibility is set via style.display, because the player-name grid's own CSS
+    // display would override the hidden attribute.
+    function applyFormatUI() {
+      const mexicano = tournamentFormat === "mexicano";
+      const show = (element, visible) => { element.style.display = visible ? "" : "none"; };
+      // Set from memory, which also overrides any form state the browser restored on reload.
+      document.getElementById("formatSelect").value = tournamentFormat;
+      document.getElementById("playerCountSelect").value = String(mexicanoPlayerCount);
+      show(document.getElementById("scheduleSelectLabel"), !mexicano);
+      show(document.getElementById("scheduleSelect"), !mexicano);
+      show(document.getElementById("playerCountLabel"), mexicano);
+      show(document.getElementById("playerCountSelect"), mexicano);
+      show(document.getElementById("playerInputsContainer"), !mexicano);
+      show(document.querySelector(".court-names-section"), !mexicano);
+      show(document.getElementById("mexicanoComingSoon"), mexicano);
+      // A running tournament keeps its locked setup (see disableSettings).
+      if (!tournamentStarted) document.getElementById("startTournamentBtn").disabled = mexicano;
+    }
+
+    // A format or player-count choice is saved right away, so it survives a reload
+    // before the tournament starts.
+    document.getElementById("formatSelect").addEventListener("change", function () {
+      tournamentFormat = normalizeFormat(this.value);
+      applyFormatUI();
+      saveTournamentState();
+    });
+    document.getElementById("playerCountSelect").addEventListener("change", function () {
+      mexicanoPlayerCount = normalizeMexicanoPlayerCount(parseInt(this.value, 10));
+      applyFormatUI();
+      saveTournamentState();
+    });
 
     // Event Listeners.
     document.getElementById("scheduleSelect").addEventListener("change", function () {

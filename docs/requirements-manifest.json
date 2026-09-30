@@ -23,6 +23,7 @@
     },
     { "tag": "R-PERFECT-MIX", "id": 23, "title": "Full-length tournaments mix everyone perfectly", "method": "Automated Test" },
     { "tag": "R-EQUITABLE-MIX", "id": 24, "title": "Any-length schedules stay equitable", "method": "Automated Test" },
-    { "tag": "R-SPACED-MIX", "id": 34, "title": "Repeat encounters are spread across the tournament", "method": "Automated Test" }
+    { "tag": "R-SPACED-MIX", "id": 34, "title": "Repeat encounters are spread across the tournament", "method": "Automated Test" },
+    { "tag": "R-FORMAT-SELECT", "id": 42, "title": "Choose the tournament format", "method": "Automated Test" }
   ]
 }

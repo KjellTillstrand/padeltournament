@@ -244,6 +244,27 @@ test.describe('Malformed or hostile persisted state', () => {
       corrupt: (st) => { st.schedule.rounds[0].matches[0].result = { left: 10, right: 14 }; },
       title: 'Base Cup',
     },
+    {
+      description: 'a format that is markup',
+      corrupt: (st) => { st.format = '<script>alert(1)</script>'; },
+      title: 'Base Cup',
+    },
+    {
+      description: 'a format that is not a string',
+      corrupt: (st) => { st.format = 42; },
+      title: 'Base Cup',
+    },
+    {
+      description: 'a format that cannot be printed',
+      corrupt: (st) => { st.format = UNPRINTABLE; },
+      title: 'Base Cup',
+    },
+    {
+      // State saved before formats existed.
+      description: 'no format (legacy state)',
+      corrupt: (st) => { delete st.format; delete st.mexicanoPlayerCount; },
+      title: 'Base Cup',
+    },
   ];
   for (const { description, corrupt, title, courts = ['Court 1', 'Court 2', 'Court 3'] } of REPAIRABLE_FIELDS) {
     test(`A tournament state with ${description} restores the tournament sanely`, async ({ page, context }) => {
@@ -262,6 +283,123 @@ test.describe('Malformed or hostile persisted state', () => {
       expect(await page.locator('.court-label').allTextContents()).toEqual(courts);
       await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
       await expect(page.locator('.result-overlay-left input').first()).toHaveValue('');
+      // Every repaired or legacy state is an Americano tournament.
+      await expect(page.locator('#formatSelect')).toHaveValue('americano');
+      expect(errors).toEqual([]);
+    });
+  }
+
+  // The settings panel of a running tournament: open it unless it already is.
+  async function showTheSettings(page) {
+    if (!(await page.locator('#settingsContainer').isVisible())) await page.click('#toggleSettingsBtn');
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+  }
+
+  // --- A started tournament in a format that cannot be started yet ---
+  // The app only ever starts (and saves) Americano, so a started Mexicano state
+  // can only have been planted: it is restored, and loaded, as Americano.
+  test('A started state claiming Mexicano restores as a normal Americano tournament', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a running tournament whose stored format claims Mexicano.
+    const state = await captureARealTournamentState(context);
+    state.format = 'mexicano';
+    state.mexicanoPlayerCount = 16;
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then it runs as an Americano tournament,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#formatSelect')).toHaveValue('americano');
+    // with the Americano settings (locked, as for any running tournament),
+    await showTheSettings(page);
+    await expect(page.locator('#scheduleSelect')).toBeVisible();
+    await expect(page.locator('#scheduleSelect')).toBeDisabled();
+    await expect(page.locator('#playerCountSelect')).toBeHidden();
+    await expect(page.locator('#playerInput_0')).toBeVisible();
+    await expect(page.locator('#courtNameInput_1')).toBeVisible();
+    await expect(page.locator('#mexicanoComingSoon')).toBeHidden();
+    // and the state it saves reads Americano, as does a save of it.
+    expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+    collectDialogs(page);
+    await page.click('#saveTournamentBtn');
+    expect((await storedJson(page, 'savedTournaments'))[0].format).toBe('americano');
+    expect(errors).toEqual([]);
+  });
+
+  test('A saved tournament claiming Mexicano loads as a normal Americano tournament', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given a saved tournament whose format claims Mexicano.
+    const { schedule } = await captureARealTournamentState(context);
+    const saved = [{ tournamentName: 'Winter Cup', schedule, currentRoundIndex: 1, format: 'mexicano', savedAt: '2026-01-01T00:00:00.000Z' }];
+    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+
+    // When the app loads and the Organizer loads the save.
+    await page.goto('/');
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    await page.click('#loadTournamentBtn');
+
+    // Then it runs as an Americano tournament at its saved round,
+    await expect(page.locator('#tournamentTitle')).toHaveText('Winter Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expect(page.locator('#formatSelect')).toHaveValue('americano');
+    // with the Americano settings,
+    await showTheSettings(page);
+    await expect(page.locator('#scheduleSelect')).toBeVisible();
+    await expect(page.locator('#playerCountSelect')).toBeHidden();
+    await expect(page.locator('#courtNameInput_1')).toBeVisible();
+    await expect(page.locator('#mexicanoComingSoon')).toBeHidden();
+    // and what it stores and re-saves reads Americano.
+    expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+    await page.click('#saveTournamentBtn');
+    expect((await storedJson(page, 'savedTournaments'))[0].format).toBe('americano');
+    expect(errors).toEqual([]);
+  });
+
+  // --- The tournament format in a not-started state ---
+  const NOT_STARTED_FORMATS = [
+    // [description, stored format, stored player count, restored format, restored count]
+    ['no format (legacy state)', undefined, undefined, 'americano', '12'],
+    ['a format that is markup', '<script>alert(1)</script>', 16, 'americano', '16'],
+    ['a format that is not a string', 42, 16, 'americano', '16'],
+    ['a format in the wrong case', 'Mexicano', 16, 'americano', '16'],
+    ['Mexicano with a player count below the range', 'mexicano', 7, 'mexicano', '12'],
+    ['Mexicano with a player count above the range', 'mexicano', 25, 'mexicano', '12'],
+    ['Mexicano with a fractional player count', 'mexicano', 12.5, 'mexicano', '12'],
+    ['Mexicano with a player count that is a string', 'mexicano', '12', 'mexicano', '12'],
+    ['Mexicano with a player count that is markup', 'mexicano', '<b>9</b>', 'mexicano', '12'],
+  ];
+  for (const [description, format, count, restoredFormat, restoredCount] of NOT_STARTED_FORMATS) {
+    test(`A not-started state with ${description} restores the setup sanely`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a not-started tournament whose stored format fields are legacy or tampered.
+      const state = await captureARealTournamentState(context, { started: false });
+      if (format === undefined) delete state.format; else state.format = format;
+      if (count === undefined) delete state.mexicanoPlayerCount; else state.mexicanoPlayerCount = count;
+      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+      // When the app loads.
+      await page.goto('/');
+
+      // Then the setup is restored with a known format and an in-range player count.
+      await expect(page.locator('#settingsContainer')).toBeVisible();
+      await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
+      await expect(page.locator('#formatSelect')).toHaveValue(restoredFormat);
+      await expect(page.locator('#playerCountSelect')).toHaveValue(restoredCount);
+      if (restoredFormat === 'americano') {
+        // And an Americano setup is unchanged and still starts.
+        await expect(page.locator('#courtNameInput_1')).toHaveValue('Centre');
+        await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+        await page.click('#startTournamentBtn');
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+        expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+      } else {
+        await expect(page.locator('#playerCountSelect')).toBeVisible();
+        await expect(page.locator('#scheduleSelect')).toBeHidden();
+        await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+      }
       expect(errors).toEqual([]);
     });
   }
@@ -355,8 +493,32 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#tournamentTitle')).toHaveText('Spring Cup');
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expect(page.locator('.court-label').first()).toHaveText('Centre');
+    // And, saved before formats existed, it loads as Americano.
+    await expect(page.locator('#formatSelect')).toHaveValue('americano');
     expect(errors).toEqual([]);
   });
+
+  for (const [description, format] of [['a format that is markup', '<script>'], ['a format that is not a string', 42]]) {
+    test(`A saved tournament with ${description} loads as Americano`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a saved tournament whose format has been tampered with.
+      const { schedule } = await captureARealTournamentState(context);
+      const saved = [{ tournamentName: 'Autumn Cup', schedule, currentRoundIndex: 0, format, savedAt: '2026-01-01T00:00:00.000Z' }];
+      await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+
+      // When the app loads and the Organizer loads the save.
+      await page.goto('/');
+      await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+      await page.click('#loadTournamentBtn');
+
+      // Then it plays as an Americano tournament, and that is what is stored.
+      await expect(page.locator('#tournamentTitle')).toHaveText('Autumn Cup');
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('#formatSelect')).toHaveValue('americano');
+      expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+      expect(errors).toEqual([]);
+    });
+  }
 
   test('An unchecked, deeply nested extra property in a saved tournament is dropped, so saving still works', async ({ page, context }) => {
     const errors = collectErrors(page);
@@ -468,6 +630,10 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
     expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
     await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    // And its format is kept, in the live state and in the save.
+    await expect(page.locator('#formatSelect')).toHaveValue('americano');
+    expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+    expect((await storedJson(page, 'savedTournaments'))[0].format).toBe('americano');
 
     // And a second tournament of the same name, whose unique-name suffix takes
     // it past the input cap, is saved and restored too.
@@ -479,6 +645,27 @@ test.describe('Malformed or hostile persisted state', () => {
     await page.reload();
     await expect(page.locator('#tournamentTitle')).toHaveText(`${longName}-1`);
     await expect(page.locator('#savedTournamentSelect option')).toHaveCount(2);
+    expect(errors).toEqual([]);
+  });
+
+  test('Every Mexicano setup the app can write survives a reload', async ({ page }) => {
+    const errors = collectErrors(page);
+    await page.goto('/');
+    // Given each end of the offered player-count range, chosen for Mexicano,
+    for (const count of ['8', '24']) {
+      await page.selectOption('#formatSelect', 'mexicano');
+      await page.selectOption('#playerCountSelect', count);
+
+      // When the app is reloaded,
+      await page.reload();
+
+      // Then the Mexicano setup is restored as written.
+      await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
+      await expect(page.locator('#playerCountSelect')).toHaveValue(count);
+      const stored = await storedJson(page, 'tournamentState');
+      expect(stored.format).toBe('mexicano');
+      expect(stored.mexicanoPlayerCount).toBe(Number(count));
+    }
     expect(errors).toEqual([]);
   });
 });
