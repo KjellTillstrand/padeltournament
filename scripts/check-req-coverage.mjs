@@ -8,7 +8,7 @@
 // "Automated Test" has at least one passing test whose OWN title (not its
 // describe path) carries that requirement's tag, per the manifest title
 // convention: "R-TAG: <scenario>" or "R-A, R-B: <scenario>". A test passing in
-// at least one browser project counts.
+// at least one project counts.
 //
 // Exit codes:
 //   0  every Automated Test requirement is covered by a passing test

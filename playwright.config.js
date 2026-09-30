@@ -59,6 +59,8 @@ export default defineConfig({
     {
       name: 'unit',
       testMatch: NODE_ONLY_SPECS,
+      // No real browser: a browser fixture here fails loudly instead of launching one.
+      use: { launchOptions: { executablePath: '/nonexistent/unit-project-is-browserless' } },
     },
 
     {
