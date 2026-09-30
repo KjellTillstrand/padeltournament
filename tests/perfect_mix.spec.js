@@ -52,6 +52,7 @@ function offTarget(counts, target) {
 }
 
 const SIZES = [
+  { players: 8, rounds: 7 },
   { players: 12, rounds: 11 },
   { players: 16, rounds: 15 },
   { players: 20, rounds: 19 },

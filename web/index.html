@@ -5,6 +5,7 @@
   <meta charset="UTF-8">
   <title>Padel Turrar Tournament Manager</title>
   <link rel="stylesheet" href="css/style.css">
+  <script src="schedules/8p7r.js"></script>
   <script src="schedules/12p11r.js"></script>
   <script src="schedules/16p15r.js"></script>
   <script src="schedules/20p19r.js"></script>
@@ -26,7 +27,8 @@
     <div class="global-controls">
       <label for="scheduleSelect">Select Schedule:</label>
       <select id="scheduleSelect">
-        <option value="12p11r.js">12 Player, 11 Round Schedule</option>
+        <option value="8p7r.js">8 Player, 7 Round Schedule</option>
+        <option value="12p11r.js" selected>12 Player, 11 Round Schedule</option>
         <option value="16p15r.js">16 Player, 15 Round Schedule</option>
         <option value="20p19r.js">20 Player, 19 Round Schedule</option>
         <option value="24p23r.js">24 Player, 23 Round Schedule</option>
@@ -85,8 +87,8 @@
     // Each is at least as loose as what the app itself can write.
     const MAX_PLAYER_NAME_LENGTH = 30; // the player name inputs' maxLength (start allows 20)
     const MAX_COURT_NAME_LENGTH = 30; // the court name inputs' maxLength
-    const MAX_PLAYERS = 64; // shipped schedules have 12-24
-    const MAX_ROUNDS = 128; // shipped schedules have 11-23
+    const MAX_PLAYERS = 64; // shipped schedules have 8-24
+    const MAX_ROUNDS = 128; // shipped schedules have 7-23
 
     // Update header when tournament name changes.
     document.getElementById("tournamentName").addEventListener("input", function () {
@@ -889,7 +891,9 @@
     // Updated loadSchedule function to use global variables from separate JS files.
     function loadScheduleFromModule(moduleName) {
       // Here we check moduleName and assign currentSchedule from global variables.
-      if (moduleName === "12p11r.js") {
+      if (moduleName === "8p7r.js") {
+        currentSchedule = window.schedule8p7r;
+      } else if (moduleName === "12p11r.js") {
         currentSchedule = window.schedule12p11r;
       } else if (moduleName === "16p15r.js") {
         currentSchedule = window.schedule16p15r;

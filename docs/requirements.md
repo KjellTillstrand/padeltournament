@@ -6,7 +6,7 @@ This document outlines the functional and non-functional requirements for the Pa
 
 ### 1. Schedule Selection and Loading
 - **Schedule Choice:**  
-  - The user can choose from several preconfigured schedules (for 12, 16, 20, or 24 players).
+  - The user can choose from several preconfigured schedules (for 8, 12, 16, 20, or 24 players).
   - Each schedule is stored as a separate JavaScript module (e.g. `12p11r.js`, `16p15r.js`, etc.) and is loaded dynamically.
   
 ### 2. Global Controls

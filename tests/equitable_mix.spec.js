@@ -359,8 +359,9 @@ test.describe('Equitable schedules for any length', () => {
     // with the default seed it must reproduce each canonical table (apart from
     // the engine's added equity report). Cost: the spacing stage tries 16
     // base rounds per size, about 0.3 s at 16, 0.7 s at 20 and 5 s at 24
-    // players, so this test takes about 6 s.
-    for (const n of [12, 16, 20, 24]) {
+    // players, so this test takes about 6 s (8 and 12 players stop at their
+    // first base round).
+    for (const n of [8, 12, 16, 20, 24]) {
       const name = `${n}p${n - 1}r`;
       const source = fs.readFileSync(path.join(SCHEDULE_DIR, `${name}.js`), 'utf8');
       const prefix = `window.schedule${name} = `;
