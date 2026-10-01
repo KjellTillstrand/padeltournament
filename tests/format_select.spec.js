@@ -97,9 +97,21 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     // And the preconfigured Americano schedules shall be offered.
     expect(await organizer.asksFor(OfferedSchedules)).toEqual([
       '8 Player, 7 Round Schedule',
+      '9 Player, 9 Round Schedule',
+      '10 Player, 10 Round Schedule',
+      '11 Player, 11 Round Schedule',
       '12 Player, 11 Round Schedule',
+      '13 Player, 13 Round Schedule',
+      '14 Player, 14 Round Schedule',
+      '15 Player, 15 Round Schedule',
       '16 Player, 15 Round Schedule',
+      '17 Player, 17 Round Schedule',
+      '18 Player, 18 Round Schedule',
+      '19 Player, 19 Round Schedule',
       '20 Player, 19 Round Schedule',
+      '21 Player, 21 Round Schedule',
+      '22 Player, 22 Round Schedule',
+      '23 Player, 23 Round Schedule',
       '24 Player, 23 Round Schedule',
     ]);
     await expectTheAmericanoSetup(page);
