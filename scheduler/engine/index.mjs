@@ -10,15 +10,19 @@
  *   { playerCount, totalRounds, players,
  *     rounds: [{ roundNumber, matches: [{ court, teams: [[a, b], [c, d]] }],
  *                byes: [...] }],
- *     equity: { optimal, infeasible, cost, lowerBound, opponentSpread } }
+ *     equity: { optimal, infeasible, cost, lowerBound, opponentSpread,
+ *               sitOuts, sitOutSpread, restGap, restGapTarget, restSpaced } }
  * `byes` (the players sitting out that round) is present only when the
- * player count is not a multiple of 4. `equity` reports how close the
- * opponent mix came to the equitable target; see generateSchedule.
+ * player count is not a multiple of 4: floor(N/4) courts play and the other
+ * N mod 4 players rest. `equity` reports how close the opponent mix came to
+ * the equitable target and how fairly the rests fall; see generateSchedule.
  *
  * Shorter schedules start from the algebraic constructions of construct.mjs
  * (often already equitable) and are finished by the local search of
  * search.mjs. Shapes proven unable to be equitable (feasibility.mjs) are
  * reported as such, without spending the search budget on the impossible.
+ * With byes, the rounds are then reordered to space each player's rests
+ * apart (rest.mjs; a few milliseconds, ORDER_EVALUATIONS).
  *
  * Full-length case (players = 4n, rounds = 4n - 1): the schedule is the
  * whist construction of scheduler/whist-generate.js, i.e. a perfect mix
@@ -51,6 +55,7 @@ import whist from '../whist-generate.js';
 import { minSumOfSquares, searchSchedule } from './search.mjs';
 import { MAX_START_EVALUATIONS, startArrangement } from './construct.mjs';
 import { costFloor } from './feasibility.mjs';
+import { restEquity, spaceRests } from './rest.mjs';
 
 const { defaultSeed, balanceCourts, spacedWhist } = whist;
 
@@ -183,13 +188,21 @@ function opponentEquity(schedule, infeasible) {
  * succeeds; check `schedule.equity.optimal` (and `opponentSpread`) before
  * relying on the equitable-mix property.
  *
+ * Also NOT guaranteed: rest spacing. When some players must rest twice, the
+ * rounds are ordered to keep each player's rests at least restGapTarget
+ * rounds apart; the rounds' contents come from the equity search, so most
+ * shapes land a round or two short. `equity.restSpaced` and `restGap`
+ * report it (see restEquity in rest.mjs).
+ *
  * @param {{players: number|string[], rounds: number, seed?: number}} options
  *   players: a count (players are then named P1..PN) or the list of names.
  *   rounds:  1 .. players - 1.
  *   seed:    any integer; defaults to defaultSeed(player count).
  * @returns the schedule, with `equity: {optimal, infeasible, cost,
  *   lowerBound, opponentSpread}` describing its opponent mix (see
- *   opponentEquity); infeasible: the shape provably cannot be optimal.
+ *   opponentEquity; infeasible: the shape provably cannot be optimal) and
+ *   `{sitOuts, sitOutSpread, restGap, restGapTarget, restSpaced}` its rests
+ *   (see restEquity).
  */
 export function generateSchedule({ players, rounds, seed } = {}) {
   const names = normalizePlayers(players);
@@ -240,11 +253,14 @@ export function generateSchedule({ players, rounds, seed } = {}) {
     if (Math.max(...sitOuts) - Math.min(...sitOuts) > 1) {
       throw new Error(`sit-out counts more than one apart for ${N} players and ${R} rounds (seed ${seed})`);
     }
+    // Space each player's rests apart; this only reorders whole rounds, so
+    // every partner, opponent and sit-out count is unchanged.
+    const rows = spaceRests(result.seats, N, seed);
     schedule = {
       playerCount: N,
       totalRounds: R,
       players: names.slice(),
-      rounds: result.seats.map((row, r) => {
+      rounds: rows.map((row, r) => {
         const round = {
           roundNumber: r + 1,
           matches: Array.from({ length: C }, (_, c) => ({
@@ -263,6 +279,6 @@ export function generateSchedule({ players, rounds, seed } = {}) {
     // a round, so who partners or opposes whom is unchanged.
     balanceCourts(schedule);
   }
-  schedule.equity = opponentEquity(schedule, floor > 0);
+  schedule.equity = { ...opponentEquity(schedule, floor > 0), ...restEquity(schedule) };
   return schedule;
 }
