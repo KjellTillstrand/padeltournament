@@ -895,6 +895,7 @@
       if (currentSchedule && currentSchedule.players) {
         currentSchedule.players.forEach(player => { scores[player] = 0; });
       }
+      const playedMatches = [];
       for (let i = 0; i <= currentRoundIndex; i++) {
         const round = currentSchedule.rounds[i];
         round.matches.forEach(match => {
@@ -903,6 +904,7 @@
             const rightScore = match.result.right.trim() === '' ? 0 : parseInt(match.result.right, 10) || 0;
             match.teams[0].forEach(player => { scores[player] += leftScore; });
             match.teams[1].forEach(player => { scores[player] += rightScore; });
+            playedMatches.push({ teams: match.teams, scores: [leftScore, rightScore] });
           }
         });
       }
@@ -911,6 +913,7 @@
         scoreArray.push({ player: player, score: scores[player] });
       }
       scoreArray.sort((a, b) => b.score - a.score);
+      rankStandings(scoreArray, playedMatches);
       const currentRoundNum = currentSchedule.rounds[currentRoundIndex].roundNumber;
       const scoreboardContainer = document.getElementById("scoreboard-round-" + currentRoundNum);
       if (scoreboardContainer) {
@@ -928,8 +931,9 @@
           headerRow.appendChild(th);
         });
         body.appendChild(headerRow);
-        scoreArray.forEach(item => {
+        const rows = scoreArray.map(item => {
           const row = document.createElement('tr');
+          row.dataset.placement = item.placement;
           const playerCell = document.createElement('td');
           playerCell.textContent = item.player;
           const scoreCell = document.createElement('td');
@@ -937,9 +941,70 @@
           row.appendChild(playerCell);
           row.appendChild(scoreCell);
           body.appendChild(row);
+          return row;
         });
         scoreboardContainer.replaceChildren(table);
+        colorRowsByPlacement(rows);
       }
+    }
+
+    // Orders tied players and assigns each standings entry its placement, in place.
+    // Expects entries sorted by total points (descending). Placements follow standard
+    // competition ranking: players sharing a placement repeat it and the next one
+    // skips (1, 1, 3). A tie between exactly two players is resolved head-to-head:
+    // the points each scored in the games where they were on opposing teams. When
+    // they never opposed each other, or their mutual games are level, they share the
+    // placement. Ties of three or more are always shared: pairwise comparisons can
+    // form a cycle, and a single deterministic rule beats a partial resolution.
+    // Shared entries keep their order from the sort (stable), i.e. player list order.
+    function rankStandings(entries, playedMatches) {
+      let start = 0;
+      while (start < entries.length) {
+        let end = start + 1;
+        while (end < entries.length && entries[end].score === entries[start].score) end++;
+        let advantage = 0;
+        if (end - start === 2) {
+          advantage = headToHeadAdvantage(entries[start].player, entries[start + 1].player, playedMatches);
+          if (advantage < 0) {
+            [entries[start], entries[start + 1]] = [entries[start + 1], entries[start]];
+          }
+        }
+        for (let i = start; i < end; i++) {
+          // A resolved pair takes consecutive placements; anything else shares one.
+          entries[i].placement = advantage !== 0 ? i + 1 : start + 1;
+        }
+        start = end;
+      }
+    }
+
+    // Points player a scored minus points player b scored across the games where
+    // they were on opposing teams (0 when they never opposed each other).
+    function headToHeadAdvantage(a, b, playedMatches) {
+      let advantage = 0;
+      playedMatches.forEach(match => {
+        for (let side = 0; side < 2; side++) {
+          if (match.teams[side].includes(a) && match.teams[1 - side].includes(b)) {
+            advantage += match.scores[side] - match.scores[1 - side];
+          }
+        }
+      });
+      return advantage;
+    }
+
+    // style.css colours the standings by row position (gold, silver, bronze, then
+    // grey). With shared placements a row's colour must follow its placement
+    // instead, so a row whose placement differs from its position takes the colour
+    // the stylesheet gives the row AT that placement's position (every placement
+    // is at or above its own row, so that row exists). The palette is read from
+    // the stylesheet, not repeated here, and read before any row is overridden.
+    function colorRowsByPlacement(rows) {
+      const COLOR_TIERS = 4; // gold, silver, bronze, then one colour for the rest
+      const tierOf = position => Math.min(position, COLOR_TIERS) - 1;
+      const palette = rows.slice(0, COLOR_TIERS).map(row => getComputedStyle(row).backgroundColor);
+      rows.forEach((row, index) => {
+        const tier = tierOf(Number(row.dataset.placement));
+        if (tier !== tierOf(index + 1)) row.style.backgroundColor = palette[tier];
+      });
     }
 
     function disableSettings() {
