@@ -263,6 +263,55 @@ test.describe('R-TIEBREAK-H2H: Head-to-head tiebreak, then shared placement', ()
   });
 
   // @verifies REQ-44
+  test('R-TIEBREAK-H2H: the head-to-head winner keeps first place when already listed first', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given Bo and Ed end level on 44 points, Bo listed first,
+    // and Bo beat Ed 16-8 in their only mutual game (round 2).
+    await organizer.attemptsTo(ResumeACompletedTournament([
+      [[['Ada', 'Bo'], ['Cy', 'Di'], 8, 16], [['Ed', 'Flo'], ['Gus', 'Hal'], 16, 8]],
+      [[['Ada', 'Ed'], ['Bo', 'Gus'], 8, 16], [['Cy', 'Flo'], ['Di', 'Hal'], 7, 17]],
+      [[['Ada', 'Flo'], ['Cy', 'Gus'], 8, 16], [['Bo', 'Ed'], ['Di', 'Hal'], 20, 4]],
+    ]));
+
+    // When the Organizer reviews the standings.
+    const standings = await organizer.asksFor(Standings);
+
+    // Then the head-to-head winner shall rank higher.
+    expect(standings.slice(0, 4)).toEqual([
+      { player: 'Bo', points: 44, placement: 1, color: GOLD },
+      { player: 'Ed', points: 44, placement: 2, color: SILVER },
+      { player: 'Gus', points: 40, placement: 3, color: BRONZE },
+      { player: 'Cy', points: 39, placement: 4, color: GREY },
+    ]);
+  });
+
+  // @verifies REQ-44
+  test('R-TIEBREAK-H2H: head-to-head counts points across mutual games, not games won', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given Ada and Cy end level on 43 points and won one mutual game each,
+    // but Cy scored more across them: Cy won 19-5 (round 1), Ada won 14-10
+    // (round 3), so 29 points to 19.
+    await organizer.attemptsTo(ResumeACompletedTournament([
+      [[['Ada', 'Bo'], ['Cy', 'Di'], 5, 19], [['Ed', 'Flo'], ['Gus', 'Hal'], 1, 23]],
+      [[['Ada', 'Ed'], ['Bo', 'Gus'], 24, 0], [['Cy', 'Flo'], ['Di', 'Hal'], 14, 10]],
+      [[['Ada', 'Flo'], ['Cy', 'Gus'], 14, 10], [['Bo', 'Ed'], ['Di', 'Hal'], 17, 7]],
+    ]));
+
+    // When the Organizer reviews the standings.
+    const standings = await organizer.asksFor(Standings);
+
+    // Then the player with more points across their mutual games shall rank higher.
+    expect(standings.slice(0, 4)).toEqual([
+      { player: 'Cy', points: 43, placement: 1, color: GOLD },
+      { player: 'Ada', points: 43, placement: 2, color: SILVER },
+      { player: 'Ed', points: 42, placement: 3, color: BRONZE },
+      { player: 'Hal', points: 40, placement: 4, color: GREY },
+    ]);
+  });
+
+  // @verifies REQ-44
   test('R-TIEBREAK-H2H: a tie with no mutual game is shared, and colours follow the shared placement', async ({ page }) => {
     const organizer = theOrganizer(page);
 
@@ -334,6 +383,33 @@ test.describe('R-TIEBREAK-H2H: Head-to-head tiebreak, then shared placement', ()
       { player: 'Di', points: 45, placement: 1, color: GOLD },
       { player: 'Gus', points: 45, placement: 1, color: GOLD },
       { player: 'Cy', points: 38, placement: 4, color: GREY },
+    ]);
+  });
+
+  // @verifies REQ-44
+  test('R-TIEBREAK-H2H: several shared placements in one standings are numbered by competition ranking', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given a live 12-player tournament after round 1, scored 24-0, 22-2 and
+    // 20-4: each pair of partners is level and never opposed each other.
+    await page.goto('/');
+    await organizer.attemptsTo(StartTheTournament('Shared Placements'));
+    await organizer.attemptsTo(RecordDescendingScores);
+
+    // When the Organizer reviews the standings.
+    const placements = async () =>
+      (await organizer.asksFor(Standings)).map(({ points, placement, color }) => ({ points, placement, color }));
+
+    // Then every pair shares a placement, the next placement skips one
+    // (1, 1, 3, 3, 5, 5, ...), and the colours follow the shared placements.
+    const row = (points, placement, color) => ({ points, placement, color });
+    await expect.poll(placements).toEqual([
+      row(24, 1, GOLD), row(24, 1, GOLD),
+      row(22, 3, BRONZE), row(22, 3, BRONZE),
+      row(20, 5, GREY), row(20, 5, GREY),
+      row(4, 7, GREY), row(4, 7, GREY),
+      row(2, 9, GREY), row(2, 9, GREY),
+      row(0, 11, GREY), row(0, 11, GREY),
     ]);
   });
 });
