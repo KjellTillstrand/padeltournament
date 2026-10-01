@@ -631,7 +631,8 @@ export function startArrangement(N, R, seed) {
     const found = plan ? cyclicRows(plan, seed, WHIST_BUDGET) : { rows: null, evaluations: 0 };
     evaluations += found.evaluations;
     design = found.rows;
-  } else if (N % 4 === 2 && N - 1 - R <= MAX_DROPPED) {
+  } else if (N % 4 === 2 && R <= N - 1 && N - 1 - R <= MAX_DROPPED) {
+    // The design has N - 1 rounds, so it cannot start an N-round schedule.
     const found = nearWhistRows(N, seed);
     evaluations += found.evaluations;
     design = found.rows;

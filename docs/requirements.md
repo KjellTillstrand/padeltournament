@@ -6,8 +6,9 @@ This document outlines the functional and non-functional requirements for the Pa
 
 ### 1. Schedule Selection and Loading
 - **Schedule Choice:**  
-  - The user can choose from several preconfigured schedules (for 8, 12, 16, 20, or 24 players).
-  - Each schedule is stored as a separate JavaScript module (e.g. `12p11r.js`, `16p15r.js`, etc.) and is loaded dynamically.
+  - The user can choose from several preconfigured schedules, one for every player count from 8 to 24.
+  - Each schedule is stored as a separate JavaScript module (e.g. `12p11r.js`, `13p13r.js`, etc.) and is loaded dynamically.
+  - A player count that is a multiple of 4 plays every player every round (N - 1 rounds). Any other count fills floor(N/4) courts and the remaining players rest each round; its schedule runs N rounds, so every player rests the same number of times (N mod 4) and plays the same number of games. Each round shows which players rest.
   
 ### 2. Global Controls
 - **Global Total Points:**  

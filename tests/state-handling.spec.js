@@ -86,9 +86,11 @@ test.describe('Malformed or hostile persisted state', () => {
   // the real state shape. Read from a throwaway page so the page under test
   // has never run the app before its planted state is in place. A not-started
   // state is captured by naming a court (which saves) before starting.
-  async function captureARealTournamentState(context, { started = true } = {}) {
+  // `schedule` picks another schedule than the default 12-player one.
+  async function captureARealTournamentState(context, { started = true, schedule } = {}) {
     const donor = await context.newPage();
     await donor.goto('/');
+    if (schedule) await donor.selectOption('#scheduleSelect', schedule);
     await donor.fill('#tournamentName', 'Base Cup');
     if (started) await donor.click('#startTournamentBtn');
     else await donor.fill('#courtNameInput_1', 'Centre');
@@ -193,7 +195,8 @@ test.describe('Malformed or hostile persisted state', () => {
     ['an oversized player name', (s) => { renamePlayer(s, s.players[0], 'X'.repeat(5000)); }],
     ['duplicate player names', (s) => { s.players[1] = s.players[0]; }],
     ['a team naming an unknown player', (s) => { s.rounds[0].matches[0].teams[0][0] = 'Nobody'; }],
-    ['a player count that is not a multiple of four', (s) => { s.players.push('Extra'); }],
+    // Any count of at least one court is playable (the rest sit out), up to a limit.
+    ['more players than the limit', (s) => { for (let i = 0; i < 53; i++) s.players.push(`Extra${i}`); }],
     ['matches that are not a list', (s) => { s.rounds[0].matches = 'x'; }],
     ['no rounds', (s) => { s.rounds = []; }],
     ['a round number that cannot be printed', (s) => { s.rounds[0].roundNumber = UNPRINTABLE; }],
@@ -288,6 +291,125 @@ test.describe('Malformed or hostile persisted state', () => {
       expect(errors).toEqual([]);
     });
   }
+
+  // --- Byes (who rests) in a schedule with a count that is not a multiple of four ---
+  // Byes are derived data: whatever is stored, the round shows (and the app
+  // stores back) exactly the players its matches do not seat.
+  const seatedIn = (round) => round.matches.flatMap((match) => match.teams.flat());
+  const restingIn = (schedule, round) => schedule.players.filter((p) => !seatedIn(round).includes(p));
+
+  async function restingOnScreen(page) {
+    return page.locator('.resting-players .resting-player').allTextContents();
+  }
+
+  const HOSTILE_BYES = [
+    ['byes naming an unknown player', (s) => { s.rounds[0].byes = ['Nobody', s.rounds[0].byes[1]]; }],
+    ['byes naming a seated player', (s) => { s.rounds[0].byes = [seatedIn(s.rounds[0])[0], s.rounds[0].byes[0]]; }],
+    ['an overlong bye list', (s) => { s.rounds[0].byes = Array.from({ length: 5000 }, () => s.players[0]); }],
+    ['byes that are not a list', (s) => { s.rounds[0].byes = s.players[0]; }],
+    ['byes that are markup', (s) => { s.rounds[0].byes = ['<img src=x onerror="window.pwned=1">']; }],
+    ['byes that cannot be printed', (s) => { s.rounds[0].byes = [UNPRINTABLE, UNPRINTABLE]; }],
+    ['no byes at all', (s) => { s.rounds.forEach((round) => { delete round.byes; }); }],
+  ];
+  for (const [description, corrupt] of HOSTILE_BYES) {
+    test(`A 10-player tournament state with ${description} restores with the true resting players`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a running 10-player tournament whose stored byes have been tampered with.
+      const state = await captureARealTournamentState(context, { schedule: '10p10r.js' });
+      const expected = restingIn(state.schedule, state.schedule.rounds[0]);
+      expect(expected).toHaveLength(2);
+      expect(state.schedule.rounds[0].byes).toEqual(expect.arrayContaining(expected));
+      corrupt(state.schedule);
+      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+      // When the app loads.
+      await page.goto('/');
+
+      // Then the tournament is restored, showing as resting exactly the players
+      // round 1 does not seat,
+      await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('.court')).toHaveCount(2);
+      expect(await restingOnScreen(page)).toEqual(expected);
+      await expect(page.locator('.scoreboard-container table tr')).toHaveCount(11);
+      // and what it stores back holds those byes, not the planted ones.
+      const stored = await storedJson(page, 'tournamentState');
+      expect(stored.schedule.rounds[0].byes).toEqual(expected);
+      expect(await page.evaluate(() => window.pwned)).toBeUndefined();
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('A 12-player tournament state with planted byes rests nobody', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a running 12-player tournament whose stored rounds claim byes.
+    const state = await captureARealTournamentState(context);
+    state.schedule.rounds.forEach((round) => { round.byes = [state.schedule.players[0]]; });
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the round shows nobody resting, and the stored rounds carry no byes.
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.court')).toHaveCount(3);
+    await expect(page.locator('.resting-players')).toHaveCount(0);
+    const stored = await storedJson(page, 'tournamentState');
+    expect(stored.schedule.rounds.every((round) => !('byes' in round))).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  test('A saved 13-player tournament with hostile byes loads with the true resting players', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given a saved 13-player tournament whose byes have been tampered with.
+    const { schedule } = await captureARealTournamentState(context, { schedule: '13p13r.js' });
+    const expected = restingIn(schedule, schedule.rounds[1]);
+    expect(expected).toHaveLength(1);
+    schedule.rounds[1].byes = ['Nobody', ...schedule.players];
+    const saved = [{ tournamentName: 'Odd Cup', schedule, currentRoundIndex: 1, savedAt: '2026-01-01T00:00:00.000Z' }];
+    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+
+    // When the app loads and the Organizer loads the save.
+    await page.goto('/');
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    await page.click('#loadTournamentBtn');
+
+    // Then it plays at its saved round with the true resting player.
+    await expect(page.locator('#tournamentTitle')).toHaveText('Odd Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expect(page.locator('.court')).toHaveCount(3);
+    expect(await restingOnScreen(page)).toEqual(expected);
+    expect((await storedJson(page, 'tournamentState')).schedule.rounds[1].byes).toEqual(expected);
+    expect(errors).toEqual([]);
+  });
+
+  test('A 9-player state with a player no match seats restores with that player resting', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a not-started 9-player setup whose round 1 has lost a match: its
+    // four players are no longer seated.
+    const state = await captureARealTournamentState(context, { started: false, schedule: '9p9r.js' });
+    state.schedule.rounds[0].matches = state.schedule.rounds[0].matches.slice(0, 1);
+    const expected = restingIn(state.schedule, state.schedule.rounds[0]);
+    expect(expected).toHaveLength(5);
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    // When the app loads and the tournament is started.
+    await page.goto('/');
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(9);
+    await expect(page.locator('[id^="courtNameInput_"]')).toHaveCount(2);
+    await expect(page.locator('#courtNameInput_1')).toHaveValue('Centre');
+    await page.click('#startTournamentBtn');
+
+    // Then round 1 plays its one match and shows the other five players resting
+    // (under the names drawn at the start).
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.court')).toHaveCount(1);
+    const started = (await storedJson(page, 'tournamentState')).schedule;
+    expect(await restingOnScreen(page)).toEqual(restingIn(started, started.rounds[0]));
+    expect(await restingOnScreen(page)).toHaveLength(5);
+    expect(errors).toEqual([]);
+  });
 
   // The settings panel of a running tournament: open it unless it already is.
   async function showTheSettings(page) {
@@ -666,6 +788,109 @@ test.describe('Malformed or hostile persisted state', () => {
       expect(stored.format).toBe('mexicano');
       expect(stored.mexicanoPlayerCount).toBe(Number(count));
     }
+    expect(errors).toEqual([]);
+  });
+});
+
+// Counts that are not a multiple of four: floor(N/4) courts play and the others
+// rest. Selecting such a schedule, playing it and reloading it must round-trip
+// like any other: the rests survive and always name exactly the unseated players.
+test.describe('Rest rounds survive selection, play and reload', () => {
+  function collectErrors(page) {
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+    });
+    return errors;
+  }
+
+  // Who the current round seats (read from the match containers) and who it
+  // shows resting.
+  async function theRoundOnScreen(page) {
+    const seated = await page.locator('#tournamentContainer .match').evaluateAll((matches) =>
+      matches.flatMap((m) => [...m.dataset.teamLeft.split(','), ...m.dataset.teamRight.split(',')]));
+    const resting = await page.locator('.resting-players .resting-player').allTextContents();
+    return { seated, resting };
+  }
+
+  for (const players of [9, 10, 13, 22]) {
+    const rounds = players;
+    const courts = Math.floor(players / 4);
+    const resting = players % 4;
+    test(`R-SITOUT-PLAY, R-SCHEDULE-SELECT, R-STATE-PERSIST: ${players} players play with ${resting} resting per round, across a reload`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const names = Array.from({ length: players }, (_, i) => `Name${i + 1}`);
+      await page.goto('/');
+
+      // Given the Organizer selects the schedule for this count,
+      await page.selectOption('#scheduleSelect', `${players}p${rounds}r.js`);
+      await expect(page.locator('#scheduleSelect option:checked')).toHaveText(
+        `${players} Player, ${rounds} Round Schedule`);
+      await expect(page.locator('[id^="playerInput_"]')).toHaveCount(players);
+      await expect(page.locator('[id^="courtNameInput_"]')).toHaveCount(courts);
+      for (let i = 0; i < players; i++) await page.fill(`#playerInput_${i}`, names[i]);
+
+      // When the Americano starts,
+      await page.fill('#tournamentName', `Rest Cup ${players}`);
+      await page.click('#startTournamentBtn');
+
+      // Then round 1 seats every court and shows the rest of the players resting,
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('#tournamentContainer .court')).toHaveCount(courts);
+      let round = await theRoundOnScreen(page);
+      expect(round.resting).toHaveLength(resting);
+      expect([...round.seated, ...round.resting].sort()).toEqual([...names].sort());
+      await expect(page.locator('.scoreboard-container table tr')).toHaveCount(players + 1);
+
+      // and the full tournament is offered: every round, everyone rests equally.
+      const schedule = (await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')))).schedule;
+      expect(schedule.rounds).toHaveLength(rounds);
+      const rests = Object.fromEntries(names.map((n) => [n, 0]));
+      for (const r of schedule.rounds) {
+        expect(r.matches).toHaveLength(courts);
+        r.byes.forEach((n) => { rests[n]++; });
+      }
+      expect(new Set(Object.values(rests))).toEqual(new Set([resting]));
+
+      // When a score is entered, play moves to round 2 and the page is reloaded,
+      await page.locator('.result-overlay-left input').first().fill('10');
+      await page.getByRole('button', { name: 'NEXT ROUND' }).click();
+      await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+      const beforeReload = await theRoundOnScreen(page);
+      await page.reload();
+
+      // Then round 2 is restored with the same courts and the same resting players.
+      await expect(page.locator('#tournamentTitle')).toHaveText(`Rest Cup ${players}`);
+      await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+      round = await theRoundOnScreen(page);
+      expect(round).toEqual(beforeReload);
+      expect(round.resting).toEqual(schedule.rounds[1].byes);
+      await page.getByRole('button', { name: 'PREVIOUS ROUND' }).click();
+      await expect(page.locator('.result-overlay-left input').first()).toHaveValue('10');
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-SITOUT-PLAY: a 12-player Americano rests nobody in any round', async ({ page }) => {
+    const errors = collectErrors(page);
+    await page.goto('/');
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+
+    // Given 12 players (the default schedule), when the Americano starts,
+    await page.fill('#tournamentName', 'Even Cup');
+    await page.click('#startTournamentBtn');
+
+    // Then no round rests anyone.
+    for (let r = 1; r <= 11; r++) {
+      await expect(page.locator('.round-header .left')).toHaveText(`Round ${r}`);
+      await expect(page.locator('#tournamentContainer .court')).toHaveCount(3);
+      await expect(page.locator('.resting-players')).toHaveCount(0);
+      if (r < 11) await page.getByRole('button', { name: 'NEXT ROUND' }).click();
+    }
+    const schedule = (await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')))).schedule;
+    expect(schedule.rounds.every((round) => !('byes' in round))).toBe(true);
     expect(errors).toEqual([]);
   });
 });
