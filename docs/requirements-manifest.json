@@ -25,6 +25,7 @@
     { "tag": "R-EQUITABLE-MIX", "id": 24, "title": "Any-length schedules stay equitable", "method": "Automated Test" },
     { "tag": "R-SPACED-MIX", "id": 34, "title": "Repeat encounters are spread across the tournament", "method": "Automated Test" },
     { "tag": "R-FORMAT-SELECT", "id": 42, "title": "Choose the tournament format", "method": "Automated Test" },
-    { "tag": "R-POINT-POOLS", "id": 43, "title": "Point pools 16, 21, 24 and 32", "method": "Automated Test" }
+    { "tag": "R-POINT-POOLS", "id": 43, "title": "Point pools 16, 21, 24 and 32", "method": "Automated Test" },
+    { "tag": "R-TIEBREAK-H2H", "id": 44, "title": "Head-to-head tiebreak, then shared placement", "method": "Automated Test" }
   ]
 }
