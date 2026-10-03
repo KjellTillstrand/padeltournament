@@ -6,7 +6,7 @@
  *   if (!schedule.equity.optimal) { ... opponent counts are not all within one ... }
  *
  * Produces a schedule for any supported player count (4..24) and any round
- * count up to players - 1, in the app's schedule shape:
+ * count up to maxRounds(players), in the app's schedule shape:
  *   { playerCount, totalRounds, players,
  *     rounds: [{ roundNumber, matches: [{ court, teams: [[a, b], [c, d]] }],
  *                byes: [...] }],
@@ -87,6 +87,18 @@ const INFEASIBLE_EVALUATIONS = 300000;
 
 /** The per-size seed whist-generate.js uses; the default here as well. */
 export { defaultSeed };
+
+/**
+ * The most rounds the engine schedules for N players. With N = 4n everyone
+ * plays every round, so more than N - 1 rounds would force a repeated
+ * partner. Otherwise B = N mod 4 players rest each round, and N rounds is the
+ * full rest cycle: every player rests exactly B times and plays N - B <= N - 1
+ * games, so equal rests and equal games fit without a repeated partner. (A
+ * few more rounds can fit for B >= 2, but rests would no longer be equal.)
+ */
+export function maxRounds(N) {
+  return N % 4 === 0 ? N - 1 : N;
+}
 
 function normalizePlayers(players) {
   if (Number.isInteger(players)) {
@@ -196,7 +208,8 @@ function opponentEquity(schedule, infeasible) {
  *
  * @param {{players: number|string[], rounds: number, seed?: number}} options
  *   players: a count (players are then named P1..PN) or the list of names.
- *   rounds:  1 .. players - 1.
+ *   rounds:  1 .. maxRounds(players): players - 1 for a multiple of 4,
+ *            else players (the full rest cycle).
  *   seed:    any integer; defaults to defaultSeed(player count).
  * @returns the schedule, with `equity: {optimal, infeasible, cost,
  *   lowerBound, opponentSpread}` describing its opponent mix (see
@@ -207,9 +220,8 @@ function opponentEquity(schedule, infeasible) {
 export function generateSchedule({ players, rounds, seed } = {}) {
   const names = normalizePlayers(players);
   const N = names.length;
-  if (!Number.isInteger(rounds) || rounds < 1 || rounds > N - 1) {
-    // More than N - 1 rounds would force a repeated partner.
-    throw new RangeError(`rounds must be between 1 and ${N - 1} for ${N} players, got ${rounds}`);
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > maxRounds(N)) {
+    throw new RangeError(`rounds must be between 1 and ${maxRounds(N)} for ${N} players, got ${rounds}`);
   }
   const R = rounds;
   if (seed === undefined) seed = defaultSeed(N);

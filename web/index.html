@@ -5,10 +5,42 @@
   <meta charset="UTF-8">
   <title>Padel Turrar Tournament Manager</title>
   <link rel="stylesheet" href="css/style.css">
+  <style>
+    /* Players resting this round (counts that are not a multiple of 4);
+       styled like the scoreboard panel. */
+    .resting-players {
+      background-color: #fff;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      padding: 10px;
+      margin-bottom: 20px;
+    }
+    .resting-players .resting-label {
+      font-weight: bold;
+      margin-right: 0.5em;
+    }
+    .resting-players .resting-player + .resting-player::before {
+      content: ", ";
+    }
+  </style>
+  <!-- Multiples of 4: perfect-whist tables (scheduler/whist-generate.js).
+       Other counts: rest-round tables (scheduler/engine/sitout-generate.mjs). -->
   <script src="schedules/8p7r.js"></script>
+  <script src="schedules/9p9r.js"></script>
+  <script src="schedules/10p10r.js"></script>
+  <script src="schedules/11p11r.js"></script>
   <script src="schedules/12p11r.js"></script>
+  <script src="schedules/13p13r.js"></script>
+  <script src="schedules/14p14r.js"></script>
+  <script src="schedules/15p15r.js"></script>
   <script src="schedules/16p15r.js"></script>
+  <script src="schedules/17p17r.js"></script>
+  <script src="schedules/18p18r.js"></script>
+  <script src="schedules/19p19r.js"></script>
   <script src="schedules/20p19r.js"></script>
+  <script src="schedules/21p21r.js"></script>
+  <script src="schedules/22p22r.js"></script>
+  <script src="schedules/23p23r.js"></script>
   <script src="schedules/24p23r.js"></script>
 </head>
 
@@ -36,11 +68,25 @@
         <!-- Options (MIN_MEXICANO_PLAYERS..MAX_MEXICANO_PLAYERS) are generated below. -->
       </select>
       <label for="scheduleSelect" id="scheduleSelectLabel">Select Schedule:</label>
+      <!-- Each value <N>p<R>r.js names the module that sets window.schedule<N>p<R>r
+           (see loadScheduleFromModule); every option needs its script tag above. -->
       <select id="scheduleSelect">
         <option value="8p7r.js">8 Player, 7 Round Schedule</option>
+        <option value="9p9r.js">9 Player, 9 Round Schedule</option>
+        <option value="10p10r.js">10 Player, 10 Round Schedule</option>
+        <option value="11p11r.js">11 Player, 11 Round Schedule</option>
         <option value="12p11r.js" selected>12 Player, 11 Round Schedule</option>
+        <option value="13p13r.js">13 Player, 13 Round Schedule</option>
+        <option value="14p14r.js">14 Player, 14 Round Schedule</option>
+        <option value="15p15r.js">15 Player, 15 Round Schedule</option>
         <option value="16p15r.js">16 Player, 15 Round Schedule</option>
+        <option value="17p17r.js">17 Player, 17 Round Schedule</option>
+        <option value="18p18r.js">18 Player, 18 Round Schedule</option>
+        <option value="19p19r.js">19 Player, 19 Round Schedule</option>
         <option value="20p19r.js">20 Player, 19 Round Schedule</option>
+        <option value="21p21r.js">21 Player, 21 Round Schedule</option>
+        <option value="22p22r.js">22 Player, 22 Round Schedule</option>
+        <option value="23p23r.js">23 Player, 23 Round Schedule</option>
         <option value="24p23r.js">24 Player, 23 Round Schedule</option>
       </select>
       <label for="globalTotalPoints">Global Total Points:</label>
@@ -114,7 +160,7 @@
     // Each is at least as loose as what the app itself can write.
     const MAX_PLAYER_NAME_LENGTH = 30; // the player name inputs' maxLength (start allows 20)
     const MAX_COURT_NAME_LENGTH = 30; // the court name inputs' maxLength
-    const MAX_PLAYERS = 64; // shipped schedules have 8-24
+    const MAX_PLAYERS = 64; // shipped schedules have 8-24 (any count)
     const MAX_ROUNDS = 128; // shipped schedules have 7-23
 
     // Update header when tournament name changes.
@@ -536,16 +582,18 @@
 
     // A copy of the schedule holding only the fields the rounds, scoreboard and start
     // flow read, each of the right type and in range; null when it is unusable.
+    // Byes (who rests) are never read from storage: they are rebuilt from the
+    // checked matches (setByes), so they always name exactly the unseated players.
     function copySchedule(schedule, requireTeamIndices) {
       if (!isPlainObject(schedule)) return null;
       const playerList = schedule.players;
-      // Every match needs its own court, so players come in whole courts of four.
-      if (!Array.isArray(playerList) || playerList.length < 4 || playerList.length > MAX_PLAYERS ||
-        playerList.length % 4 !== 0) return null;
+      // At least one full court; with a count that is not a multiple of four the
+      // players left over rest each round.
+      if (!Array.isArray(playerList) || playerList.length < 4 || playerList.length > MAX_PLAYERS) return null;
       if (!playerList.every(isValidPlayerName)) return null;
       const players = new Set(playerList);
       if (players.size !== playerList.length) return null; // names must be unique
-      const courtCount = playerList.length / 4;
+      const courtCount = Math.floor(playerList.length / 4);
       const rounds = schedule.rounds;
       if (!Array.isArray(rounds) || rounds.length < 1 || rounds.length > MAX_ROUNDS) return null;
       const roundCopies = [];
@@ -557,7 +605,26 @@
         if (matchCopies.includes(null)) return null;
         roundCopies.push({ roundNumber: round.roundNumber, matches: matchCopies });
       }
-      return { players: playerList.slice(), rounds: roundCopies };
+      return setByes({ players: playerList.slice(), rounds: roundCopies });
+    }
+
+    // The players a round seats on no court, in player-list order: who rests.
+    function restingPlayers(players, matches) {
+      const seated = new Set();
+      matches.forEach(match => match.teams.forEach(team => team.forEach(player => seated.add(player))));
+      return players.filter(player => !seated.has(player));
+    }
+
+    // Set each round's byes from its matches, as the shipped tables carry them:
+    // only a player count that is not a multiple of four has byes. Called
+    // wherever a schedule is loaded, restored or renamed. Returns the schedule.
+    function setByes(schedule) {
+      const withByes = schedule.players.length % 4 !== 0;
+      schedule.rounds.forEach(round => {
+        if (withByes) round.byes = restingPlayers(schedule.players, round.matches);
+        else delete round.byes;
+      });
+      return schedule;
     }
 
     // A rebuilt copy of the stored tournamentState, or null when it is missing or
@@ -794,6 +861,27 @@
     }
 
 
+    // The players resting this round, above its courts; null when nobody rests
+    // (every multiple-of-four schedule). Player names are user input: always set
+    // via textContent, never innerHTML.
+    function createRestingStrip(round) {
+      const resting = Array.isArray(round.byes) ? round.byes : [];
+      if (resting.length === 0) return null;
+      const strip = document.createElement("div");
+      strip.className = "resting-players";
+      const label = document.createElement("span");
+      label.className = "resting-label";
+      label.textContent = "Resting:";
+      strip.appendChild(label);
+      resting.forEach(player => {
+        const name = document.createElement("span");
+        name.className = "resting-player";
+        name.textContent = player;
+        strip.appendChild(name);
+      });
+      return strip;
+    }
+
     function displayRound(roundIndex) {
       const container = document.getElementById("tournamentContainer");
       container.innerHTML = "";
@@ -873,6 +961,8 @@
       // Right Column: Matches container.
       const matchesColumn = document.createElement("div");
       matchesColumn.className = "matches-column";
+      const restingStrip = createRestingStrip(round);
+      if (restingStrip) matchesColumn.appendChild(restingStrip);
       const matchesContainer = document.createElement("div");
       matchesContainer.className = "matches-container";
       round.matches.forEach(match => {
@@ -1025,24 +1115,27 @@
       settingsDiv.style.display = (settingsDiv.style.display === "none") ? "block" : "none";
     }
 
-    // Updated loadSchedule function to use global variables from separate JS files.
+    // The schedule a #scheduleSelect value names: "<N>p<R>r.js" is the module (a
+    // script tag in <head>) that sets window.schedule<N>p<R>r. Only values the
+    // dropdown offers are looked up; null for anything else or a missing module.
+    function scheduleForModule(moduleName) {
+      const offered = Array.from(document.getElementById("scheduleSelect").options)
+        .some(option => option.value === moduleName);
+      const match = offered ? /^(\d+p\d+r)\.js$/.exec(moduleName) : null;
+      const schedule = match ? window["schedule" + match[1]] : null;
+      return isPlainObject(schedule) && Array.isArray(schedule.players) && Array.isArray(schedule.rounds)
+        ? schedule : null;
+    }
+
     function loadScheduleFromModule(moduleName) {
-      // Here we check moduleName and assign currentSchedule from global variables.
-      if (moduleName === "8p7r.js") {
-        currentSchedule = window.schedule8p7r;
-      } else if (moduleName === "12p11r.js") {
-        currentSchedule = window.schedule12p11r;
-      } else if (moduleName === "16p15r.js") {
-        currentSchedule = window.schedule16p15r;
-      } else if (moduleName === "20p19r.js") {
-        currentSchedule = window.schedule20p19r;
-      } else if (moduleName === "24p23r.js") {
-        currentSchedule = window.schedule24p23r;
-      } else {
+      const schedule = scheduleForModule(moduleName);
+      if (!schedule) {
         console.error("Unknown module name:", moduleName);
         return;
       }
+      currentSchedule = schedule;
       storeDefaultPlayerNames(currentSchedule.players);
+      setByes(currentSchedule);
       // Clear previous match results and (if needed) store teamIndices.
       currentSchedule.rounds.forEach(round => {
         round.matches.forEach(match => {
@@ -1159,6 +1252,7 @@
           );
         });
       });
+      setByes(currentSchedule); // the resting players take their new names too
 
       if (tournamentStarted) displayRound(currentRoundIndex);
       saveTournamentState();
