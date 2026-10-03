@@ -310,6 +310,16 @@ test.describe('Malformed or hostile persisted state', () => {
     ['byes that are markup', (s) => { s.rounds[0].byes = ['<img src=x onerror="window.pwned=1">']; }],
     ['byes that cannot be printed', (s) => { s.rounds[0].byes = [UNPRINTABLE, UNPRINTABLE]; }],
     ['no byes at all', (s) => { s.rounds.forEach((round) => { delete round.byes; }); }],
+    ['null byes', (s) => { s.rounds.forEach((round) => { round.byes = null; }); }],
+    ['byes that are an object', (s) => { s.rounds[0].byes = { 0: s.players[0], length: 2 }; }],
+    ['byes of out-of-range indices', (s) => { s.rounds[0].byes = [-1, 99, 1e308, NaN]; }],
+    ['byes of the wrong length', (s) => { s.rounds[0].byes = [s.players[0]]; }],
+    ['byes of prototype-ish names', (s) => { s.rounds[0].byes = ['__proto__', 'constructor']; }],
+    ['a prototype-ish byes key on the schedule and rounds', (s) => {
+      s.byes = ['__proto__'];
+      s.rounds.forEach((round) => { round.rest = ['constructor']; round.sitOuts = JSON.parse('{"__proto__":{"x":1}}'); });
+    }],
+    ['byes listing every player', (s) => { s.rounds.forEach((round) => { round.byes = s.players.slice(); }); }],
   ];
   for (const [description, corrupt] of HOSTILE_BYES) {
     test(`A 10-player tournament state with ${description} restores with the true resting players`, async ({ page, context }) => {
