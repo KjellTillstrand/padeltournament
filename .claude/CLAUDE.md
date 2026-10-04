@@ -51,14 +51,19 @@ gate-protected paths.
 ## Delivery Path
 PR + required CI. Drained PRs target `main` and land only once the `Test and deploy`
 workflow checks on the PR are green. "Required" is by process: `main` has no branch
-protection or ruleset, so GitHub does not enforce it.
+protection or ruleset, so GitHub does not enforce it. The forge port's `land_proposal`
+still refuses mechanically when checks are failing, pending, absent (CI not started) or
+unreadable, or when a review requests changes. So a drain must wait for the PR's CI to
+report before landing.
 - No integration queue: this repo has no `scripts/forge/queue.sh`. Do not copy one in.
   Queue adoption is tracked upstream as dotfiles-claude AB#666.
-- The drain proposes with `~/.claude/forge/port.sh propose_change <branch> --base main`
-  and lands with the forge port's `land_proposal <id> --strategy squash`. `land_proposal`
-  is under `permissions.ask`, so the operator approves every merge.
-- Recorded 2026-10-04, AB#68. This closes the local half of DF-4 in
-  `docs/upstream/dotfiles-claude-fixes.md`.
+- The drain proposes with `~/.claude/forge/port.sh propose_change <branch> --base main
+  --title <t> --body-file <f>` (all four are required) and lands with the forge port's
+  `land_proposal <id> --strategy squash`. `land_proposal` is under `permissions.ask`, so
+  the operator approves every merge (the ask rule matches the `~/.claude/forge/port.sh`
+  spelling; use that spelling).
+- Recorded 2026-10-04, AB#68. This records the landing route asked for by DF-4 in
+  `docs/upstream/dotfiles-claude-fixes.md` (prose only; no `forge.env` declaration yet).
 
 ## Gotchas & Patterns
 - Tests exercise localStorage-persisted state; stale state bleeding between specs is
