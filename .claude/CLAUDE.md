@@ -48,6 +48,18 @@ publishes `web/` to `gh-pages` (push-to-main only, freshness-guarded). CI/releas
 trust boundary; the workflow, its gate scripts and the requirements manifest are
 gate-protected paths.
 
+## Delivery Path
+PR + required CI. Drained PRs target `main` and land only once the `Test and deploy`
+workflow checks on the PR are green. "Required" is by process: `main` has no branch
+protection or ruleset, so GitHub does not enforce it.
+- No integration queue: this repo has no `scripts/forge/queue.sh`. Do not copy one in.
+  Queue adoption is tracked upstream as dotfiles-claude AB#666.
+- The drain proposes with `~/.claude/forge/port.sh propose_change <branch> --base main`
+  and lands with the forge port's `land_proposal <id> --strategy squash`. `land_proposal`
+  is under `permissions.ask`, so the operator approves every merge.
+- Recorded 2026-10-04, AB#68. This closes the local half of DF-4 in
+  `docs/upstream/dotfiles-claude-fixes.md`.
+
 ## Gotchas & Patterns
 - Tests exercise localStorage-persisted state; stale state bleeding between specs is
   the classic failure mode here.
