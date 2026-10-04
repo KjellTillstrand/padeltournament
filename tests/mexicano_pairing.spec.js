@@ -53,6 +53,8 @@ test.describe('Mexicano pairing', () => {
       const round = theScheduler().attemptsTo(
         ProduceNextRound({ players: idsOf(n), standings, roundNumber: 2 }),
       );
+      expect(CompositionOfRound(round).length, `${n} players matches`).toBe(Math.floor(n / 4));
+      expect(RestingPlayers(round).length, `${n} players byes`).toBe(n % 4);
       const ranked = standings.filter((id) => !RestingPlayers(round).includes(id));
       CompositionOfRound(round).forEach((m, g) => {
         const [r1, r2, r3, r4] = ranked.slice(g * 4, g * 4 + 4);
@@ -104,6 +106,39 @@ test.describe('Mexicano pairing', () => {
     restCounts.P4 = 0;
     const round2 = Mexicano.nextRound({ players, standings, restCounts, roundNumber: 2 });
     expect([...RestingPlayers(round2)].sort()).toEqual(['P4', 'P7']);
+  });
+
+  test('R-MEXICANO-PAIRING: round 1 ignores the standings', () => {
+    for (const n of COUNTS) {
+      const players = idsOf(n);
+      const without = Mexicano.nextRound({ players, roundNumber: 1, seed: 21 });
+      const withStandings = Mexicano.nextRound({
+        players,
+        standings: standingsFor(n, 2).reverse(),
+        roundNumber: 1,
+        seed: 21,
+      });
+      expect(withStandings, `${n} players`).toEqual(without);
+    }
+  });
+
+  for (const name of ['constructor', '__proto__', 'toString']) {
+    test(`R-MEXICANO-PAIRING: a Player named ${name} with no rests recorded is the one that rests`, () => {
+      const players = [name, ...idsOf(8)];
+      const restCounts = {};
+      for (const p of idsOf(8)) restCounts[p] = 1;
+      // top-ranked, so only the rest count (not rank) can make it rest
+      const round = Mexicano.nextRound({ players, standings: players, restCounts, roundNumber: 2 });
+      expect(RestingPlayers(round)).toEqual([name]);
+      expect(fielded(round).length).toBe(8);
+    });
+  }
+
+  test('R-MEXICANO-PAIRING: restCounts given as a Map is rejected', () => {
+    const players = idsOf(8);
+    expect(() =>
+      Mexicano.nextRound({ players, standings: players, restCounts: new Map([['P1', 1]]), roundNumber: 2 }),
+    ).toThrow(/^Mexicano\.nextRound: /);
   });
 
   test('R-MEXICANO-PAIRING: the same standings and seed give an identical round, twice', () => {
