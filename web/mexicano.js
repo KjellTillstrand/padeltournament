@@ -12,10 +12,13 @@
  * Math.random - so the same inputs and seed always give the same round.
  *
  * Mexicano.nextRound({ players, standings, restCounts, roundNumber, seed })
- *   players      distinct ids (non-empty strings or non-negative integers), 8..24
+ *   players      8..24 distinct ids: non-empty strings, or non-negative
+ *                integers. The app's copyMatch only accepts string Players,
+ *                so the app (AB#59) must pass player names as strings.
  *   standings    the current ranking, best first: every player exactly once.
  *                Required from round 2 on; ignored (but validated) in round 1.
- *   restCounts   optional plain object, id -> rounds rested so far (missing = 0)
+ *   restCounts   optional plain object (not a Map), id -> rounds rested so far.
+ *                Only own keys count; a missing id has 0 rests.
  *   roundNumber  integer >= 1; round 1 is the random draw
  *   seed         integer; required for round 1, the only round it affects
  * returns the app's round shape:
@@ -85,17 +88,26 @@
     if (seen.size !== byKey.size) fail('standings must rank every player exactly once');
   }
 
+  function isPlainObject(value) {
+    if (value === null || typeof value !== 'object') return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+  }
+
+  // Copies the validated OWN entries into a Map: a lookup on the object itself
+  // would read the prototype chain, so an id like "constructor" would rest as
+  // though it had an inherited (non-numeric) count.
   function readRestCounts(restCounts, byKey) {
-    if (restCounts === undefined || restCounts === null) return {};
-    if (typeof restCounts !== 'object' || Array.isArray(restCounts)) {
-      fail('restCounts must be a plain object of id -> rests');
-    }
+    const rests = new Map();
+    if (restCounts === undefined || restCounts === null) return rests;
+    if (!isPlainObject(restCounts)) fail('restCounts must be a plain object of id -> rests');
     for (const key of Object.keys(restCounts)) {
       if (!byKey.has(key)) fail(`restCounts names unknown player ${JSON.stringify(key)}`);
       const n = restCounts[key];
       if (!Number.isInteger(n) || n < 0) fail(`restCounts for ${JSON.stringify(key)} must be an integer >= 0`);
+      rests.set(key, n);
     }
-    return restCounts;
+    return rests;
   }
 
   function nextRound(options) {
@@ -121,7 +133,7 @@
     const restingCount = order.length % 4;
     const resting = new Set(
       order
-        .map((id, position) => ({ id, position, rests: rests[String(id)] || 0 }))
+        .map((id, position) => ({ id, position, rests: rests.get(String(id)) ?? 0 }))
         .sort((a, b) => a.rests - b.rests || b.position - a.position)
         .slice(0, restingCount)
         .map((entry) => entry.id),
