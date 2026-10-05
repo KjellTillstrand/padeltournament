@@ -85,3 +85,64 @@ test.describe('Point pools', () => {
     }
   });
 });
+
+// AB#62: the points total is part of the tournament, so a resumed or loaded
+// tournament keeps completing scores against its own pool, not the default 24.
+test.describe('A resumed tournament keeps its points total', () => {
+  // Enter a score for the left team of a match and expect the pool's complement.
+  async function expectComplement(match, entered, complement) {
+    await match.locator('.result-overlay-left input').fill(String(entered));
+    await expect(match.locator('.result-overlay-right input')).toHaveValue(String(complement));
+    await expect(match.locator('.error-message')).toHaveText('');
+  }
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a tournament played to 21 still completes scores to 21 after a reload', async ({ page }) => {
+    await startWithPointsTotal(page, 21);
+    await expectComplement(page.locator('.result-overlay-container').first(), 13, 8);
+
+    await page.reload();
+
+    const matches = page.locator('.result-overlay-container');
+    await expect(matches.first()).toBeVisible();
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('21');
+    await expect(page.locator('#globalTotalPoints')).toBeDisabled();
+    // The recorded score is intact...
+    await expect(matches.first().locator('.result-overlay-left input')).toHaveValue('13');
+    await expect(matches.first().locator('.result-overlay-right input')).toHaveValue('8');
+    // ...and a new score is completed against 21, not 24.
+    await expectComplement(matches.last(), 13, 8);
+  });
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a tournament played to 16 completes scores to 16 when the app is reopened', async ({ page, context }) => {
+    await startWithPointsTotal(page, 16);
+    await expectComplement(page.locator('.result-overlay-container').first(), 9, 7);
+    await page.close();
+
+    const reopened = await context.newPage();
+    await reopened.goto('/');
+    const matches = reopened.locator('.result-overlay-container');
+    await expect(matches.first()).toBeVisible();
+    await expect(reopened.locator('#globalTotalPoints')).toHaveValue('16');
+    await expectComplement(matches.last(), 9, 7);
+  });
+
+  test('R-POINT-POOLS: a saved tournament played to 32 loads with its points total of 32', async ({ page }) => {
+    page.on('dialog', (dialog) => dialog.dismiss());
+    await startWithPointsTotal(page, 32);
+    await page.click('#saveTournamentBtn');
+    const savedOption = page.locator('#savedTournamentSelect option', { hasText: 'Point Pool 32' });
+    await expect(savedOption).toHaveCount(1);
+
+    // A new tournament set up at 24 (the running one is not saved again).
+    await page.click('#newTournamentBtn');
+    await page.selectOption('#globalTotalPoints', '24');
+
+    await page.selectOption('#savedTournamentSelect', await savedOption.getAttribute('value'));
+    await page.click('#loadTournamentBtn');
+
+    const matches = page.locator('.result-overlay-container');
+    await expect(matches.first()).toBeVisible();
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('32');
+    await expectComplement(matches.first(), 20, 12);
+  });
+});
