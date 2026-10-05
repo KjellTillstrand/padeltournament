@@ -800,6 +800,112 @@ test.describe('Malformed or hostile persisted state', () => {
     }
     expect(errors).toEqual([]);
   });
+
+  // --- AB#62: a stored points total that is not a real pool repairs to 24 ---
+  // Complete a score on the first match and expect the pool's complement.
+  async function expectComplementOnFirstMatch(page, entered, complement) {
+    const match = page.locator('.result-overlay-container').first();
+    await expect(match).toBeVisible();
+    await match.locator('.result-overlay-left input').fill(String(entered));
+    await expect(match.locator('.result-overlay-right input')).toHaveValue(String(complement));
+    await expect(match.locator('.error-message')).toHaveText('');
+  }
+
+  const HOSTILE_TOTALS = [
+    ['a numeric string', '21'],
+    ['a value outside the pools', 25],
+    ['zero', 0],
+    ['a negative number', -24],
+    ['null', null],
+    ['an object', { a: 1 }],
+    ['an array', [21]],
+    ['missing (a legacy state)', undefined],
+  ];
+
+  for (const [description, totalPoints] of HOSTILE_TOTALS) {
+    test(`R-STATE-PERSIST, R-POINT-POOLS: a stored tournament state with a points total that is ${description} resumes at 24`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a started tournament whose stored points total is not a valid pool.
+      const state = await captureARealTournamentState(context);
+      if (totalPoints === undefined) delete state.totalPoints;
+      else state.totalPoints = totalPoints;
+      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+      // When the app loads.
+      await page.goto('/');
+
+      // Then the tournament resumes with the default pool of 24,
+      await expect(page.locator('.round')).toBeVisible();
+      await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+      // And a score entry completes against 24.
+      await expectComplementOnFirstMatch(page, 15, 9);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  for (const [description, totalPoints] of [['a value outside the pools', 25], ['a numeric string', '21'], ['an object', { a: 1 }], ['missing (a legacy save)', undefined]]) {
+    test(`R-STATE-PERSIST, R-POINT-POOLS: a saved tournament with a points total that is ${description} loads at 24`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a saved tournament whose points total is not a valid pool.
+      const { schedule } = await captureARealTournamentState(context);
+      const entry = { tournamentName: 'Odd Cup', schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' };
+      if (totalPoints !== undefined) entry.totalPoints = totalPoints;
+      await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify([entry]) });
+
+      // When the app loads and the Organizer loads the save.
+      await page.goto('/');
+      await page.click('#loadTournamentBtn');
+
+      // Then it plays to 24.
+      await expect(page.locator('#tournamentTitle')).toHaveText('Odd Cup');
+      await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+      await expectComplementOnFirstMatch(page, 15, 9);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a sound saved tournament at 21 still loads at 21', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given saved tournaments, one with a sound points total of 21 and one hostile.
+    const { schedule } = await captureARealTournamentState(context);
+    const base = { schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' };
+    const saved = [
+      { ...base, tournamentName: 'Hostile Cup', totalPoints: 'x' },
+      { ...base, tournamentName: 'Odd Pool Cup', totalPoints: 21 },
+    ];
+    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+
+    // When the Organizer loads the 21-point save.
+    await page.goto('/');
+    await page.selectOption('#savedTournamentSelect', { label: await page.locator('#savedTournamentSelect option', { hasText: 'Odd Pool Cup' }).innerText() });
+    await page.click('#loadTournamentBtn');
+
+    // Then it plays to 21.
+    await expect(page.locator('#tournamentTitle')).toHaveText('Odd Pool Cup');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('21');
+    await expectComplementOnFirstMatch(page, 13, 8);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a points total chosen in setup survives a reload before Start', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given the Organizer chooses 21 points in setup, without starting.
+    await page.goto('/');
+    await page.selectOption('#globalTotalPoints', '21');
+
+    // When the page is reloaded before Start.
+    await page.reload();
+
+    // Then setup is still showing and the choice is still 21,
+    await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('21');
+
+    // And the started tournament completes scores to 21.
+    await page.fill('#tournamentName', 'Setup Pool Cup');
+    await page.click('#startTournamentBtn');
+    await expectComplementOnFirstMatch(page, 13, 8);
+    expect(errors).toEqual([]);
+  });
 });
 
 // Counts that are not a multiple of four: floor(N/4) courts play and the others
