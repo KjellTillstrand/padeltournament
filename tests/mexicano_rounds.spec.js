@@ -343,6 +343,101 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     expect(errors).toEqual([]);
   });
 
+  test('R-MEXICANO-ROUNDS: A locked round cannot be edited even through a re-enabled input', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given round 1 completed and round 2 generated, so round 1 is locked.
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Tamper Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]), GenerateTheNextRound);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    await organizer.attemptsTo(GoToThePreviousRound);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 1');
+    await expectTheScoresLocked(page);
+    const original = [['18', '6'], ['7', '17']];
+    expect(await organizer.asksFor(TheScoresOnScreen)).toEqual(original);
+
+    // When the Organizer removes the disabled attribute in devtools and types a new score,
+    const input = page.locator('.matches-container .match').nth(0).locator('.result-overlay-left input');
+    await page.evaluate(() => {
+      document.querySelectorAll('.result-overlay-container input').forEach((el) => el.removeAttribute('disabled'));
+    });
+    await expect(input).toBeEnabled();
+    await input.fill('3');
+    await input.dispatchEvent('input');
+    await input.dispatchEvent('change');
+
+    // Then the displayed score is unchanged (the opposite side was not recomputed either),
+    // by the app's own state ...
+    const stored = await organizer.asksFor(TheStoredState);
+    expect(stored.schedule.rounds[0].matches[0].result).toEqual({ left: '18', right: '6' });
+    expect(stored.schedule.rounds[1].matches.map((m) => m.result)).not.toContainEqual({ left: '3', right: '21' });
+
+    // ... and after a reload the persisted round-1 scores are still the originals,
+    await page.reload();
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 1');
+    expect(await organizer.asksFor(TheScoresOnScreen)).toEqual(original);
+    // and the round stays locked.
+    await expectTheScoresLocked(page);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: Generation stops at the round cap and says so', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+    const CAP = 128;
+
+    // Given a started 8-player Mexicano tournament, planted at the cap: 127 scored
+    // rounds and a 128th still to be scored. (Playing 128 rounds through the UI is
+    // too slow, so the state a real run persists is rewritten: round 1's draw
+    // repeated and renumbered, which is a sound Mexicano schedule to the app.)
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Cap Cup'));
+    const planted = await page.evaluate((cap) => {
+      const state = JSON.parse(localStorage.getItem('tournamentState'));
+      const first = state.schedule.rounds[0];
+      state.schedule.rounds = Array.from({ length: cap }, (_, i) => {
+        const round = JSON.parse(JSON.stringify(first));
+        round.roundNumber = i + 1;
+        round.matches.forEach((m) => { m.result = i < cap - 1 ? { left: '12', right: '12' } : { left: '', right: '' }; });
+        return round;
+      });
+      state.currentRoundIndex = cap - 1;
+      return JSON.stringify(state);
+    }, CAP);
+    // The app saves its own state on unload, so the plant goes in before the app
+    // loads (once: later reloads must keep what the app itself persisted).
+    await page.addInitScript((json) => {
+      if (!sessionStorage.getItem('planted')) {
+        sessionStorage.setItem('planted', '1');
+        localStorage.setItem('tournamentState', json);
+      }
+    }, planted);
+    await page.reload();
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round ' + CAP);
+    const generate = page.locator('#generateNextRoundBtn');
+    const status = page.locator('#nextRoundStatus');
+    await expect(generate).toBeDisabled();
+    await expect(status).toContainText('Waiting for a valid score');
+
+    // When the last round's scores are completed,
+    await organizer.attemptsTo(CompleteTheRound([14, 9]));
+
+    // Then no next round is offered and the status line explains the cap,
+    await expect(generate).toBeDisabled();
+    await expect(status).toContainText('maximum of ' + CAP + ' rounds');
+    // and asking anyway (the control re-enabled, as with devtools) adds no round 129.
+    await page.evaluate(() => document.getElementById('generateNextRoundBtn').removeAttribute('disabled'));
+    await organizer.attemptsTo(GenerateTheNextRound);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round ' + CAP);
+    await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
+    await expect(status).toContainText('maximum of ' + CAP + ' rounds');
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(CAP);
+    await page.reload();
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round ' + CAP);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(CAP);
+    expect(errors).toEqual([]);
+  });
+
   test('R-MEXICANO-ROUNDS: An Americano tournament is unaffected', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
