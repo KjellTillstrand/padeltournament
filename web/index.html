@@ -410,6 +410,10 @@
 
 
     document.getElementById("startTournamentBtn").addEventListener("click", function () {
+      // Start is disabled while a tournament runs; a re-enabled button (as with
+      // devtools) must not replace the running tournament and its locked rounds.
+      if (tournamentStarted) return;
+
       // Get and trim tournament name.
       let tournamentName = document.getElementById("tournamentName").value.trim();
       if (!tournamentName) {
@@ -477,6 +481,7 @@
       document.getElementById("toggleSettingsBtn").style.display = "none";
       localStorage.removeItem("tournamentState");
       loadScheduleFromModule(document.getElementById("scheduleSelect").value);
+      clearPlayerNameDrafts(); // a new setup starts from the default names
       renderSetupInputs(); // the chosen format is kept, with its player count
       applyFormatUI();
       saveTournamentState(); // persist the kept format now, not only on unload
@@ -676,10 +681,11 @@
     }
 
     // A copy of a started Mexicano tournament's schedule, or null when it is unusable.
-    // On top of copySchedule's checks it must be what the app generates and what the
+    // On top of copySchedule's checks it must be structurally sound, the shape the
     // next round can be generated from: a player count Mexicano pairs (8-24), rounds
     // numbered 1, 2, 3, ... in order, and in every round each court used exactly once
-    // and each player seated at most once (the rest are its byes).
+    // and each player seated at most once (the rest are its byes). This is a shape
+    // check only: it does not prove the app generated these rounds.
     function copyMexicanoSchedule(schedule) {
       const copy = copySchedule(schedule, false);
       if (!copy) return null;
@@ -696,9 +702,11 @@
     }
 
     // The schedule and seed of a started tournament in the given (normalized) format,
-    // or null when they are unusable. A Mexicano tournament needs a Mexicano schedule
-    // and the seed of its round-1 draw: the app writes both at Start, so anything else
-    // was not written by the app and is not trusted to generate further rounds.
+    // or null when they are unusable. A Mexicano tournament needs a structurally sound
+    // Mexicano schedule and a well-formed seed for its round-1 draw (the app writes
+    // both at Start); without them it is not used to generate further rounds. The
+    // seed is shape-checked only: it is not authenticated, and round 1 is not
+    // re-derived from it.
     function copyStartedPlay(format, schedule, seed) {
       if (format !== "mexicano") {
         const copy = copySchedule(schedule, false);
@@ -806,10 +814,38 @@
       return currentSchedule && currentSchedule.players ? currentSchedule.players : [];
     }
 
-    // (Re)build the player and court name inputs for the active setup.
+    // Player names typed in a setup that has not started, per format, by input index.
+    // They are kept while the Organizer changes the player count or switches format
+    // and back; a slot without a draft shows its default name. Court names need no
+    // draft: they live in courtNames whatever the format.
+    let playerNameDrafts = { americano: [], mexicano: [] };
+    let draftedFormat = null; // the format whose setup names are on screen; null: none
+
+    // Remember the names on screen as the draft of the format they were typed for.
+    // A smaller player count drops the names beyond it, so new slots start at
+    // their defaults.
+    function rememberPlayerNameDrafts() {
+      if (!draftedFormat) return;
+      const inputs = document.querySelectorAll("#playerInputsContainer input");
+      playerNameDrafts[draftedFormat] = Array.from(inputs, input => input.value);
+    }
+
+    // Forget every draft (a new setup starts from the default names).
+    function clearPlayerNameDrafts() {
+      playerNameDrafts = { americano: [], mexicano: [] };
+      draftedFormat = null;
+    }
+
+    // (Re)build the player and court name inputs for the active setup, keeping
+    // the names typed so far (see playerNameDrafts).
     function renderSetupInputs() {
-      generatePlayerInputs(setupPlayers());
+      rememberPlayerNameDrafts();
+      const players = setupPlayers();
+      const draft = tournamentStarted ? [] : playerNameDrafts[tournamentFormat];
+      generatePlayerInputs(players.map((player, index) =>
+        (typeof draft[index] === "string" ? draft[index] : player)));
       generateCourtNameInputs();
+      draftedFormat = tournamentStarted ? null : tournamentFormat;
     }
 
     // A site may declare its own default court names in sites/<site>/courts.js.
@@ -1301,10 +1337,11 @@
           }
         });
       }
-      let scoreArray = [];
-      for (let player in scores) {
-        scoreArray.push({ player: player, score: scores[player] });
-      }
+      // Built in player-list order (not by enumerating `scores`, which would list
+      // integer-like names such as "10" first), so the stable sort keeps tied
+      // players in player-list order.
+      const players = currentSchedule && currentSchedule.players ? currentSchedule.players : [];
+      const scoreArray = players.map(player => ({ player: player, score: scores[player] }));
       scoreArray.sort((a, b) => b.score - a.score);
       rankStandings(scoreArray, playedMatches);
       return scoreArray;
