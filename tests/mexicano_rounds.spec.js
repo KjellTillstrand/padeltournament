@@ -234,6 +234,13 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     await organizer.attemptsTo(GenerateTheNextRound);
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 3');
     await expect(page.locator('.court')).toHaveCount(2);
+    // Rests accumulate: round 3's resters sat out neither round 1 nor round 2.
+    const roundThreeResting = await organizer.asksFor(TheRestingPlayers);
+    expect(roundThreeResting).toHaveLength(2);
+    for (const player of roundThreeResting) {
+      expect(roundOneResting).not.toContain(player);
+      expect(roundTwoResting).not.toContain(player);
+    }
     await expectTheScoresEditable(page);
     await organizer.attemptsTo(GoToThePreviousRound);
     await expectTheScoresLocked(page);
@@ -437,6 +444,129 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(CAP);
     expect(errors).toEqual([]);
   });
+
+  for (const [label, left] of [['fractional', '12.5'], ['negative', '-3']]) {
+    test(`R-MEXICANO-ROUNDS: A ${label} score keeps the next round unavailable and flags the court`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const organizer = theOrganizer(page);
+
+      // Given an 8-player round whose first court is scored validly,
+      await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Invalid Cup'));
+      await organizer.attemptsTo(EnterTheScore(0, 14));
+      const generate = page.locator('#generateNextRoundBtn');
+
+      // When the second court gets a non-empty but invalid score (the other side fills itself in),
+      const second = page.locator('.matches-container .match').nth(1);
+      await second.locator('.result-overlay-left input').fill(left);
+      await expect(second.locator('.result-overlay-right input')).not.toHaveValue('');
+
+      // Then the next round shall not be offered, and that court is flagged.
+      await expect(generate).toBeDisabled();
+      await expect(second).toHaveClass(/score-missing/);
+      await expect(page.locator('#nextRoundStatus')).toContainText('Court 2');
+      await expect(page.locator('.matches-container .match').nth(0)).not.toHaveClass(/score-missing/);
+
+      // And forcing it anyway generates nothing.
+      await page.evaluate(() => document.getElementById('generateNextRoundBtn').removeAttribute('disabled'));
+      await organizer.attemptsTo(GenerateTheNextRound);
+      expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  for (const pool of [16, 32]) {
+    test(`R-MEXICANO-ROUNDS, R-POINT-POOLS: With a pool of ${pool}, only scores summing to ${pool} offer the next round`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const organizer = theOrganizer(page);
+
+      // Given an 8-player Mexicano tournament played to a pool other than 24,
+      await organizer.attemptsTo(ChooseMexicanoFor(8));
+      await page.selectOption('#globalTotalPoints', String(pool));
+      await organizer.attemptsTo(StartTheTournament('Pool Cup'));
+      const generate = page.locator('#generateNextRoundBtn');
+      const matches = page.locator('.matches-container .match');
+
+      // When both courts hold scores that sum to 24 instead (the input auto-completes to
+      // the pool, so this is planted in the stored state before the page loads),
+      const planted = await page.evaluate(() => {
+        const state = JSON.parse(localStorage.getItem('tournamentState'));
+        state.schedule.rounds[0].matches.forEach((m) => { m.result = { left: '12', right: '12' }; });
+        return JSON.stringify(state);
+      });
+      await page.addInitScript((json) => {
+        if (!sessionStorage.getItem('planted')) {
+          sessionStorage.setItem('planted', '1');
+          localStorage.setItem('tournamentState', json);
+        }
+      }, planted);
+      await page.reload();
+      // Then the next round shall not be offered, and every court is flagged.
+      await expect(matches.nth(0).locator('.result-overlay-left input')).toHaveValue('12');
+      await expect(generate).toBeDisabled();
+      await expect(page.locator('.matches-container .match.score-missing')).toHaveCount(2);
+
+      // When the scores sum to the pool,
+      await organizer.attemptsTo(EnterTheScore(0, pool / 2 + 2), EnterTheScore(1, pool / 2 - 2));
+      // Then the next round is offered, and generating it works.
+      await expect(page.locator('.matches-container .match.score-missing')).toHaveCount(0);
+      await expect(generate).toBeEnabled();
+      await organizer.attemptsTo(GenerateTheNextRound);
+      expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-MEXICANO-ROUNDS: Start on a running Mexicano tournament, even re-enabled, changes nothing', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a running Mexicano tournament with round 1 locked and round 2 in play,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Running Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]), GenerateTheNextRound);
+    await organizer.attemptsTo(EnterTheScore(0, 11));
+    const before = await organizer.asksFor(TheStoredState);
+    expect(before.schedule.rounds).toHaveLength(2);
+
+    // When Start is re-enabled (as with devtools) and pressed,
+    await page.evaluate(() => {
+      const start = document.getElementById('startTournamentBtn');
+      start.removeAttribute('disabled');
+      start.click();
+    });
+
+    // Then nothing changes: same state, same seed, locked history intact.
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect(await organizer.asksFor(TheStoredState)).toEqual(before);
+    await page.reload();
+    expect(await organizer.asksFor(TheStoredState)).toEqual(before);
+    await organizer.attemptsTo(GoToThePreviousRound);
+    await expectTheScoresLocked(page);
+    expect(await organizer.asksFor(TheScoresOnScreen)).toEqual([['18', '6'], ['7', '17']]);
+    expect(errors).toEqual([]);
+  });
+
+  // Integer-like names are enumerated first by a plain object; the scoreboard must
+  // keep tied players in player-list order regardless.
+  for (const format of ['Americano', 'Mexicano']) {
+    test(`R-SCOREBOARD, R-MEXICANO-ROUNDS: Integer-like names tied on points keep player-list order (${format})`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const organizer = theOrganizer(page);
+
+      // Given players named Bea, "10", Al and "0" first in the list, nobody having scored,
+      if (format === 'Mexicano') await organizer.attemptsTo(ChooseMexicanoFor(8));
+      const names = ['Bea', '10', 'Al', '0'];
+      await organizer.attemptsTo(NameThePlayers(names));
+      await organizer.attemptsTo(StartTheTournament('Tie Cup'));
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+
+      // Then the scoreboard lists them in player-list order (all tied).
+      const stored = await organizer.asksFor(TheStoredState);
+      for (const name of names) expect(stored.schedule.players).toContain(name);
+      const ranking = await organizer.asksFor(TheRanking);
+      expect(ranking).toEqual(stored.schedule.players);
+      expect(errors).toEqual([]);
+    });
+  }
 
   test('R-MEXICANO-ROUNDS: An Americano tournament is unaffected', async ({ page }) => {
     const errors = collectErrors(page);

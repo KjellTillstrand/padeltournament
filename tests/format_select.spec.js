@@ -232,21 +232,118 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(errors).toEqual([]);
   });
 
-  test('R-FORMAT-SELECT: Switching back to Americano restores the Americano setup unchanged', async ({ page }) => {
+  test('R-FORMAT-SELECT: Switching back to Americano restores the Americano setup, typed names included', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
 
-    // Given the Organizer chose Mexicano with a player count.
+    // Given the Organizer typed player and court names in the Americano setup,
+    await page.fill('#playerInput_0', 'Zed');
+    await page.fill('#playerInput_11', 'Yan');
+    await page.fill('#courtNameInput_1', 'Centre');
+    // and chose Mexicano with a player count.
     await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(20));
 
     // When the Organizer chooses Americano again.
     await organizer.attemptsTo(ChooseTheFormat('Americano'));
 
-    // Then the Americano setup is back exactly as before, and it starts.
+    // Then the Americano setup is back as before, typed names included, and it starts.
     expect(await organizer.asksFor(ActiveFormat)).toBe('Americano');
     await expectTheAmericanoSetup(page);
+    await expect(page.locator('#playerInput_0')).toHaveValue('Zed');
+    await expect(page.locator('#playerInput_11')).toHaveValue('Yan');
+    await expect(page.locator('#courtNameInput_1')).toHaveValue('Centre');
     await organizer.attemptsTo(StartTheTournament('Back Cup'));
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: A typed name survives a player-count change; new slots get their default', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a Mexicano setup for 12 players with two names typed,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(12));
+    await page.fill('#playerInput_0', 'Ada');
+    await page.fill('#playerInput_11', 'Zoe');
+
+    // When the Organizer changes the count to 13,
+    await organizer.attemptsTo(ChooseThePlayerCount(13));
+
+    // Then the typed names are kept and the new slot has its default name.
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(13);
+    await expect(page.locator('#playerInput_0')).toHaveValue('Ada');
+    await expect(page.locator('#playerInput_11')).toHaveValue('Zoe');
+    await expect(page.locator('#playerInput_12')).toHaveValue('P13');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: Names typed in the Americano setup survive a Mexicano round trip', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given names typed in the Americano setup,
+    await page.fill('#playerInput_0', 'Ada');
+    await page.fill('#playerInput_5', 'Bo');
+
+    // When the Organizer goes to Mexicano (typing its own name) and back,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
+    await page.fill('#playerInput_1', 'Mex');
+    await organizer.attemptsTo(ChooseTheFormat('Americano'));
+
+    // Then the Americano names are still there,
+    await expect(page.locator('#playerInput_0')).toHaveValue('Ada');
+    await expect(page.locator('#playerInput_5')).toHaveValue('Bo');
+    // and the Mexicano name is still kept for Mexicano.
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
+    await expect(page.locator('#playerInput_1')).toHaveValue('Mex');
+    await expect(page.locator('#playerInput_0')).toHaveValue('P1');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: Shrinking then growing the player count gives re-added slots their defaults', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a Mexicano setup for 13 players with names typed in slots 1, 9 and 13,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(13));
+    await page.fill('#playerInput_0', 'Ada');
+    await page.fill('#playerInput_9', 'Ten');
+    await page.fill('#playerInput_12', 'Last');
+
+    // When the Organizer shrinks to 8 and grows back to 13,
+    await organizer.attemptsTo(ChooseThePlayerCount(8), ChooseThePlayerCount(13));
+
+    // Then slot 1 is kept and the re-added slots have their defaults.
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(13);
+    await expect(page.locator('#playerInput_0')).toHaveValue('Ada');
+    await expect(page.locator('#playerInput_9')).toHaveValue('P10');
+    await expect(page.locator('#playerInput_12')).toHaveValue('P13');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: A new tournament starts from the default names, not the typed ones', async ({ page }) => {
+    const errors = collectErrors(page);
+    page.on('dialog', (dialog) => { if (dialog.type() === 'confirm') dialog.dismiss(); else dialog.accept(); });
+    const organizer = theOrganizer(page);
+
+    // Given typed names in both formats' setups, and a running Mexicano tournament,
+    await page.fill('#playerInput_0', 'Amer');
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(8));
+    await page.fill('#playerInput_0', 'Mex');
+    await organizer.attemptsTo(StartTheTournament('Draft Cup'));
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+
+    // When the Organizer starts a new tournament,
+    await page.click('#newTournamentBtn');
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+
+    // Then the setup shows default names (the chosen format kept) ...
+    await expect(page.locator('#playerInput_0')).toHaveValue('P1');
+    // ... and so does the other format's.
+    await organizer.attemptsTo(ChooseTheFormat('Americano'));
+    await expect(page.locator('#playerInput_0')).not.toHaveValue('Amer');
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
+    await expect(page.locator('#playerInput_0')).toHaveValue('P1');
     expect(errors).toEqual([]);
   });
 

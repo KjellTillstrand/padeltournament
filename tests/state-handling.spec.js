@@ -536,6 +536,22 @@ test.describe('Malformed or hostile persisted state', () => {
     });
   }
 
+  // The seed is any unsigned 32-bit integer: both ends are accepted.
+  for (const seed of [0, 4294967295]) {
+    test(`R-MEXICANO-ROUNDS, R-STATE-PERSIST: A started Mexicano state with the boundary seed ${seed} is restored and plays on`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      const state = await captureARealMexicanoState(context);
+      state.mexicanoSeed = seed;
+      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+      await page.goto('/');
+
+      await expectRoundTwoOfAMexicano(page);
+      expect((await storedJson(page, 'tournamentState')).mexicanoSeed).toBe(seed);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test('R-MEXICANO-ROUNDS: A started state claiming Mexicano for an Americano table without a seed falls back to a fresh setup', async ({ page, context }) => {
     const errors = collectErrors(page);
     // Given a running Americano tournament whose stored format claims Mexicano (no seed).
