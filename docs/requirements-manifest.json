@@ -28,6 +28,7 @@
     { "tag": "R-POINT-POOLS", "id": 43, "title": "Point pools 16, 21, 24 and 32", "method": "Automated Test" },
     { "tag": "R-TIEBREAK-H2H", "id": 44, "title": "Head-to-head tiebreak, then shared placement", "method": "Automated Test" },
     { "tag": "R-SITOUT-PLAY", "id": 45, "title": "Any count from 8 to 24 is playable, with rests spread fairly", "method": "Automated Test" },
-    { "tag": "R-MEXICANO-PAIRING", "id": 46, "title": "Mexicano rounds pair by the live standings", "method": "Automated Test" }
+    { "tag": "R-MEXICANO-PAIRING", "id": 46, "title": "Mexicano rounds pair by the live standings", "method": "Automated Test" },
+    { "tag": "R-MEXICANO-ROUNDS", "id": 47, "title": "One round at a time, locked once it seeds the next", "method": "Automated Test" }
   ]
 }
