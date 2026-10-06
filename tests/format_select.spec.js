@@ -60,20 +60,21 @@ async function expectTheAmericanoSetup(page) {
   await expect(page.locator('[id^="courtNameInput_"]')).toHaveCount(3);
   await expect(page.locator('#courtNameInput_1')).toBeVisible();
   await expect(page.locator('#startTournamentBtn')).toBeEnabled();
-  await expect(page.locator('#mexicanoComingSoon')).toBeHidden();
 }
 
-// The Mexicano scaffold: player count and point pool, no precomputed schedule,
-// and Start disabled until Mexicano rounds can be generated.
+// The Mexicano setup: player count and point pool, no precomputed schedule,
+// one name input per player and one court per four players, and Start enabled.
 async function expectTheMexicanoSetup(page, playerCount) {
   await expect(page.locator('#playerCountSelect')).toBeVisible();
   await expect(page.locator('#playerCountSelect')).toHaveValue(String(playerCount));
   await expect(page.locator('#globalTotalPoints')).toBeVisible();
   await expect(page.locator('#scheduleSelect')).toBeHidden();
   await expect(page.locator('label[for="scheduleSelect"]')).toBeHidden();
-  await expect(page.locator('#startTournamentBtn')).toBeDisabled();
-  await expect(page.locator('#mexicanoComingSoon')).toBeVisible();
-  await expect(page.locator('#mexicanoComingSoon')).toContainText('coming soon');
+  await expect(page.locator('[id^="playerInput_"]')).toHaveCount(playerCount);
+  await expect(page.locator('#playerInput_0')).toBeVisible();
+  await expect(page.locator('#playerInput_0')).toHaveValue('P1');
+  await expect(page.locator('[id^="courtNameInput_"]')).toHaveCount(Math.floor(playerCount / 4));
+  await expect(page.locator('#startTournamentBtn')).toBeEnabled();
 }
 
 test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
@@ -152,26 +153,31 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(errors).toEqual([]);
   });
 
-  test('R-FORMAT-SELECT: A Mexicano tournament cannot be started even with the disabled Start re-enabled', async ({ page }) => {
+  test('R-FORMAT-SELECT: A Mexicano tournament starts with the chosen player count', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
 
-    // Given a Mexicano setup with a tournament name,
-    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
-    await page.fill('#tournamentName', 'Tampered Cup');
-    await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+    // Given a Mexicano setup for 9 players with a tournament name,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(9));
+    await expectTheMexicanoSetup(page, 9);
 
-    // When the disabled Start button is re-enabled (as with devtools) and clicked,
-    await page.evaluate(() => document.getElementById('startTournamentBtn').removeAttribute('disabled'));
-    await page.click('#startTournamentBtn');
+    // When the Organizer starts it,
+    await organizer.attemptsTo(StartTheTournament('Nine Cup'));
 
-    // Then nothing starts: no round is shown and the stored state is not started.
-    await expect(page.locator('.round')).toHaveCount(0);
-    await expect(page.locator('#settingsContainer')).toBeVisible();
-    await expect(page.locator('#tournamentName')).toHaveValue('Tampered Cup');
+    // Then round 1 is played on two courts, with one player resting,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.court')).toHaveCount(2);
+    await expect(page.locator('.resting-players .resting-player')).toHaveCount(1);
+    await expect(page.locator('.scoreboard-container table tr')).toHaveCount(10);
+    // and the format is locked, and stored as a started Mexicano tournament.
+    expect(await organizer.asksFor(ActiveFormat)).toBe('Mexicano');
+    await expect(page.locator('#formatSelect')).toBeDisabled();
+    await expect(page.locator('#playerCountSelect')).toBeDisabled();
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
-    expect(stored.tournamentStarted).toBe(false);
+    expect(stored.tournamentStarted).toBe(true);
     expect(stored.format).toBe('mexicano');
+    expect(stored.schedule.players).toHaveLength(9);
+    expect(stored.schedule.rounds).toHaveLength(1);
     expect(errors).toEqual([]);
   });
 
@@ -189,7 +195,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
 
     // Then the reset setup, still Mexicano, is stored at once.
     await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
-    await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+    await expectTheMexicanoSetup(page, 14);
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
     expect(stored).not.toBeNull();
     expect(stored.tournamentStarted).toBe(false);
@@ -264,8 +270,8 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(errors).toEqual([]);
   });
 
-  // Mexicano cannot be started yet (round generation is a later story), so the
-  // Mexicano example applies to the format selected in the setup.
+  // A started Mexicano tournament surviving a reload is covered in
+  // tests/mexicano_rounds.spec.js; this is the format selected in the setup.
   test('R-FORMAT-SELECT: The format survives a reload (Mexicano, selected in setup)', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);

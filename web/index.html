@@ -22,6 +22,22 @@
     .resting-players .resting-player + .resting-player::before {
       content: ", ";
     }
+    /* Mexicano: what the next round is waiting for, and the rounds it locked. */
+    .round-status {
+      background-color: #fff;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      padding: 10px;
+      margin: 0 0 10px 0;
+    }
+    .match.score-missing .court {
+      outline: 4px dashed #ff8c00;
+      outline-offset: 2px;
+    }
+    .round-header .center button:disabled {
+      background-color: #8a9a8a;
+      cursor: not-allowed;
+    }
   </style>
   <!-- Multiples of 4: perfect-whist tables (scheduler/whist-generate.js).
        Other counts: rest-round tables (scheduler/engine/sitout-generate.mjs). -->
@@ -42,6 +58,8 @@
   <script src="schedules/22p22r.js"></script>
   <script src="schedules/23p23r.js"></script>
   <script src="schedules/24p23r.js"></script>
+  <!-- Mexicano pairing (window.Mexicano): generates each Mexicano round from the standings. -->
+  <script src="mexicano.js"></script>
 </head>
 
 <body>
@@ -107,9 +125,6 @@
     <!-- Move Start Tournament Button Below -->
     <div class="start-button-container">
       <button id="startTournamentBtn">Start Tournament</button>
-      <p id="mexicanoComingSoon" role="status" style="display:none;">
-        Mexicano is coming soon: rounds cannot be generated yet, so a Mexicano tournament cannot be started.
-      </p>
     </div>
 
     <div id="playerInputsContainer">
@@ -144,17 +159,21 @@
     let currentRoundIndex = 0; // 0-indexed
     let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
 
-    // Tournament format. Americano plays a precomputed schedule (the only format that
-    // can be started today); Mexicano is set up by player count, and its rounds will be
-    // generated from the standings during play (not available yet).
+    // Tournament format. Americano plays a precomputed schedule. Mexicano is set up by
+    // player count and played one round at a time: round 1 is a seeded random draw,
+    // every later round is generated (web/mexicano.js) from the standings once the
+    // current round is complete. currentSchedule.rounds is then the list of rounds
+    // generated so far; every round but the latest has seeded a later one, so its
+    // scores are locked (derived, never stored: see isRoundLocked).
     const FORMATS = ["americano", "mexicano"];
-    const STARTABLE_FORMATS = ["americano"]; // formats a tournament can be started (and saved) in
     const DEFAULT_FORMAT = "americano";
     const MIN_MEXICANO_PLAYERS = 8;
     const MAX_MEXICANO_PLAYERS = 24;
     const DEFAULT_MEXICANO_PLAYERS = 12;
+    const MAX_MEXICANO_SEED = 0xFFFFFFFF; // the round-1 draw's seed is an unsigned 32-bit integer
     let tournamentFormat = DEFAULT_FORMAT;
     let mexicanoPlayerCount = DEFAULT_MEXICANO_PLAYERS;
+    let mexicanoSeed = null; // drawn once when a Mexicano tournament starts; null otherwise
 
     // Points total: the two scores of every match sum to it. It belongs to the
     // tournament (persisted with it), and #globalTotalPoints only displays and sets it.
@@ -184,6 +203,7 @@
         courtNames: courtNames.slice(),
         format: tournamentFormat,
         mexicanoPlayerCount: mexicanoPlayerCount,
+        mexicanoSeed: mexicanoSeed,
         totalPoints: totalPoints
       };
       writeStoredJson("tournamentState", state);
@@ -220,6 +240,7 @@
       courtNames = state.courtNames;
       tournamentFormat = state.format;
       mexicanoPlayerCount = state.mexicanoPlayerCount;
+      mexicanoSeed = state.mexicanoSeed;
       totalPoints = state.totalPoints;
       document.getElementById("tournamentName").value = state.tournamentName;
       document.getElementById("tournamentTitle").textContent = state.tournamentName || "Tournament Title";
@@ -231,6 +252,7 @@
       courtNames = [];
       tournamentFormat = DEFAULT_FORMAT;
       mexicanoPlayerCount = DEFAULT_MEXICANO_PLAYERS;
+      mexicanoSeed = null;
       totalPoints = DEFAULT_TOTAL_POINTS;
       document.getElementById("tournamentName").value = "";
       document.getElementById("tournamentTitle").textContent = "Tournament Title";
@@ -269,8 +291,7 @@
 
       // 4. Generate the player name table and the court name inputs.
       if (currentSchedule && currentSchedule.players) {
-        generatePlayerInputs(currentSchedule.players);
-        generateCourtNameInputs();
+        renderSetupInputs();
       } else {
         console.error("No schedule loaded; please load a schedule first.");
       }
@@ -303,6 +324,7 @@
         currentRoundIndex: currentRoundIndex,
         courtNames: courtNames.slice(),
         format: tournamentFormat,
+        mexicanoSeed: mexicanoSeed,
         totalPoints: totalPoints,
         savedAt: new Date().toISOString()
       };
@@ -336,6 +358,12 @@
         generateCourtNameInputs();
         // Tournaments saved before formats existed carry none: they are Americano.
         tournamentFormat = selectedTournament.format;
+        mexicanoSeed = selectedTournament.mexicanoSeed;
+        if (tournamentFormat === "mexicano") {
+          // The settings show the loaded tournament's players (locked below).
+          mexicanoPlayerCount = currentSchedule.players.length;
+          generatePlayerInputs(currentSchedule.players);
+        }
         // Tournaments saved before the points total was stored carry none: 24.
         totalPoints = selectedTournament.totalPoints;
         applyFormatUI();
@@ -382,9 +410,6 @@
 
 
     document.getElementById("startTournamentBtn").addEventListener("click", function () {
-      // Only Americano can be started for now (the button is disabled for Mexicano).
-      if (tournamentFormat !== "americano") return;
-
       // Get and trim tournament name.
       let tournamentName = document.getElementById("tournamentName").value.trim();
       if (!tournamentName) {
@@ -397,12 +422,16 @@
       tournamentName = getUniqueTournamentName(tournamentName);
       document.getElementById("tournamentName").value = tournamentName;
 
-      if (!currentSchedule) {
-        alert("Please load a schedule first.");
-        return;
-      }
+      if (tournamentFormat === "mexicano") {
+        if (!startMexicano()) return;
+      } else {
+        if (!currentSchedule) {
+          alert("Please load a schedule first.");
+          return;
+        }
 
-      if (!randomizePlayers()) return;
+        if (!randomizePlayers()) return;
+      }
 
       // Now proceed to start the tournament.
       tournamentStarted = true;
@@ -436,6 +465,7 @@
       tournamentStarted = false;
       currentSchedule = null;
       currentRoundIndex = 0;
+      mexicanoSeed = null;
       document.getElementById("formatSelect").disabled = false;
       document.getElementById("playerCountSelect").disabled = false;
       document.getElementById("scheduleSelect").disabled = false;
@@ -447,7 +477,8 @@
       document.getElementById("toggleSettingsBtn").style.display = "none";
       localStorage.removeItem("tournamentState");
       loadScheduleFromModule(document.getElementById("scheduleSelect").value);
-      applyFormatUI(); // the chosen format is kept; Mexicano keeps Start disabled
+      renderSetupInputs(); // the chosen format is kept, with its player count
+      applyFormatUI();
       saveTournamentState(); // persist the kept format now, not only on unload
     }
 
@@ -540,13 +571,6 @@
     }
 
     // The Mexicano player count is an integer in the range the setup offers, else the default.
-    // The format of a started (or saved) tournament: only a format that can be started
-    // is kept. The app never writes a started tournament in any other format.
-    function normalizeStartedFormat(format) {
-      const known = normalizeFormat(format);
-      return STARTABLE_FORMATS.includes(known) ? known : DEFAULT_FORMAT;
-    }
-
     function normalizeMexicanoPlayerCount(count) {
       return Number.isInteger(count) && count >= MIN_MEXICANO_PLAYERS && count <= MAX_MEXICANO_PLAYERS
         ? count : DEFAULT_MEXICANO_PLAYERS;
@@ -646,22 +670,70 @@
       return schedule;
     }
 
+    // The seed of a Mexicano round-1 draw: an unsigned 32-bit integer, as the app draws it.
+    function isValidMexicanoSeed(seed) {
+      return Number.isInteger(seed) && seed >= 0 && seed <= MAX_MEXICANO_SEED;
+    }
+
+    // A copy of a started Mexicano tournament's schedule, or null when it is unusable.
+    // On top of copySchedule's checks it must be what the app generates and what the
+    // next round can be generated from: a player count Mexicano pairs (8-24), rounds
+    // numbered 1, 2, 3, ... in order, and in every round each court used exactly once
+    // and each player seated at most once (the rest are its byes).
+    function copyMexicanoSchedule(schedule) {
+      const copy = copySchedule(schedule, false);
+      if (!copy) return null;
+      const playerCount = copy.players.length;
+      if (playerCount < MIN_MEXICANO_PLAYERS || playerCount > MAX_MEXICANO_PLAYERS) return null;
+      const courtCount = Math.floor(playerCount / 4);
+      const sound = copy.rounds.every((round, index) => {
+        if (round.roundNumber !== index + 1 || round.matches.length !== courtCount) return false;
+        const courts = new Set(round.matches.map(match => match.court));
+        const seated = new Set(round.matches.flatMap(match => match.teams.flat()));
+        return courts.size === courtCount && seated.size === courtCount * 4;
+      });
+      return sound ? copy : null;
+    }
+
+    // The schedule and seed of a started tournament in the given (normalized) format,
+    // or null when they are unusable. A Mexicano tournament needs a Mexicano schedule
+    // and the seed of its round-1 draw: the app writes both at Start, so anything else
+    // was not written by the app and is not trusted to generate further rounds.
+    function copyStartedPlay(format, schedule, seed) {
+      if (format !== "mexicano") {
+        const copy = copySchedule(schedule, false);
+        return copy ? { schedule: copy, mexicanoSeed: null } : null;
+      }
+      if (!isValidMexicanoSeed(seed)) return null;
+      const copy = copyMexicanoSchedule(schedule);
+      return copy ? { schedule: copy, mexicanoSeed: seed } : null;
+    }
+
     // A rebuilt copy of the stored tournamentState, or null when it is missing or
     // unusable.
     function readTournamentState() {
       const state = readStoredJson("tournamentState");
       if (!isPlainObject(state)) return null;
       const started = state.tournamentStarted === true;
-      const schedule = copySchedule(state.schedule, !started);
-      if (!schedule) return null;
+      const format = normalizeFormat(state.format);
+      // A setup that has not started holds the Americano schedule (whatever the
+      // format) and no seed: the seed is drawn at Start.
+      const play = started
+        ? copyStartedPlay(format, state.schedule, state.mexicanoSeed)
+        : { schedule: copySchedule(state.schedule, true), mexicanoSeed: null };
+      if (!play || !play.schedule) return null;
+      const schedule = play.schedule;
       return {
         schedule: schedule,
         currentRoundIndex: normalizeRoundIndex(state.currentRoundIndex, schedule),
         tournamentStarted: started,
         tournamentName: normalizeTournamentName(state.tournamentName),
         courtNames: normalizeCourtNames(state.courtNames),
-        format: started ? normalizeStartedFormat(state.format) : normalizeFormat(state.format),
-        mexicanoPlayerCount: normalizeMexicanoPlayerCount(state.mexicanoPlayerCount),
+        format: format,
+        // A running Mexicano tournament's count is its players'; a setup's is the chosen one.
+        mexicanoPlayerCount: started && format === "mexicano"
+          ? schedule.players.length : normalizeMexicanoPlayerCount(state.mexicanoPlayerCount),
+        mexicanoSeed: play.mexicanoSeed,
         totalPoints: normalizeTotalPoints(state.totalPoints)
       };
     }
@@ -671,14 +743,17 @@
     // not required.
     function copySavedTournament(entry) {
       if (!isPlainObject(entry) || typeof entry.tournamentName !== "string" || entry.tournamentName.trim() === "") return null;
-      const schedule = copySchedule(entry.schedule, false);
-      if (!schedule) return null;
+      const format = normalizeFormat(entry.format); // saved tournaments are always started
+      const play = copyStartedPlay(format, entry.schedule, entry.mexicanoSeed);
+      if (!play) return null;
+      const schedule = play.schedule;
       const copy = {
         tournamentName: entry.tournamentName,
         schedule: schedule,
         currentRoundIndex: normalizeRoundIndex(entry.currentRoundIndex, schedule),
         courtNames: normalizeCourtNames(entry.courtNames),
-        format: normalizeStartedFormat(entry.format), // saved tournaments are always started
+        format: format,
+        mexicanoSeed: play.mexicanoSeed,
         totalPoints: normalizeTotalPoints(entry.totalPoints)
       };
       if (typeof entry.savedAt === "string") copy.savedAt = entry.savedAt;
@@ -718,8 +793,23 @@
 
     // Every match needs its own court, so a schedule has one court per four players.
     function getCourtCount() {
-      if (!currentSchedule || !currentSchedule.players) return 0;
-      return Math.floor(currentSchedule.players.length / 4);
+      return Math.floor(setupPlayers().length / 4);
+    }
+
+    // The players the setup shows: in a Mexicano setup that has not started, the
+    // chosen count of default names (P1, P2, ...; the schedule held then is the
+    // Americano one, kept for switching back); otherwise the schedule's players.
+    function setupPlayers() {
+      if (tournamentFormat === "mexicano" && !tournamentStarted) {
+        return Array.from({ length: mexicanoPlayerCount }, (_, i) => "P" + (i + 1));
+      }
+      return currentSchedule && currentSchedule.players ? currentSchedule.players : [];
+    }
+
+    // (Re)build the player and court name inputs for the active setup.
+    function renderSetupInputs() {
+      generatePlayerInputs(setupPlayers());
+      generateCourtNameInputs();
     }
 
     // A site may declare its own default court names in sites/<site>/courts.js.
@@ -752,6 +842,7 @@
         input.addEventListener("input", function () {
           courtNames[courtNumber - 1] = input.value;
           updateCourtLabels();
+          updateNextRoundControl(); // its status names courts
           saveTournamentState();
         });
         table.appendChild(input);
@@ -780,7 +871,10 @@
 
 
     // --- Functions for Round and Match Rendering ---
-    function createResultOverlay(match) {
+    // The score inputs of one match. A locked round's (see isRoundLocked) are shown
+    // read-only and never change the match.
+    function createResultOverlay(match, roundIndex) {
+      const locked = isRoundLocked(roundIndex);
       const overlayContainer = document.createElement('div');
       overlayContainer.className = 'result-overlay-container';
       const total = totalPoints; // fixed for the tournament: the setting is locked once started
@@ -798,6 +892,8 @@
       rightInput.min = '0';
       rightInput.value = '';
       rightOverlay.appendChild(rightInput);
+      leftInput.disabled = locked;
+      rightInput.disabled = locked;
       overlayContainer.appendChild(leftOverlay);
       overlayContainer.appendChild(rightOverlay);
       const errorSpan = document.createElement('span');
@@ -827,14 +923,22 @@
         } else { errorSpan.textContent = ""; }
         match.result = { left: leftInput.value, right: rightInput.value };
         updateAllScoreboards();
+        updateNextRoundControl();
         saveTournamentState();
       }
-      leftInput.addEventListener('input', function () { updateOpposite(leftInput, rightInput); validate(); });
-      rightInput.addEventListener('input', function () { updateOpposite(rightInput, leftInput); validate(); });
+      // Re-checked on every edit, not only at render: a locked round's scores
+      // have seeded a later round and must never change.
+      function onEdit(source, target) {
+        if (isRoundLocked(roundIndex)) return;
+        updateOpposite(source, target);
+        validate();
+      }
+      leftInput.addEventListener('input', function () { onEdit(leftInput, rightInput); });
+      rightInput.addEventListener('input', function () { onEdit(rightInput, leftInput); });
       return overlayContainer;
     }
 
-    function createCourtView(match) {
+    function createCourtView(match, roundIndex) {
       const courtDiv = document.createElement('div');
 
       // Add 'court' class + dynamic court number class
@@ -850,7 +954,7 @@
         courtDiv.appendChild(courtLabel);
       }
 
-      const resultOverlay = createResultOverlay(match);
+      const resultOverlay = createResultOverlay(match, roundIndex);
       courtDiv.appendChild(resultOverlay);
 
       const centerLine = document.createElement('div');
@@ -871,12 +975,12 @@
     }
 
 
-    function createMatchContainer(match) {
+    function createMatchContainer(match, roundIndex) {
       const container = document.createElement('div');
       container.className = 'match';
       container.dataset.teamLeft = match.teams[0].join(',');
       container.dataset.teamRight = match.teams[1].join(',');
-      const courtView = createCourtView(match);
+      const courtView = createCourtView(match, roundIndex);
       container.appendChild(courtView);
       return container;
     }
@@ -948,6 +1052,16 @@
         });
         headerCenter.appendChild(nextBtn);
       }
+      // Mexicano: the latest round offers the next one, generated from the standings.
+      const latestMexicanoRound = tournamentFormat === "mexicano" && roundIndex === currentSchedule.rounds.length - 1;
+      if (latestMexicanoRound) {
+        const generateBtn = document.createElement("button");
+        generateBtn.id = "generateNextRoundBtn";
+        generateBtn.textContent = "GENERATE NEXT ROUND";
+        generateBtn.setAttribute("aria-describedby", "nextRoundStatus");
+        generateBtn.addEventListener("click", generateNextRound);
+        headerCenter.appendChild(generateBtn);
+      }
 
       // Right part: Save and New Tournament buttons.
       const headerRight = document.createElement("div");
@@ -969,6 +1083,22 @@
       roundHeader.appendChild(headerRight);
       roundDiv.appendChild(roundHeader);
 
+      // Mexicano: what the next round waits for (latest round), or why a round is
+      // read-only (every earlier one). Filled by updateNextRoundControl.
+      if (latestMexicanoRound) {
+        const status = document.createElement("p");
+        status.id = "nextRoundStatus";
+        status.className = "round-status";
+        status.setAttribute("role", "status");
+        roundDiv.appendChild(status);
+      } else if (isRoundLocked(roundIndex)) {
+        const note = document.createElement("p");
+        note.className = "round-status round-locked-note";
+        note.textContent = "Round " + round.roundNumber + " is locked: its scores seeded round " +
+          (round.roundNumber + 1) + ".";
+        roundDiv.appendChild(note);
+      }
+
       // --- Round Body: Two Columns ---
       const roundBody = document.createElement("div");
       roundBody.className = "round-body";
@@ -987,7 +1117,7 @@
       const matchesContainer = document.createElement("div");
       matchesContainer.className = "matches-container";
       round.matches.forEach(match => {
-        const matchContainer = createMatchContainer(match);
+        const matchContainer = createMatchContainer(match, roundIndex);
         matchesContainer.appendChild(matchContainer);
       });
       matchesColumn.appendChild(matchesContainer);
@@ -997,17 +1127,169 @@
       container.appendChild(roundDiv);
 
       updateAllScoreboards();
+      updateNextRoundControl();
       saveTournamentState();
     }
 
-    function updateAllScoreboards() {
+    // --- Mexicano round lifecycle ---
+    // Only the latest Mexicano round is editable: every earlier one has seeded a
+    // later round, so its scores are locked. Derived from the rounds list, never stored.
+    function isRoundLocked(roundIndex) {
+      return tournamentFormat === "mexicano" && tournamentStarted && !!currentSchedule &&
+        roundIndex < currentSchedule.rounds.length - 1;
+    }
+
+    // A complete, valid score: two whole numbers (no sign, fraction or exponent)
+    // that sum to the tournament's points total.
+    function isCompleteResult(result) {
+      if (!result || typeof result.left !== "string" || typeof result.right !== "string") return false;
+      const left = result.left.trim();
+      const right = result.right.trim();
+      if (!/^\d+$/.test(left) || !/^\d+$/.test(right)) return false;
+      return Number(left) + Number(right) === totalPoints;
+    }
+
+    // The matches of the latest round that still lack a complete, valid score.
+    function matchesMissingAScore() {
+      const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
+      return latest.matches.filter(match => !isCompleteResult(match.result));
+    }
+
+    // Enable "Generate next round" only when the latest round is complete, and
+    // otherwise say (and mark on the courts) which scores it is waiting for.
+    // A no-op unless the latest Mexicano round is on screen.
+    function updateNextRoundControl() {
+      const button = document.getElementById("generateNextRoundBtn");
+      const status = document.getElementById("nextRoundStatus");
+      if (!button || !status || !isMexicanoPlay()) return;
+      const missing = matchesMissingAScore();
+      const full = currentSchedule.rounds.length >= MAX_ROUNDS;
+      button.disabled = missing.length > 0 || full;
+      const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
+      const containers = document.querySelectorAll("#tournamentContainer .matches-container > .match");
+      latest.matches.forEach((match, index) => {
+        if (containers[index]) containers[index].classList.toggle("score-missing", missing.includes(match));
+      });
+      // Court names are user input: textContent only.
+      if (missing.length > 0) {
+        status.textContent = "Waiting for a valid score on: " +
+          missing.map(match => getCourtName(match.court)).join(", ") +
+          ". The next round can be generated once every match has one.";
+      } else if (full) {
+        status.textContent = "All scores are in. This tournament has reached the maximum of " +
+          MAX_ROUNDS + " rounds.";
+      } else {
+        status.textContent = "All scores are in: the next round can be generated.";
+      }
+    }
+
+    function isMexicanoPlay() {
+      return tournamentFormat === "mexicano" && tournamentStarted && !!currentSchedule &&
+        Array.isArray(currentSchedule.rounds) && currentSchedule.rounds.length > 0;
+    }
+
+    // Rounds rested so far, per player (byes across every generated round). No
+    // prototype, so player names like "constructor" or "__proto__" are plain keys.
+    function mexicanoRestCounts() {
+      const restCounts = Object.create(null);
+      currentSchedule.players.forEach(player => { restCounts[player] = 0; });
+      currentSchedule.rounds.forEach(round => {
+        (Array.isArray(round.byes) ? round.byes : []).forEach(player => { restCounts[player] += 1; });
+      });
+      return restCounts;
+    }
+
+    // A generated Mexicano round in the app's round shape (byes are set by setByes).
+    function toScheduleRound(generated) {
+      return {
+        roundNumber: generated.roundNumber,
+        matches: generated.matches.map(match => ({
+          court: match.court,
+          teams: match.teams.map(team => team.slice()),
+          result: null
+        }))
+      };
+    }
+
+    // Generate the round after the latest one, from the standings the scoreboard
+    // shows after it, and move to it. Refused while a score is missing: the
+    // missing ones are (re)indicated instead.
+    function generateNextRound() {
+      if (!isMexicanoPlay()) return;
+      const rounds = currentSchedule.rounds;
+      if (matchesMissingAScore().length > 0 || rounds.length >= MAX_ROUNDS) {
+        updateNextRoundControl();
+        return;
+      }
+      let generated;
+      try {
+        generated = window.Mexicano.nextRound({
+          players: currentSchedule.players.slice(),
+          standings: computeStandings(rounds.length - 1).map(entry => entry.player),
+          restCounts: mexicanoRestCounts(),
+          roundNumber: rounds.length + 1
+        });
+      } catch (err) {
+        console.warn("Could not generate the next Mexicano round:", err);
+        alert("The next round could not be generated.");
+        return;
+      }
+      rounds.push(toScheduleRound(generated));
+      setByes(currentSchedule);
+      currentRoundIndex = rounds.length - 1;
+      displayRound(currentRoundIndex);
+      saveTournamentState();
+    }
+
+    // Start a Mexicano tournament: read the named players (as Americano does: a
+    // blank name takes its default, names are at most 20 characters and unique),
+    // draw a seed once, and generate round 1 from it. Returns whether it started.
+    function startMexicano() {
+      if (!window.Mexicano || typeof window.Mexicano.nextRound !== "function") {
+        alert("Mexicano is not available: the pairing module could not be loaded.");
+        return false;
+      }
+      const defaults = setupPlayers();
+      const names = [];
+      for (let i = 0; i < defaults.length; i++) {
+        const input = document.getElementById("playerInput_" + i);
+        const name = (input ? input.value.trim() : "") || defaults[i];
+        if (name.length > 20) {
+          alert("Player names must be 20 characters or less.");
+          return false;
+        }
+        names.push(name);
+      }
+      if (new Set(names).size !== names.length) {
+        alert("Player names must be unique.");
+        return false;
+      }
+      const seed = crypto.getRandomValues(new Uint32Array(1))[0];
+      let first;
+      try {
+        first = window.Mexicano.nextRound({ players: names, roundNumber: 1, seed: seed });
+      } catch (err) {
+        console.warn("Could not draw the first Mexicano round:", err);
+        alert("The first round could not be drawn.");
+        return false;
+      }
+      mexicanoSeed = seed;
+      currentSchedule = setByes({ players: names.slice(), rounds: [toScheduleRound(first)] });
+      // The settings show the players as they play (locked once started).
+      generatePlayerInputs(currentSchedule.players);
+      return true;
+    }
+
+    // The ranking after the rounds up to roundIndex, best first: the order the
+    // scoreboard shows and Mexicano pairs by. Each entry: { player, score, placement }.
+    function computeStandings(roundIndex) {
       // No prototype, so a player named "__proto__" is scored like any other.
       const scores = Object.create(null);
       if (currentSchedule && currentSchedule.players) {
         currentSchedule.players.forEach(player => { scores[player] = 0; });
       }
       const playedMatches = [];
-      for (let i = 0; i <= currentRoundIndex; i++) {
+      for (let i = 0; i <= roundIndex; i++) {
         const round = currentSchedule.rounds[i];
         round.matches.forEach(match => {
           if (match.result) {
@@ -1025,6 +1307,11 @@
       }
       scoreArray.sort((a, b) => b.score - a.score);
       rankStandings(scoreArray, playedMatches);
+      return scoreArray;
+    }
+
+    function updateAllScoreboards() {
+      const scoreArray = computeStandings(currentRoundIndex);
       const currentRoundNum = currentSchedule.rounds[currentRoundIndex].roundNumber;
       const scoreboardContainer = document.getElementById("scoreboard-round-" + currentRoundNum);
       if (scoreboardContainer) {
@@ -1185,9 +1472,10 @@
     populatePlayerCountSelect();
 
     // Show the setup controls of the active format. Americano: the precomputed
-    // schedules, player names and court names, exactly as before formats existed.
-    // Mexicano: a player count instead of a schedule, and Start stays disabled until
-    // Mexicano rounds can be generated. The points control is shared by both.
+    // schedules, exactly as before formats existed. Mexicano: a player count instead
+    // of a schedule (its rounds are generated during play). Player names, court
+    // names and the points control are shared by both; the player and court inputs
+    // themselves follow the format's player count (see renderSetupInputs).
     // Visibility is set via style.display, because the player-name grid's own CSS
     // display would override the hidden attribute.
     function applyFormatUI() {
@@ -1201,22 +1489,22 @@
       show(document.getElementById("scheduleSelect"), !mexicano);
       show(document.getElementById("playerCountLabel"), mexicano);
       show(document.getElementById("playerCountSelect"), mexicano);
-      show(document.getElementById("playerInputsContainer"), !mexicano);
-      show(document.querySelector(".court-names-section"), !mexicano);
-      show(document.getElementById("mexicanoComingSoon"), mexicano);
       // A running tournament keeps its locked setup (see disableSettings).
-      if (!tournamentStarted) document.getElementById("startTournamentBtn").disabled = mexicano;
+      if (!tournamentStarted) document.getElementById("startTournamentBtn").disabled = false;
     }
 
     // A format or player-count choice is saved right away, so it survives a reload
-    // before the tournament starts.
+    // before the tournament starts. The player and court inputs follow the new
+    // player count, starting from the default names.
     document.getElementById("formatSelect").addEventListener("change", function () {
       tournamentFormat = normalizeFormat(this.value);
+      renderSetupInputs();
       applyFormatUI();
       saveTournamentState();
     });
     document.getElementById("playerCountSelect").addEventListener("change", function () {
       mexicanoPlayerCount = normalizeMexicanoPlayerCount(parseInt(this.value, 10));
+      renderSetupInputs();
       applyFormatUI();
       saveTournamentState();
     });

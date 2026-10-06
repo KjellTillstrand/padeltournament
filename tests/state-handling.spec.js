@@ -427,12 +427,118 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#settingsContainer')).toBeVisible();
   }
 
-  // --- A started tournament in a format that cannot be started yet ---
-  // The app only ever starts (and saves) Americano, so a started Mexicano state
-  // can only have been planted: it is restored, and loaded, as Americano.
-  test('A started state claiming Mexicano restores as a normal Americano tournament', async ({ page, context }) => {
+  // --- Started Mexicano tournaments (AB#59) ---
+  // A genuine Mexicano state, taken from the app itself: a 9-player tournament
+  // started, its round 1 completed and round 2 generated, so round 1 is locked.
+  async function captureARealMexicanoState(context) {
+    const donor = await context.newPage();
+    // The context's storage may hold another donor's running tournament: clear it
+    // before the app runs (a reload would write the running one back on unload).
+    await donor.addInitScript(() => localStorage.clear());
+    await donor.goto('/');
+    await donor.selectOption('#formatSelect', 'mexicano');
+    await donor.selectOption('#playerCountSelect', '9');
+    await donor.fill('#tournamentName', 'Mexicano Base');
+    await donor.click('#startTournamentBtn');
+    const lefts = donor.locator('.matches-container .match .result-overlay-left input');
+    await expect(lefts).toHaveCount(2);
+    await lefts.nth(0).fill('20');
+    await lefts.nth(1).fill('15');
+    await donor.click('#generateNextRoundBtn');
+    await expect(donor.locator('.round-header .left')).toHaveText('Round 2');
+    const state = JSON.parse(await donor.evaluate(() => localStorage.getItem('tournamentState')));
+    await donor.close();
+    expect(state.tournamentStarted).toBe(true);
+    expect(state.format).toBe('mexicano');
+    expect(state.schedule.rounds).toHaveLength(2);
+    return state;
+  }
+
+  async function expectRoundTwoOfAMexicano(page) {
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expect(page.locator('.court')).toHaveCount(2);
+    await expect(page.locator('.result-overlay-left input').first()).toBeEnabled();
+    await expect(page.locator('#generateNextRoundBtn')).toBeDisabled();
+    // Round 1 stays viewable and locked.
+    await page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true }).click();
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.result-overlay-left input').first()).toBeDisabled();
+    await expect(page.locator('.result-overlay-left input').first()).toHaveValue('20');
+    await page.getByRole('button', { name: 'NEXT ROUND', exact: true }).click();
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+  }
+
+  test('R-MEXICANO-ROUNDS, R-STATE-PERSIST: A sound Mexicano state with an out-of-range round index resumes at round 1, locks intact', async ({ page, context }) => {
     const errors = collectErrors(page);
-    // Given a running tournament whose stored format claims Mexicano.
+    // Given a running Mexicano tournament whose stored round index is out of range,
+    const state = await captureARealMexicanoState(context);
+    state.currentRoundIndex = 7;
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    // When the app loads,
+    await page.goto('/');
+
+    // Then it shows round 1, locked, and round 2 is still the one being played.
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.result-overlay-left input').first()).toBeDisabled();
+    await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
+    await showTheSettings(page);
+    await expect(page.locator('#playerCountSelect')).toHaveValue('9');
+    await expect(page.locator('#playerCountSelect')).toBeDisabled();
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(9);
+    await page.getByRole('button', { name: 'NEXT ROUND', exact: true }).click();
+    await expectRoundTwoOfAMexicano(page);
+    expect((await storedJson(page, 'tournamentState')).mexicanoSeed).toBe(state.mexicanoSeed);
+    expect(errors).toEqual([]);
+  });
+
+  // Structure the next round cannot be generated from, or a draw without its
+  // seed: the app never writes either, so the state is not trusted at all.
+  const twoPlayersOnOneSeat = (s) => { s.schedule.rounds[0].matches[1].teams[0][0] = s.schedule.rounds[0].matches[0].teams[0][0]; };
+  const HOSTILE_MEXICANO_STATES = [
+    ['no rounds list', (s) => { delete s.schedule.rounds; }],
+    ['an empty rounds list', (s) => { s.schedule.rounds = []; }],
+    ['a rounds list that is not a list', (s) => { s.schedule.rounds = { 0: s.schedule.rounds[0], length: 1 }; }],
+    ['rounds out of order', (s) => { s.schedule.rounds.reverse(); }],
+    ['a skipped round number', (s) => { s.schedule.rounds[1].roundNumber = 3; }],
+    ['a round missing a match', (s) => { s.schedule.rounds[1].matches.pop(); }],
+    ['a round seating a player twice', twoPlayersOnOneSeat],
+    ['two matches on one court', (s) => { s.schedule.rounds[0].matches[1].court = 1; }],
+    ['a match naming an unknown player', (s) => { s.schedule.rounds[1].matches[0].teams[0][0] = 'Mallory'; }],
+    ['fewer players than Mexicano pairs', (s) => {
+      s.schedule.players = ['A', 'B', 'C', 'D'];
+      s.schedule.rounds = [{ roundNumber: 1, matches: [{ court: 1, teams: [['A', 'B'], ['C', 'D']], result: null }] }];
+    }],
+    ['no seed', (s) => { delete s.mexicanoSeed; }],
+    ['a null seed', (s) => { s.mexicanoSeed = null; }],
+    ['a seed that is a string', (s) => { s.mexicanoSeed = String(s.mexicanoSeed); }],
+    ['a fractional seed', (s) => { s.mexicanoSeed = 1.5; }],
+    ['a negative seed', (s) => { s.mexicanoSeed = -1; }],
+    ['a seed above 32 bits', (s) => { s.mexicanoSeed = 2 ** 32; }],
+    ['a seed that is markup', (s) => { s.mexicanoSeed = '<img src=x onerror="window.pwned=1">'; }],
+  ];
+  for (const [description, corrupt] of HOSTILE_MEXICANO_STATES) {
+    test(`R-MEXICANO-ROUNDS, R-STATE-PERSIST: A started Mexicano state with ${description} falls back to a fresh setup`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a running Mexicano tournament whose stored state has been tampered with,
+      const state = await captureARealMexicanoState(context);
+      corrupt(state);
+      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+      // When the app loads,
+      await page.goto('/');
+
+      // Then it starts a fresh setup that works, rather than playing untrusted rounds.
+      await expectAFreshSetup(page);
+      expect(await page.evaluate(() => window.pwned)).toBeUndefined();
+      await expectATournamentCanStart(page, 'Fresh Cup');
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-MEXICANO-ROUNDS: A started state claiming Mexicano for an Americano table without a seed falls back to a fresh setup', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a running Americano tournament whose stored format claims Mexicano (no seed).
     const state = await captureARealTournamentState(context);
     state.format = 'mexicano';
     state.mexicanoPlayerCount = 16;
@@ -441,52 +547,63 @@ test.describe('Malformed or hostile persisted state', () => {
     // When the app loads.
     await page.goto('/');
 
-    // Then it runs as an Americano tournament,
-    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    // Then it starts a fresh setup: no Mexicano round is generated from it.
+    await expectAFreshSetup(page);
     await expect(page.locator('#formatSelect')).toHaveValue('americano');
-    // with the Americano settings (locked, as for any running tournament),
-    await showTheSettings(page);
-    await expect(page.locator('#scheduleSelect')).toBeVisible();
-    await expect(page.locator('#scheduleSelect')).toBeDisabled();
-    await expect(page.locator('#playerCountSelect')).toBeHidden();
-    await expect(page.locator('#playerInput_0')).toBeVisible();
-    await expect(page.locator('#courtNameInput_1')).toBeVisible();
-    await expect(page.locator('#mexicanoComingSoon')).toBeHidden();
-    // and the state it saves reads Americano, as does a save of it.
-    expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
-    collectDialogs(page);
-    await page.click('#saveTournamentBtn');
-    expect((await storedJson(page, 'savedTournaments'))[0].format).toBe('americano');
     expect(errors).toEqual([]);
   });
 
-  test('A saved tournament claiming Mexicano loads as a normal Americano tournament', async ({ page, context }) => {
+  test('R-MEXICANO-ROUNDS: Hostile saved Mexicano tournaments are skipped while a sound one loads and plays on', async ({ page, context }) => {
     const errors = collectErrors(page);
     collectDialogs(page);
-    // Given a saved tournament whose format claims Mexicano.
-    const { schedule } = await captureARealTournamentState(context);
-    const saved = [{ tournamentName: 'Winter Cup', schedule, currentRoundIndex: 1, format: 'mexicano', savedAt: '2026-01-01T00:00:00.000Z' }];
+    // Given saved tournaments: one sound Mexicano save among tampered ones.
+    // (The Americano donor runs first: it expects the context's storage empty.)
+    const { schedule: americanoSchedule } = await captureARealTournamentState(context);
+    const state = await captureARealMexicanoState(context);
+    const save = (name, overrides) => ({
+      tournamentName: name,
+      schedule: JSON.parse(JSON.stringify(state.schedule)),
+      currentRoundIndex: 1,
+      format: 'mexicano',
+      mexicanoSeed: state.mexicanoSeed,
+      savedAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    });
+    const outOfOrder = JSON.parse(JSON.stringify(state.schedule));
+    outOfOrder.rounds.reverse();
+    const saved = [
+      save('Bad Seed Cup', { mexicanoSeed: 'x' }),
+      save('No Seed Cup', { mexicanoSeed: undefined }),
+      save('Out Of Order Cup', { schedule: outOfOrder }),
+      save('Americano Table Cup', { schedule: americanoSchedule, mexicanoSeed: undefined }),
+      save('Sound Mexicano Cup', {}),
+    ];
     await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
 
-    // When the app loads and the Organizer loads the save.
+    // When the app loads,
     await page.goto('/');
-    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
-    await page.click('#loadTournamentBtn');
 
-    // Then it runs as an Americano tournament at its saved round,
-    await expect(page.locator('#tournamentTitle')).toHaveText('Winter Cup');
-    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
-    await expect(page.locator('#formatSelect')).toHaveValue('americano');
-    // with the Americano settings,
-    await showTheSettings(page);
-    await expect(page.locator('#scheduleSelect')).toBeVisible();
-    await expect(page.locator('#playerCountSelect')).toBeHidden();
-    await expect(page.locator('#courtNameInput_1')).toBeVisible();
-    await expect(page.locator('#mexicanoComingSoon')).toBeHidden();
-    // and what it stores and re-saves reads Americano.
-    expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
-    await page.click('#saveTournamentBtn');
-    expect((await storedJson(page, 'savedTournaments'))[0].format).toBe('americano');
+    // Then only the sound save is listed,
+    await expectAFreshSetup(page);
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    await expect(page.locator('#savedTournamentSelect option')).toContainText('Sound Mexicano Cup');
+
+    // and it loads at its saved round, locks intact,
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Sound Mexicano Cup');
+    await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
+    await expectRoundTwoOfAMexicano(page);
+
+    // and play goes on: round 2 completes and round 3 is generated.
+    const lefts = page.locator('.matches-container .match .result-overlay-left input');
+    await lefts.nth(0).fill('12');
+    await lefts.nth(1).fill('12');
+    await page.click('#generateNextRoundBtn');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+    const stored = await storedJson(page, 'tournamentState');
+    expect(stored.format).toBe('mexicano');
+    expect(stored.mexicanoSeed).toBe(state.mexicanoSeed);
+    expect(stored.schedule.rounds).toHaveLength(3);
     expect(errors).toEqual([]);
   });
 
@@ -528,9 +645,17 @@ test.describe('Malformed or hostile persisted state', () => {
         await expect(page.locator('.round-header .left')).toHaveText('Round 1');
         expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
       } else {
+        // And a Mexicano setup offers the restored count of players, and starts.
         await expect(page.locator('#playerCountSelect')).toBeVisible();
         await expect(page.locator('#scheduleSelect')).toBeHidden();
-        await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+        await expect(page.locator('[id^="playerInput_"]')).toHaveCount(Number(restoredCount));
+        await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+        await page.click('#startTournamentBtn');
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+        await expect(page.locator('.court')).toHaveCount(Math.floor(Number(restoredCount) / 4));
+        const stored = await storedJson(page, 'tournamentState');
+        expect(stored.format).toBe('mexicano');
+        expect(stored.schedule.players).toHaveLength(Number(restoredCount));
       }
       expect(errors).toEqual([]);
     });
