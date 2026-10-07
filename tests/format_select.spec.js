@@ -60,20 +60,21 @@ async function expectTheAmericanoSetup(page) {
   await expect(page.locator('[id^="courtNameInput_"]')).toHaveCount(3);
   await expect(page.locator('#courtNameInput_1')).toBeVisible();
   await expect(page.locator('#startTournamentBtn')).toBeEnabled();
-  await expect(page.locator('#mexicanoComingSoon')).toBeHidden();
 }
 
-// The Mexicano scaffold: player count and point pool, no precomputed schedule,
-// and Start disabled until Mexicano rounds can be generated.
+// The Mexicano setup: player count and point pool, no precomputed schedule,
+// one name input per player and one court per four players, and Start enabled.
 async function expectTheMexicanoSetup(page, playerCount) {
   await expect(page.locator('#playerCountSelect')).toBeVisible();
   await expect(page.locator('#playerCountSelect')).toHaveValue(String(playerCount));
   await expect(page.locator('#globalTotalPoints')).toBeVisible();
   await expect(page.locator('#scheduleSelect')).toBeHidden();
   await expect(page.locator('label[for="scheduleSelect"]')).toBeHidden();
-  await expect(page.locator('#startTournamentBtn')).toBeDisabled();
-  await expect(page.locator('#mexicanoComingSoon')).toBeVisible();
-  await expect(page.locator('#mexicanoComingSoon')).toContainText('coming soon');
+  await expect(page.locator('[id^="playerInput_"]')).toHaveCount(playerCount);
+  await expect(page.locator('#playerInput_0')).toBeVisible();
+  await expect(page.locator('#playerInput_0')).toHaveValue('P1');
+  await expect(page.locator('[id^="courtNameInput_"]')).toHaveCount(Math.floor(playerCount / 4));
+  await expect(page.locator('#startTournamentBtn')).toBeEnabled();
 }
 
 test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
@@ -152,26 +153,31 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(errors).toEqual([]);
   });
 
-  test('R-FORMAT-SELECT: A Mexicano tournament cannot be started even with the disabled Start re-enabled', async ({ page }) => {
+  test('R-FORMAT-SELECT: A Mexicano tournament starts with the chosen player count', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
 
-    // Given a Mexicano setup with a tournament name,
-    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
-    await page.fill('#tournamentName', 'Tampered Cup');
-    await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+    // Given a Mexicano setup for 9 players with a tournament name,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(9));
+    await expectTheMexicanoSetup(page, 9);
 
-    // When the disabled Start button is re-enabled (as with devtools) and clicked,
-    await page.evaluate(() => document.getElementById('startTournamentBtn').removeAttribute('disabled'));
-    await page.click('#startTournamentBtn');
+    // When the Organizer starts it,
+    await organizer.attemptsTo(StartTheTournament('Nine Cup'));
 
-    // Then nothing starts: no round is shown and the stored state is not started.
-    await expect(page.locator('.round')).toHaveCount(0);
-    await expect(page.locator('#settingsContainer')).toBeVisible();
-    await expect(page.locator('#tournamentName')).toHaveValue('Tampered Cup');
+    // Then round 1 is played on two courts, with one player resting,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.court')).toHaveCount(2);
+    await expect(page.locator('.resting-players .resting-player')).toHaveCount(1);
+    await expect(page.locator('.scoreboard-container table tr')).toHaveCount(10);
+    // and the format is locked, and stored as a started Mexicano tournament.
+    expect(await organizer.asksFor(ActiveFormat)).toBe('Mexicano');
+    await expect(page.locator('#formatSelect')).toBeDisabled();
+    await expect(page.locator('#playerCountSelect')).toBeDisabled();
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
-    expect(stored.tournamentStarted).toBe(false);
+    expect(stored.tournamentStarted).toBe(true);
     expect(stored.format).toBe('mexicano');
+    expect(stored.schedule.players).toHaveLength(9);
+    expect(stored.schedule.rounds).toHaveLength(1);
     expect(errors).toEqual([]);
   });
 
@@ -189,7 +195,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
 
     // Then the reset setup, still Mexicano, is stored at once.
     await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
-    await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+    await expectTheMexicanoSetup(page, 14);
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
     expect(stored).not.toBeNull();
     expect(stored.tournamentStarted).toBe(false);
@@ -226,21 +232,118 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(errors).toEqual([]);
   });
 
-  test('R-FORMAT-SELECT: Switching back to Americano restores the Americano setup unchanged', async ({ page }) => {
+  test('R-FORMAT-SELECT: Switching back to Americano restores the Americano setup, typed names included', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
 
-    // Given the Organizer chose Mexicano with a player count.
+    // Given the Organizer typed player and court names in the Americano setup,
+    await page.fill('#playerInput_0', 'Zed');
+    await page.fill('#playerInput_11', 'Yan');
+    await page.fill('#courtNameInput_1', 'Centre');
+    // and chose Mexicano with a player count.
     await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(20));
 
     // When the Organizer chooses Americano again.
     await organizer.attemptsTo(ChooseTheFormat('Americano'));
 
-    // Then the Americano setup is back exactly as before, and it starts.
+    // Then the Americano setup is back as before, typed names included, and it starts.
     expect(await organizer.asksFor(ActiveFormat)).toBe('Americano');
     await expectTheAmericanoSetup(page);
+    await expect(page.locator('#playerInput_0')).toHaveValue('Zed');
+    await expect(page.locator('#playerInput_11')).toHaveValue('Yan');
+    await expect(page.locator('#courtNameInput_1')).toHaveValue('Centre');
     await organizer.attemptsTo(StartTheTournament('Back Cup'));
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: A typed name survives a player-count change; new slots get their default', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a Mexicano setup for 12 players with two names typed,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(12));
+    await page.fill('#playerInput_0', 'Ada');
+    await page.fill('#playerInput_11', 'Zoe');
+
+    // When the Organizer changes the count to 13,
+    await organizer.attemptsTo(ChooseThePlayerCount(13));
+
+    // Then the typed names are kept and the new slot has its default name.
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(13);
+    await expect(page.locator('#playerInput_0')).toHaveValue('Ada');
+    await expect(page.locator('#playerInput_11')).toHaveValue('Zoe');
+    await expect(page.locator('#playerInput_12')).toHaveValue('P13');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: Names typed in the Americano setup survive a Mexicano round trip', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given names typed in the Americano setup,
+    await page.fill('#playerInput_0', 'Ada');
+    await page.fill('#playerInput_5', 'Bo');
+
+    // When the Organizer goes to Mexicano (typing its own name) and back,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
+    await page.fill('#playerInput_1', 'Mex');
+    await organizer.attemptsTo(ChooseTheFormat('Americano'));
+
+    // Then the Americano names are still there,
+    await expect(page.locator('#playerInput_0')).toHaveValue('Ada');
+    await expect(page.locator('#playerInput_5')).toHaveValue('Bo');
+    // and the Mexicano name is still kept for Mexicano.
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
+    await expect(page.locator('#playerInput_1')).toHaveValue('Mex');
+    await expect(page.locator('#playerInput_0')).toHaveValue('P1');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: Shrinking then growing the player count gives re-added slots their defaults', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a Mexicano setup for 13 players with names typed in slots 1, 9 and 13,
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(13));
+    await page.fill('#playerInput_0', 'Ada');
+    await page.fill('#playerInput_9', 'Ten');
+    await page.fill('#playerInput_12', 'Last');
+
+    // When the Organizer shrinks to 8 and grows back to 13,
+    await organizer.attemptsTo(ChooseThePlayerCount(8), ChooseThePlayerCount(13));
+
+    // Then slot 1 is kept and the re-added slots have their defaults.
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(13);
+    await expect(page.locator('#playerInput_0')).toHaveValue('Ada');
+    await expect(page.locator('#playerInput_9')).toHaveValue('P10');
+    await expect(page.locator('#playerInput_12')).toHaveValue('P13');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT: A new tournament starts from the default names, not the typed ones', async ({ page }) => {
+    const errors = collectErrors(page);
+    page.on('dialog', (dialog) => { if (dialog.type() === 'confirm') dialog.dismiss(); else dialog.accept(); });
+    const organizer = theOrganizer(page);
+
+    // Given typed names in both formats' setups, and a running Mexicano tournament,
+    await page.fill('#playerInput_0', 'Amer');
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(8));
+    await page.fill('#playerInput_0', 'Mex');
+    await organizer.attemptsTo(StartTheTournament('Draft Cup'));
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+
+    // When the Organizer starts a new tournament,
+    await page.click('#newTournamentBtn');
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+
+    // Then the setup shows default names (the chosen format kept) ...
+    await expect(page.locator('#playerInput_0')).toHaveValue('P1');
+    // ... and so does the other format's.
+    await organizer.attemptsTo(ChooseTheFormat('Americano'));
+    await expect(page.locator('#playerInput_0')).not.toHaveValue('Amer');
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'));
+    await expect(page.locator('#playerInput_0')).toHaveValue('P1');
     expect(errors).toEqual([]);
   });
 
@@ -264,8 +367,8 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(errors).toEqual([]);
   });
 
-  // Mexicano cannot be started yet (round generation is a later story), so the
-  // Mexicano example applies to the format selected in the setup.
+  // A started Mexicano tournament surviving a reload is covered in
+  // tests/mexicano_rounds.spec.js; this is the format selected in the setup.
   test('R-FORMAT-SELECT: The format survives a reload (Mexicano, selected in setup)', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
