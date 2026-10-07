@@ -69,16 +69,28 @@ report before landing.
 
 ## Governance
 Declared in `.claude/gate.json`: profile `adopting` (R1), with the `tracking` dial
-overridden to `board`. Without the key the harness resolves to `regulated` (R3), whose
-adoption preflight refuses all work and whose landing route is a queue this repo lacks.
-- R1 here: adoption gaps are a warning, not a refusal. Landing is PR + required CI (as in
-  Delivery Path). Headless `--auto` batches are allowed, but the operator still approves
-  batches interactively by practice. Runtime currency is advisory.
-- Recorded 2026-10-07, AB#78.
-- Full adoption is a tracked follow-up: the harness's `.claude/requirements.json`
-  manifest, plus making the adoption checker recognise this repo's `R-TAG:` test titles.
-  Until then the checker sees only six stray `REQ-<n>` ids (`@verifies` comments) and
-  would generate a misleading manifest, so none is committed.
+overridden to `board` (the mock board above). Without the key the harness resolves to
+`regulated` (R3): its adoption preflight would refuse this repo's drains (no harness
+manifest yet), and its landing route is a queue this repo lacks.
+What each relaxed R1 dial does here:
+- `adoption=warn`: adoption gaps are announced at the drain's batch gate, not refused.
+- `coverage=record`: the harness dial only records. The real, blocking control is this
+  repo's own CI requirement-coverage gate (`scripts/check-req-coverage.mjs`, see Deploy).
+- `landing=pr-ci`: as in Delivery Path.
+- `containment=throwaway-home`: no effect here. Containment applies only inside the
+  integration queue, which this repo lacks.
+- `batch_approval=auto-allowed` by profile, but the drain still BLOCKS `--auto` while
+  adoption is incomplete (`adopted=false`). The operator approves batches interactively
+  by practice. Merge approval is mechanical (`land_proposal` under `permissions.ask`).
+- `runtime_currency=advisory` by profile: no harness hook enforces it for this repo, but
+  drain §0 still requires `install.sh --check` to exit 0 before claiming anything. A
+  failing check is a stop.
+- Recorded 2026-10-07, AB#78. The resolver's standing warning ("gated but resolves to
+  rung R1 …") is expected while on R1. Promotion to R2 follows AB#79.
+- Full adoption is AB#79: the harness's `.claude/requirements.json` manifest, plus making
+  the adoption checker recognise this repo's `R-TAG:` test titles. Until then the checker
+  sees only six stray `REQ-<n>` ids (`@verifies` comments) and would generate a
+  misleading manifest, so none is committed.
 
 ## Gotchas & Patterns
 - Tests exercise localStorage-persisted state; stale state bleeding between specs is
