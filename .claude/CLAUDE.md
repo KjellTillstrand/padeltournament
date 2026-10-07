@@ -44,9 +44,11 @@ none configured
 ## Deploy
 GitHub Pages, automatic: every push to `main` runs `.github/workflows/playwright-tests.yml`
 ("Test and deploy") — full suite + the requirement-coverage gate, then the deploy job
-publishes `web/` to `gh-pages` (push-to-main only, freshness-guarded). CI/release is a
-trust boundary; the workflow, its gate scripts and the requirements manifest are
-gate-protected paths.
+uploads `web/` as a Pages artifact and publishes it with `actions/deploy-pages` to the
+`github-pages` environment (push-to-main only, freshness-guarded; the Pages source is
+"GitHub Actions" — the old `gh-pages` branch is no longer published to, though not yet
+deleted). CI/release is a trust boundary; the workflow, its gate scripts and the
+requirements manifest are gate-protected paths.
 
 ## Delivery Path
 PR + required CI. Drained PRs target `main` and land only once the `Test and deploy`
