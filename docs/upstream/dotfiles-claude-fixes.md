@@ -25,8 +25,8 @@ step), never prose alone, per the retro rule (REQ-490).
 | DF-7 | Review re-checks resumed by message lose their isolated worktree | process-step | open |
 | DF-8 | `/code-review` given a branch name reviews nothing and reports nothing | process-step | open |
 | DF-9 | `install.sh --check` fails on every `/model` switch, tripping drain preflight | gate (check fix) | open |
-| DF-10 | Drain parent roll-up names states the mock board doesn't have | process-step | open |
-| DF-11 | Specialists start overlapping full-suite runs | verification-step | open |
+| DF-10 | Drain parent roll-up names states the mock board doesn't have | process-step + gate | open |
+| DF-11 | A specialist's self-reported bar isn't the bar the drain records | verification-step | open |
 
 ---
 
@@ -95,9 +95,12 @@ step), never prose alone, per the retro rule (REQ-490).
   - `wt-ab19` … `wt-ab35`, the `chore+…` and `feat+…` drain worktrees;
   - `agent-ab9aa0cd…` and `agent-ae05b8b7…`, the two reviewer worktrees.
 - **Mechanism (process-step):** in drain §2g teardown:
-  1. Compare the item's content against the default branch, for example with
-     `git fetch origin && git diff --quiet HEAD origin/<default>` (empty means
-     the content landed).
+  1. Compare the item's **own paths** against the default branch. A whole-tree
+     diff fails as soon as an unrelated commit lands on the default branch.
+     `git fetch origin`, take
+     `paths = git diff --name-only <merge-base HEAD origin/<default>> HEAD`, then
+     run `git diff --quiet HEAD origin/<default> -- <paths>`. Empty means the
+     item's content landed.
   2. On exit 0, `ExitWorktree remove` with `discard_changes: true` is
      authorized by the drain. The content is proven landed, so no human
      confirmation is needed.
@@ -109,11 +112,12 @@ step), never prose alone, per the retro rule (REQ-490).
   merged or content on the default branch) and offers cleanup closes the
   backlog.
 - **More evidence (drain-491-closeout):** all four item worktrees came down
-  cleanly with the content-on-main comparison proposed above. Each time,
-  `git diff --quiet HEAD origin/main` was run (or limited to the item's own files
-  when an unrelated commit, the Dependabot bump #32, had landed in between).
-  `ExitWorktree remove` with `discard_changes: true` followed, so the proposed
-  mechanism holds in practice.
+  cleanly with a content-on-main comparison followed by `ExitWorktree remove`
+  with `discard_changes: true`. A whole-tree `git diff --quiet HEAD origin/main`
+  was **not** enough. For AB#68 it exited 1 because the Dependabot bump #32 had
+  landed on main in the meantime, and the comparison had to be narrowed to the
+  item's own files by hand. That is why step 1 above compares only the item's
+  own paths.
 - **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §2e/§2g,
   `home/skills/drain/references/change-flow.md`, `home/skills/new-wi/`.
 - **Verify:** a fixture repo with a squash-merged branch: teardown removes the
@@ -159,7 +163,12 @@ step), never prose alone, per the retro rule (REQ-490).
 - **Verify:** hook tests:
   - commands with `/x/git/y` path arguments, and a `--jq` filter containing
     `[1]`, are allowed;
-  - `git -C /outside status` and `cd /outside && git commit` are still refused.
+  - `D=$(mktemp -d) && …` and `--description-html "$(cat f)"`, with no git in
+    the substitution, are allowed;
+  - a multi-line `export MOCK_BOARD_STATE=/x/git/y/state.json` followed by a
+    non-git command is allowed;
+  - `git -C /outside status`, `cd /outside && git commit`, and `$(git -C
+    /outside rev-parse HEAD)` are still refused.
 
 ## DF-4: Drain requires `scripts/forge/queue.sh`, which onboarding never provisioned
 
@@ -218,9 +227,11 @@ step), never prose alone, per the retro rule (REQ-490).
   `state=none`. It needed a manual `update_item 68 --state New`. Confirmed on
   dotfiles-claude `origin/main` (`scripts/boards/mock.sh`, the create path's
   `state: $s.state`).
-- **Mechanism (gate, adapter fix):** default a created item's state to the
-  process profile's initial state for its type (`New` for stories). Reject a
-  create that would store a null state.
+- **Mechanism (gate, adapter fix):** default a created item's state to its
+  type's initial state. For stories that is `states.storyReady`. The profile
+  has no initial-state key for Feature or Epic (the same gap as DF-10), so
+  until it does, fall back to the first entry of the board's `.board.states`
+  (`New`). Reject a create that would store a null state.
 - **Target (dotfiles-claude):** `scripts/boards/mock.sh` `_adapter_create_item`.
 - **Verify:** an adapter test where `create_item` with no State field stores
   `New`, and `claim_item` on it exits 0.
@@ -237,15 +248,16 @@ step), never prose alone, per the retro rule (REQ-490).
   resumed the same reviewer by message for a fix-round re-check, that worktree
   was gone. The agent's shell then sat in the writer's worktree, which breaks the
   one-writer rule in `parallel.md`. The work stayed read-only, using only
-  `git show`, `diff` and `log`, but nothing enforced that.
+  `git show`, `diff` and `log`. `gate-tracked-edit.sh` would have denied an
+  edit-tool write on a gated path (the marker's `runner` differs), but nothing
+  stops a Bash write or a write to an ungated path.
 - **Evidence:** this happened three times. The AB#58 security re-check said
   "the environment moved me to … feat+mexicano-pairing-module…", and the AB#59
   reviewer and security re-checks both said their own worktree had been removed
   mid-task.
 - **Mechanism (process-step):** in drain §2e, a re-review after a fix round is
   always a **fresh** dispatch with `isolation: worktree`, carrying the prior
-  verdict as context. It is never a message-resume of the earlier agent. A
-  validate-config rule can check that the skill text sets this.
+  verdict as context. It is never a message-resume of the earlier agent.
 - **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §2e,
   `home/skills/drain/references/parallel.md` § The reviewer reads.
 - **Verify:** a skill-text conformance assertion that §2e names "fresh dispatch"
@@ -258,17 +270,23 @@ step), never prose alone, per the retro rule (REQ-490).
 - **Source:** drain-491-closeout, AB#68 and AB#58, 2026-10-05
 - **Goal:** the native code-review pass in drain §2e reviews the item's real diff,
   every time.
-- **Problem:** `/code-review low <branch-name>` finished in about 4–6 s with one
-  tool call and output `(none)`, on a 12-line diff and on a 310-line diff. That is
-  indistinguishable from "no findings". The same skill given the PR number
-  (`/code-review medium 34`, `35`, `36`) did real reviews in 40–120 s.
+- **Problem:** given a local branch name, `/code-review` returns an empty
+  result within seconds. That is indistinguishable from "no findings", so drain
+  §2e can record a review that never happened.
+- **Evidence:** `/code-review low <branch-name>` finished in 3.8 s and 5.7 s,
+  with one tool call each and output `(none)`. The AB#68 diff was 12 inserted
+  lines and the AB#58 diff 310, both pre-squash `git diff --stat`. The same skill
+  given the PR number (`/code-review medium 34`, `35`, `36`) did real reviews in
+  40–122 s, and its PR #36 run raised a real finding.
 - **Mechanism (process-step):** run drain §2e's `/code-review` **after** the
   proposal exists, against the PR number. Alternatively, keep it before the
   proposal but treat a result with no review text as "not run", never as "no
   findings".
 - **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §2e (ordering) and
   §2f.
-- **Verify:** a skill-text assertion that §2e names the PR-number form.
+- **Verify:** a skill-text assertion that §2e names the PR-number form, plus an
+  assertion that §2e says a code-review result with no review text is recorded
+  as "not run".
 
 ## DF-9: `install.sh --check` fails on every `/model` switch, tripping drain preflight
 
@@ -298,37 +316,64 @@ step), never prose alone, per the retro rule (REQ-490).
 - **Status:** open
 - **Source:** drain-491-closeout end-of-drain roll-up, 2026-10-07
 - **Goal:** the parent roll-up writes states the active board accepts.
-- **Problem:** `board-ops.md` § Parent state roll-up maps to
-  `Closed`/`Resolved`/`Active`/`New`, but the mock board's states are
-  `New`/`InDevelopment`/`Deployed`/`Released`/`Review`/`Approved`. The drain had
-  to invent a mapping (all children Deployed → `Deployed`; some children past New
-  → `InDevelopment`) for Features #49–#51 and Epic #48.
-- **Mechanism (process-step):** read the roll-up targets from the process
-  profile (`states.featureDone`, `states.featureActive`, …). Make the board's
-  `validate-board-structure.sh` fail when a profile lacks them.
+- **Problem:** `board-ops.md` § Parent state roll-up says its state names are
+  "read from the active process profile via the `states.*` keys, never
+  hard-coded". But the profile defines no Feature or Epic states, so the table's
+  `Closed`/`Resolved`/`Active` are hard-coded in practice, and the mock board
+  rejects them.
+- **Evidence:** the mock board's states are
+  `New`/`InDevelopment`/`Deployed`/`Released`/`Review`/`Approved`.
+  `default-process.json` has story, requirement and RD state keys only. At the
+  end of the drain, the roll-up for Features #49–#51 and Epic #48 needed a
+  mapping invented on the spot: all children Deployed → `Deployed`, some
+  children past New → `InDevelopment`.
+- **Mechanism (process-step + gate):** add Feature and Epic roll-up keys to the
+  profile (`states.featureDone`, `states.featureActive`, …) and read the roll-up
+  targets from them. `load-process.sh`'s required-key check fails when a
+  profile lacks them.
 - **Target (dotfiles-claude):** `home/skills/drain/references/board-ops.md`
-  § Parent state roll-up; `scripts/boards/default-process.json` and the mock
-  profile.
+  § Parent state roll-up; `scripts/boards/default-process.json`,
+  `scripts/boards/load-process.sh` (`_missing_keys`),
+  `scripts/boards/board-structure.schema.json`, and the mock profile.
 - **Verify:** a fixture board with a mock profile where the roll-up writes only
   states from that profile.
 
-## DF-11: Specialists start overlapping full-suite runs
+## DF-11: A specialist's self-reported bar isn't the bar the drain records
 
 - **Status:** open
 - **Source:** drain-491-closeout, AB#62 test-writer, 2026-10-05
-- **Goal:** each item's bar is one clean, unshared run.
-- **Problem:** the test-writer's `npm test` hit its 600 s tool timeout and was
-  relaunched in the background while earlier runs may still have been alive. Its
-  reported runs took 11–17 min with 9 failed-then-passed tests. The drain's own
-  solo run of the same commit took 2.7 min with 0 retries. Concurrent runs can't
-  share Playwright's fixed port 8199, so overlap shows up as noise or as a
-  confusing red.
-- **Mechanism (verification-step):** the drain's specialist handoff runs the bar
-  only through a wrapper that takes an exclusive lock, either a lockfile in the
-  worktree or `verification-bar.sh`. It runs in the background by default and
-  reports the result of one complete run. The drain also requires the bar it
-  records to be its **own** solo run, which this drain did by hand.
-- **Target (dotfiles-claude):** `home/skills/drain/references/handoff.md`
-  (Verify), `scripts/drain/verification-bar.sh`.
-- **Verify:** start two bars on one worktree; the second waits or refuses, and
-  never runs concurrently.
+- **Goal:** the bar recorded for an item is one complete run in a declared
+  environment, made by the drain, not the specialist's own report.
+- **Problem:** a specialist runs `verify_command` however it likes: with or
+  without `CI` set, and relaunched after hitting its own tool timeout. Its pass
+  or fail report then stands in for the item's bar. In this repo `CI` changes the
+  run itself: `retries: 2` and `workers: 1` with `CI`, `retries: 0` and parallel
+  workers without it. So a specialist's "green" can include failed-then-passed
+  tests that a local run would show as red.
+- **Evidence:**
+  - The AB#62 test-writer reported a run with 9 failed-then-passed tests. That
+    is only possible with `CI` set, because local retries are 0. Its runs took
+    11–17 min, which matches CI-mode serial runs (real CI on main took about
+    7–10 min).
+  - Its first foreground `npm test` hit the 600 s tool timeout and was
+    relaunched in the background.
+  - The drain's own solo run of the same commit, without `CI`, took 2.7 min with
+    0 retries.
+  - Overlapping runs were suspected at first but are **not** shown. This repo's
+    `reuseExistingServer: false` makes a second concurrent run fail loudly on
+    port 8199 rather than run slowly.
+- **Mechanism (verification-step):** drain §2d/§2f records only a bar it ran
+  itself: the item's `verify_command`, in the environment the project declares
+  (here `CI` unset), backgrounded and polled to completion. A specialist's
+  report is input, never the recorded bar. This drain did that by hand for every
+  item. Making it a step means a project-declared bar wrapper: today
+  `scripts/drain/verification-bar.sh` is dotfiles-claude's own bats bar, and
+  there is no per-project equivalent yet.
+- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §2d/§2f,
+  `home/skills/drain/references/handoff.md` (Verify); a proposed per-project bar
+  declaration (for example `gate.json` `verify_env`).
+- **Verify:** a skill-text assertion that §2f records the drain's own run. A
+  fixture where a completion report says `pass` but the drain's run is red: the
+  item does not proceed to propose.
+- **Related:** padeltournament AB#71 makes CI fail on any flaky test, which
+  closes the CI-side half (retries currently hide flakes from the release gate).

@@ -46,7 +46,8 @@ GitHub Pages, automatic: every push to `main` runs `.github/workflows/playwright
 ("Test and deploy") — full suite + the requirement-coverage gate, then the deploy job
 uploads `web/` as a Pages artifact and publishes it with `actions/deploy-pages` to the
 `github-pages` environment (push-to-main only, freshness-guarded; the Pages source is
-"GitHub Actions" — the old `gh-pages` branch is retired). CI/release is a
+"GitHub Actions" — the old `gh-pages` branch is no longer published to, though not yet
+deleted). CI/release is a
 trust boundary; the workflow, its gate scripts and the requirements manifest are
 gate-protected paths.
 
