@@ -19,7 +19,7 @@ step), never prose alone, per the retro rule (REQ-490).
 | DF-1 | Drain writes "Deployed" without verifying the deploy | verification-step | open |
 | DF-2 | Worktree teardown fails after a squash merge, so worktrees accumulate | process-step | open |
 | DF-3 | Worktree-isolation guard false-positives on paths containing `git` | gate (matcher fix) | open |
-| DF-4 | Drain requires `scripts/forge/queue.sh`, which onboarding never provisioned | process-step (onboarding) | open (operator in progress) |
+| DF-4 | Drain requires `scripts/forge/queue.sh`, which onboarding never provisioned | process-step + preflight gate | open (operator in progress) |
 | DF-5 | Mock board adapter forks the board when run from a worktree | gate (adapter fix) | open |
 | DF-6 | Mock board `create_item` leaves a new item's state null | gate (adapter fix) | open |
 | DF-7 | Review re-checks resumed by message lose their isolated worktree | process-step | open |
@@ -75,7 +75,7 @@ step), never prose alone, per the retro rule (REQ-490).
   main-push run to `success` and read the `github-pages` deployment status for
   the merge sha before writing Deployed. The deploy succeeded every time, so the
   check worked, but it lives only in the operator's head until the drain does it.
-- **Downstream:** padeltournament AB#65 adds an independent hourly freshness
+- **Downstream:** padeltournament AB#65 (in development) will add an independent hourly freshness
   monitor in this repo. The two are complementary: the drain check covers its
   own landings, and the monitor covers everything else.
 
@@ -97,10 +97,13 @@ step), never prose alone, per the retro rule (REQ-490).
 - **Mechanism (process-step):** in drain §2g teardown:
   1. Compare the item's **own paths** against the default branch. A whole-tree
      diff fails as soon as an unrelated commit lands on the default branch.
-     `git fetch origin`, take
-     `paths = git diff --name-only <merge-base HEAD origin/<default>> HEAD`, then
-     run `git diff --quiet HEAD origin/<default> -- <paths>`. Empty means the
-     item's content landed.
+     First, `git status --porcelain` must be empty: a commit-to-commit diff
+     can't see uncommitted or untracked files, and step 2 discards them.
+     Then `git fetch origin`, take
+     `paths = git diff --name-only --no-renames <merge-base HEAD origin/<default>> HEAD`
+     (without `--no-renames` a rename's old path is never compared), and run
+     `git diff --quiet HEAD origin/<default> -- <paths>`. Empty means the item's
+     content landed.
   2. On exit 0, `ExitWorktree remove` with `discard_changes: true` is
      authorized by the drain. The content is proven landed, so no human
      confirmation is needed.
@@ -248,9 +251,13 @@ step), never prose alone, per the retro rule (REQ-490).
   resumed the same reviewer by message for a fix-round re-check, that worktree
   was gone. The agent's shell then sat in the writer's worktree, which breaks the
   one-writer rule in `parallel.md`. The work stayed read-only, using only
-  `git show`, `diff` and `log`. `gate-tracked-edit.sh` would have denied an
-  edit-tool write on a gated path (the marker's `runner` differs), but nothing
-  stops a Bash write or a write to an ungated path.
+  `git show`, `diff` and `log`, but nothing enforced that.
+  `gate-tracked-edit.sh` denies an edit-tool write on a gated path only when
+  the actor's runner id differs from the marker's. A subagent in the drain's
+  own session derives the **same** runner id (from `RUNNER_ID`, the session, or
+  `~/.claude/runner-id`), so it would be admitted. The gate separates parallel
+  drains, not a writer from its own reviewers, and it never covers Bash writes
+  or ungated paths.
 - **Evidence:** this happened three times. The AB#58 security re-check said
   "the environment moved me to … feat+mexicano-pairing-module…", and the AB#59
   reviewer and security re-checks both said their own worktree had been removed
@@ -352,9 +359,9 @@ step), never prose alone, per the retro rule (REQ-490).
   tests that a local run would show as red.
 - **Evidence:**
   - The AB#62 test-writer reported a run with 9 failed-then-passed tests. That
-    is only possible with `CI` set, because local retries are 0. Its runs took
-    11–17 min, which matches CI-mode serial runs (real CI on main took about
-    7–10 min).
+    needs retries, which means `CI` set or an explicit `--retries` flag, since
+    local retries are 0. Its runs took 11–17 min, consistent with serial
+    (`workers: 1`) runs; real CI on main took about 7–10 min.
   - Its first foreground `npm test` hit the 600 s tool timeout and was
     relaunched in the background.
   - The drain's own solo run of the same commit, without `CI`, took 2.7 min with
@@ -375,5 +382,5 @@ step), never prose alone, per the retro rule (REQ-490).
 - **Verify:** a skill-text assertion that §2f records the drain's own run. A
   fixture where a completion report says `pass` but the drain's run is red: the
   item does not proceed to propose.
-- **Related:** padeltournament AB#71 makes CI fail on any flaky test, which
+- **Related:** padeltournament AB#71 (New) will make CI fail on any flaky test, which
   closes the CI-side half (retries currently hide flakes from the release gate).
