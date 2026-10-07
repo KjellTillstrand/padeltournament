@@ -67,6 +67,19 @@ report before landing.
 - Recorded 2026-10-04, AB#68. This records the landing route asked for by DF-4 in
   `docs/upstream/dotfiles-claude-fixes.md` (prose only; no `forge.env` declaration yet).
 
+## Governance
+Declared in `.claude/gate.json`: profile `adopting` (R1), with the `tracking` dial
+overridden to `board`. Without the key the harness resolves to `regulated` (R3), whose
+adoption preflight refuses all work and whose landing route is a queue this repo lacks.
+- R1 here: adoption gaps are a warning, not a refusal. Landing is PR + required CI (as in
+  Delivery Path). Headless `--auto` batches are allowed, but the operator still approves
+  batches interactively by practice. Runtime currency is advisory.
+- Recorded 2026-10-07, AB#78.
+- Full adoption is a tracked follow-up: the harness's `.claude/requirements.json`
+  manifest, plus making the adoption checker recognise this repo's `R-TAG:` test titles.
+  Until then the checker sees only six stray `REQ-<n>` ids (`@verifies` comments) and
+  would generate a misleading manifest, so none is committed.
+
 ## Gotchas & Patterns
 - Tests exercise localStorage-persisted state; stale state bleeding between specs is
   the classic failure mode here.
