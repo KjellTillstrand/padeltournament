@@ -18,7 +18,9 @@
 Mock board (file-backed board adapter): `board.env` with `BOARD_PLATFORM=mock`; state
 lives in `.claude/mock-board.json` (git-ignored, machine-local, durable across
 sessions). `docs/requirements.md` is the upstream requirements prose — `/refine`
-from it onto the board.
+from it onto the board. The board's component is `padeltournament` (board.env
+`AZDO_COMPONENT`, AB#80): new delivery items are stamped with it, and the drain's
+belongs check requires it.
 
 ## Board / Iteration
 n/a — single-user mock board; no team, no iterations.
