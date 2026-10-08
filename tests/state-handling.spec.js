@@ -887,9 +887,13 @@ test.describe('Malformed or hostile persisted state', () => {
     await page.click('#startTournamentBtn');
     expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
     await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
-    // with an absurdly long score typed into a score box, then saved.
-    await page.locator('.result-overlay-left input').first().fill('1'.repeat(33));
-    await page.waitForTimeout(300);
+    // with a score recorded on one match and an absurdly long one typed into
+    // another's score box (shown with its error, but never recorded), then saved.
+    const matches = page.locator('.result-overlay-container');
+    await matches.first().locator('.result-overlay-left input').fill('15');
+    await matches.last().locator('.result-overlay-left input').fill('1'.repeat(33));
+    await expect(matches.last().locator('.error-message')).toContainText('whole number from 0 to 24');
+    expect((await storedJson(page, 'tournamentState')).schedule.rounds[0].matches[2].result).toEqual({ left: '', right: '' });
     await page.click('#saveTournamentBtn');
 
     // When the app is reloaded.
@@ -898,7 +902,9 @@ test.describe('Malformed or hostile persisted state', () => {
     // Then all of it is restored as written.
     await expect(page.locator('#tournamentTitle')).toHaveText(longName);
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-    await expect(page.locator('.result-overlay-left input').first()).toHaveValue('1'.repeat(33));
+    await expect(matches.first().locator('.result-overlay-left input')).toHaveValue('15');
+    await expect(matches.first().locator('.result-overlay-right input')).toHaveValue('9');
+    await expect(matches.last().locator('.result-overlay-left input')).toHaveValue('');
     expect(await page.locator('.court-1 .court-label').textContent()).toBe('Centre\u0085');
     await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
     expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
@@ -1045,6 +1051,80 @@ test.describe('Malformed or hostile persisted state', () => {
     await page.fill('#tournamentName', 'Setup Pool Cup');
     await page.click('#startTournamentBtn');
     await expectComplementOnFirstMatch(page, 13, 8);
+    expect(errors).toEqual([]);
+  });
+
+  // --- AB#69: a stored result that breaks the score rule restores as empty ---
+  // A score is a whole number from 0 to the tournament's points total, and a
+  // recorded pair sums to it. A stored pair that does not is repaired to "no
+  // score yet" (not dropped), so the match can be scored again; a sound pair
+  // on another match is kept.
+  const scoreboardPointsSorted = async (page) =>
+    (await page.locator('.scoreboard-container tr td:nth-child(2)').allTextContents()).map(Number).sort((a, b) => b - a);
+
+  const HOSTILE_RESULTS = [
+    ['a score above the total and a negative complement', 24, { left: '30', right: '-6' }],
+    ['fractional scores', 24, { left: '12.5', right: '11.5' }],
+    ['a score in exponent notation', 24, { left: '1e1', right: '14' }],
+    ['whole scores that do not sum to the total', 24, { left: '20', right: '20' }],
+    ['one score only', 24, { left: '15', right: '' }],
+    ['a draw at a total of 21', 21, { left: '12', right: '12' }],
+  ];
+  for (const [description, total, result] of HOSTILE_RESULTS) {
+    test(`R-STATE-PERSIST, R-SCORE-ENTRY: a stored result with ${description} restores as empty and can be re-entered`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a started tournament whose first match holds an impossible stored
+      // result, and whose second match holds a sound one.
+      const state = await captureARealTournamentState(context);
+      const sound = { left: String(total - 9), right: '9' };
+      state.totalPoints = total;
+      state.schedule.rounds[0].matches[0].result = result;
+      state.schedule.rounds[0].matches[1].result = sound;
+      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+      // When the app loads.
+      await page.goto('/');
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('#globalTotalPoints')).toHaveValue(String(total));
+
+      // Then the impossible result shows as not entered and is credited to nobody,
+      const matches = page.locator('.result-overlay-container');
+      await expect(matches.nth(0).locator('.result-overlay-left input')).toHaveValue('');
+      await expect(matches.nth(0).locator('.result-overlay-right input')).toHaveValue('');
+      // while the sound one is kept.
+      await expect(matches.nth(1).locator('.result-overlay-left input')).toHaveValue(sound.left);
+      await expect(matches.nth(1).locator('.result-overlay-right input')).toHaveValue('9');
+      expect(await scoreboardPointsSorted(page)).toEqual(
+        [total - 9, total - 9, 9, 9].concat(Array(8).fill(0)));
+
+      // And the match can be scored again.
+      await matches.nth(0).locator('.result-overlay-left input').fill('3');
+      await expect(matches.nth(0).locator('.result-overlay-right input')).toHaveValue(String(total - 3));
+      await expect(matches.nth(0).locator('.error-message')).toHaveText('');
+      expect((await storedJson(page, 'tournamentState')).schedule.rounds[0].matches[0].result)
+        .toEqual({ left: '3', right: String(total - 3) });
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-STATE-PERSIST, R-SCORE-ENTRY: a saved tournament with an impossible result loads with that match empty', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a saved tournament played to 24 whose first match holds 30 / -6.
+    const { schedule } = await captureARealTournamentState(context);
+    schedule.rounds[0].matches[0].result = { left: '30', right: '-6' };
+    const entry = { tournamentName: 'Bad Score Cup', schedule, currentRoundIndex: 0, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z' };
+    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify([entry]) });
+
+    // When the Organizer loads it.
+    await page.goto('/');
+    await page.click('#loadTournamentBtn');
+
+    // Then that match shows no score, and it can be scored again.
+    await expect(page.locator('#tournamentTitle')).toHaveText('Bad Score Cup');
+    const match = page.locator('.result-overlay-container').first();
+    await expect(match.locator('.result-overlay-left input')).toHaveValue('');
+    await expect(match.locator('.result-overlay-right input')).toHaveValue('');
+    await expectComplementOnFirstMatch(page, 15, 9);
     expect(errors).toEqual([]);
   });
 });

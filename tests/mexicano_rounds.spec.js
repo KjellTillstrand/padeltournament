@@ -455,10 +455,12 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
       await organizer.attemptsTo(EnterTheScore(0, 14));
       const generate = page.locator('#generateNextRoundBtn');
 
-      // When the second court gets a non-empty but invalid score (the other side fills itself in),
+      // When the second court gets a non-empty but invalid score (it completes
+      // nothing: the other side stays empty, and the court says why),
       const second = page.locator('.matches-container .match').nth(1);
       await second.locator('.result-overlay-left input').fill(left);
-      await expect(second.locator('.result-overlay-right input')).not.toHaveValue('');
+      await expect(second.locator('.result-overlay-right input')).toHaveValue('');
+      await expect(second.locator('.error-message')).toContainText('whole number from 0 to 24');
 
       // Then the next round shall not be offered, and that court is flagged.
       await expect(generate).toBeDisabled();
@@ -500,8 +502,11 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
         }
       }, planted);
       await page.reload();
-      // Then the next round shall not be offered, and every court is flagged.
-      await expect(matches.nth(0).locator('.result-overlay-left input')).toHaveValue('12');
+      // Then those results are restored as not entered (AB#69: a stored pair must
+      // sum to the tournament's own total), the next round shall not be offered,
+      // and every court is flagged.
+      await expect(matches.nth(0).locator('.result-overlay-left input')).toHaveValue('');
+      await expect(matches.nth(1).locator('.result-overlay-left input')).toHaveValue('');
       await expect(generate).toBeDisabled();
       await expect(page.locator('.matches-container .match.score-missing')).toHaveCount(2);
 

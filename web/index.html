@@ -601,15 +601,45 @@
       return valid ? teamIndices.map(team => team.slice()) : null;
     }
 
+    // The one score rule, shared by score entry, its validation, the "round
+    // complete" check, the scoreboard and restored results: a score is a whole
+    // number from 0 to the points total, written as plain digits (no sign,
+    // fraction, exponent or spaces). Returns it, or null for anything else,
+    // including no entry ("").
+    function parseScore(value, total) {
+      if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+      const score = Number(value);
+      return score <= total ? score : null;
+    }
+
+    // A complete, valid result: two scores (see parseScore) that sum to the total.
+    function isCompleteResult(result, total) {
+      if (!result) return false;
+      const left = parseScore(result.left, total);
+      const right = parseScore(result.right, total);
+      return left !== null && right !== null && left + right === total;
+    }
+
+    // The result a match records for the entered scores: as entered when complete
+    // and valid, otherwise "no score yet" (both ""). So a recorded result is
+    // always one of the two, whether written by score entry or restored.
+    function recordedResult(left, right, total) {
+      const result = { left: left, right: right };
+      return isCompleteResult(result, total) ? result : { left: "", right: "" };
+    }
+
     // Scores are the raw values of the score inputs: strings ("" when not entered).
-    // Anything else is repaired to "no result recorded".
-    function copyResult(result) {
+    // A result of the wrong shape is repaired to "no result recorded"; a pair that
+    // breaks the score rule for the tournament's total (out of range, fractional,
+    // not summing to the total, one side only) to "no score yet", so the match
+    // can be scored again.
+    function copyResult(result, total) {
       if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return null;
-      return { left: result.left, right: result.right };
+      return recordedResult(result.left, result.right, total);
     }
 
     // A rebuilt match, or null when its structure is unusable.
-    function copyMatch(match, players, courtCount, requireTeamIndices) {
+    function copyMatch(match, players, courtCount, requireTeamIndices, total) {
       if (!isPlainObject(match)) return null;
       // The court number becomes a CSS class and a data attribute: an in-range integer only.
       if (!Number.isInteger(match.court) || match.court < 1 || match.court > courtCount) return null;
@@ -621,7 +651,7 @@
       const copy = {
         court: match.court,
         teams: match.teams.map(team => team.slice()),
-        result: copyResult(match.result)
+        result: copyResult(match.result, total)
       };
       // teamIndices maps players to schedule slots when names are assigned at start:
       // a tournament that has not started yet cannot do without it; a started one
@@ -636,7 +666,8 @@
     // flow read, each of the right type and in range; null when it is unusable.
     // Byes (who rests) are never read from storage: they are rebuilt from the
     // checked matches (setByes), so they always name exactly the unseated players.
-    function copySchedule(schedule, requireTeamIndices) {
+    // Results are checked against total, the tournament's (normalized) points total.
+    function copySchedule(schedule, requireTeamIndices, total) {
       if (!isPlainObject(schedule)) return null;
       const playerList = schedule.players;
       // At least one full court; with a count that is not a multiple of four the
@@ -653,7 +684,7 @@
         if (!isPlainObject(round) || !Number.isInteger(round.roundNumber) ||
           round.roundNumber < 1 || round.roundNumber > MAX_ROUNDS) return null;
         if (!Array.isArray(round.matches) || round.matches.length < 1 || round.matches.length > courtCount) return null;
-        const matchCopies = round.matches.map(match => copyMatch(match, players, courtCount, requireTeamIndices));
+        const matchCopies = round.matches.map(match => copyMatch(match, players, courtCount, requireTeamIndices, total));
         if (matchCopies.includes(null)) return null;
         roundCopies.push({ roundNumber: round.roundNumber, matches: matchCopies });
       }
@@ -690,8 +721,8 @@
     // numbered 1, 2, 3, ... in order, and in every round each court used exactly once
     // and each player seated at most once (the rest are its byes). This is a shape
     // check only: it does not prove the app generated these rounds.
-    function copyMexicanoSchedule(schedule) {
-      const copy = copySchedule(schedule, false);
+    function copyMexicanoSchedule(schedule, total) {
+      const copy = copySchedule(schedule, false, total);
       if (!copy) return null;
       const playerCount = copy.players.length;
       if (playerCount < MIN_MEXICANO_PLAYERS || playerCount > MAX_MEXICANO_PLAYERS) return null;
@@ -711,13 +742,13 @@
     // both at Start); without them it is not used to generate further rounds. The
     // seed is shape-checked only: it is not authenticated, and round 1 is not
     // re-derived from it.
-    function copyStartedPlay(format, schedule, seed) {
+    function copyStartedPlay(format, schedule, seed, total) {
       if (format !== "mexicano") {
-        const copy = copySchedule(schedule, false);
+        const copy = copySchedule(schedule, false, total);
         return copy ? { schedule: copy, mexicanoSeed: null } : null;
       }
       if (!isValidMexicanoSeed(seed)) return null;
-      const copy = copyMexicanoSchedule(schedule);
+      const copy = copyMexicanoSchedule(schedule, total);
       return copy ? { schedule: copy, mexicanoSeed: seed } : null;
     }
 
@@ -728,11 +759,13 @@
       if (!isPlainObject(state)) return null;
       const started = state.tournamentStarted === true;
       const format = normalizeFormat(state.format);
+      // Normalized first: stored results are checked against it.
+      const total = normalizeTotalPoints(state.totalPoints);
       // A setup that has not started holds the Americano schedule (whatever the
       // format) and no seed: the seed is drawn at Start.
       const play = started
-        ? copyStartedPlay(format, state.schedule, state.mexicanoSeed)
-        : { schedule: copySchedule(state.schedule, true), mexicanoSeed: null };
+        ? copyStartedPlay(format, state.schedule, state.mexicanoSeed, total)
+        : { schedule: copySchedule(state.schedule, true, total), mexicanoSeed: null };
       if (!play || !play.schedule) return null;
       const schedule = play.schedule;
       return {
@@ -746,7 +779,7 @@
         mexicanoPlayerCount: started && format === "mexicano"
           ? schedule.players.length : normalizeMexicanoPlayerCount(state.mexicanoPlayerCount),
         mexicanoSeed: play.mexicanoSeed,
-        totalPoints: normalizeTotalPoints(state.totalPoints)
+        totalPoints: total
       };
     }
 
@@ -756,7 +789,8 @@
     function copySavedTournament(entry) {
       if (!isPlainObject(entry) || typeof entry.tournamentName !== "string" || entry.tournamentName.trim() === "") return null;
       const format = normalizeFormat(entry.format); // saved tournaments are always started
-      const play = copyStartedPlay(format, entry.schedule, entry.mexicanoSeed);
+      const total = normalizeTotalPoints(entry.totalPoints); // stored results are checked against it
+      const play = copyStartedPlay(format, entry.schedule, entry.mexicanoSeed, total);
       if (!play) return null;
       const schedule = play.schedule;
       const copy = {
@@ -766,7 +800,7 @@
         courtNames: normalizeCourtNames(entry.courtNames),
         format: format,
         mexicanoSeed: play.mexicanoSeed,
-        totalPoints: normalizeTotalPoints(entry.totalPoints)
+        totalPoints: total
       };
       if (typeof entry.savedAt === "string") copy.savedAt = entry.savedAt;
       return copy;
@@ -945,23 +979,26 @@
       } else {
         match.result = { left: '', right: '' };
       }
+      // Only a valid score (see parseScore) is completed; an empty or invalid
+      // entry clears the other side, so no stale or negative complement remains.
       function updateOpposite(source, target) {
-        if (source.value.trim() === '') {
-          target.value = '';
-        } else {
-          const sourceVal = parseInt(source.value, 10);
-          if (!isNaN(sourceVal)) { target.value = total - sourceVal; }
-        }
+        const score = parseScore(source.value, total);
+        target.value = score === null ? '' : String(total - score);
       }
       function validate() {
-        const leftVal = leftInput.value.trim() === '' ? null : parseInt(leftInput.value, 10);
-        const rightVal = rightInput.value.trim() === '' ? null : parseInt(rightInput.value, 10);
-        if (leftVal === null || rightVal === null) {
+        const leftVal = parseScore(leftInput.value, total);
+        const rightVal = parseScore(rightInput.value, total);
+        const invalidEntry = (leftInput.value !== '' && leftVal === null) ||
+          (rightInput.value !== '' && rightVal === null);
+        if (invalidEntry) {
+          errorSpan.textContent = " Each score must be a whole number from 0 to " + total;
+        } else if (leftVal === null || rightVal === null) {
           errorSpan.textContent = " Please fill in both scores";
         } else if (leftVal + rightVal !== total) {
           errorSpan.textContent = " Sum must equal " + total;
         } else { errorSpan.textContent = ""; }
-        match.result = { left: leftInput.value, right: rightInput.value };
+        // An invalid entry stays visible (with its error) but is not recorded.
+        match.result = recordedResult(leftInput.value, rightInput.value, total);
         updateAllScoreboards();
         updateNextRoundControl();
         saveTournamentState();
@@ -1179,20 +1216,11 @@
         roundIndex < currentSchedule.rounds.length - 1;
     }
 
-    // A complete, valid score: two whole numbers (no sign, fraction or exponent)
-    // that sum to the tournament's points total.
-    function isCompleteResult(result) {
-      if (!result || typeof result.left !== "string" || typeof result.right !== "string") return false;
-      const left = result.left.trim();
-      const right = result.right.trim();
-      if (!/^\d+$/.test(left) || !/^\d+$/.test(right)) return false;
-      return Number(left) + Number(right) === totalPoints;
-    }
-
-    // The matches of the latest round that still lack a complete, valid score.
+    // The matches of the latest round that still lack a complete, valid score
+    // (see isCompleteResult).
     function matchesMissingAScore() {
       const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
-      return latest.matches.filter(match => !isCompleteResult(match.result));
+      return latest.matches.filter(match => !isCompleteResult(match.result, totalPoints));
     }
 
     // Enable "Generate next round" only when the latest round is complete, and
@@ -1333,8 +1361,11 @@
         const round = currentSchedule.rounds[i];
         round.matches.forEach(match => {
           if (match.result) {
-            const leftScore = match.result.left.trim() === '' ? 0 : parseInt(match.result.left, 10) || 0;
-            const rightScore = match.result.right.trim() === '' ? 0 : parseInt(match.result.right, 10) || 0;
+            // Only a complete, valid result (see isCompleteResult) is credited;
+            // anything else counts 0 for both teams.
+            const complete = isCompleteResult(match.result, totalPoints);
+            const leftScore = complete ? parseScore(match.result.left, totalPoints) : 0;
+            const rightScore = complete ? parseScore(match.result.right, totalPoints) : 0;
             match.teams[0].forEach(player => { scores[player] += leftScore; });
             match.teams[1].forEach(player => { scores[player] += rightScore; });
             playedMatches.push({ teams: match.teams, scores: [leftScore, rightScore] });
