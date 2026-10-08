@@ -111,6 +111,14 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    # The Pages artifact name is scoped to this run attempt. Artifacts belong to
+    # the run, not to the attempt, so a re-run of a failed deploy still sees the
+    # earlier attempt's artifact. Under one shared name, deploy-pages (which
+    # selects by name and refuses 0 or more than 1 match) and the identity check
+    # below would both be ambiguous. One name feeds the upload, the check and the
+    # deploy, so the three cannot drift apart.
+    env:
+      PAGES_ARTIFACT: github-pages-${{ github.run_attempt }}
     steps:
       # The token is not needed after checkout: the freshness fetch below reads
       # the public repository anonymously, and deploy-pages receives its token
@@ -141,29 +149,60 @@ jobs:
         if: steps.freshness.outputs.current == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
+          name: ${{ env.PAGES_ARTIFACT }}
           path: web
 
       # deploy-pages picks the run's artifact by name, not by id. Fail unless
-      # exactly one github-pages artifact exists in this run and it is the one
-      # uploaded above. This narrows the window for a swapped artifact to the
-      # moment between this check and the deploy; it does not close it
-      # (accepted residual).
+      # exactly one artifact named $PAGES_ARTIFACT exists in this run and it is
+      # the one uploaded above. The artifacts API is eventually consistent: a
+      # listing made right after the upload can omit it. So the check polls,
+      # up to 6 tries 5 s apart, until the uploaded id appears. Only then does
+      # it judge the count. A missing id after the last try, or a second
+      # artifact under this attempt's name, still fails closed. This narrows
+      # the window for a swapped artifact to the moment between this check
+      # and the deploy; it does not close it (accepted residual).
       - name: Verify the Pages artifact is the one just uploaded
         if: steps.freshness.outputs.current == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_ID: ${{ steps.upload.outputs.artifact_id }}
         run: |
-          ids="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=github-pages&per_page=100" \
-            --jq '[.artifacts[] | select(.name == "github-pages") | .id | tostring] | join(" ")')"
-          count="$(printf '%s' "$ids" | wc -w | tr -d ' ')"
-          if [ -z "$EXPECTED_ID" ] || [ "$count" != "1" ] || [ "$ids" != "$EXPECTED_ID" ]; then
-            echo "::error::Expected exactly one github-pages artifact with id '$EXPECTED_ID' in run $GITHUB_RUN_ID; found $count: [$ids]."
+          if [ -z "$EXPECTED_ID" ]; then
+            echo "::error::The upload step reported no artifact id; refusing to publish."
             exit 1
           fi
-          echo "Verified: github-pages artifact $EXPECTED_ID is the only one in run $GITHUB_RUN_ID."
+          tries=6
+          ids=""
+          for try in $(seq 1 "$tries"); do
+            # An API error counts as "not listed yet" and is retried; the final
+            # verdict below still fails closed.
+            ids="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=$PAGES_ARTIFACT&per_page=100" \
+              --jq "[.artifacts[] | select(.name == \"$PAGES_ARTIFACT\") | .id | tostring] | join(\" \")")" || ids="<listing failed>"
+            case " $ids " in
+              *" $EXPECTED_ID "*) break ;;
+            esac
+            if [ "$try" -lt "$tries" ]; then
+              echo "Try $try/$tries: artifact $EXPECTED_ID not listed yet (saw: [$ids]); retrying in 5 s."
+              sleep 5
+            fi
+          done
+          case " $ids " in
+            *" $EXPECTED_ID "*) ;;
+            *)
+              echo "::error::Artifact $EXPECTED_ID ($PAGES_ARTIFACT) never appeared in run $GITHUB_RUN_ID after $tries tries; last listing: [$ids]."
+              exit 1
+              ;;
+          esac
+          count="$(printf '%s' "$ids" | wc -w | tr -d ' ')"
+          if [ "$count" != "1" ]; then
+            echo "::error::Ambiguous: $count artifacts named $PAGES_ARTIFACT in run $GITHUB_RUN_ID: [$ids]; expected only $EXPECTED_ID."
+            exit 1
+          fi
+          echo "Verified: $PAGES_ARTIFACT artifact $EXPECTED_ID is the only one with that name in run $GITHUB_RUN_ID."
 
       - name: Deploy to GitHub Pages
         id: deployment
         if: steps.freshness.outputs.current == 'true'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        with:
+          artifact_name: ${{ env.PAGES_ARTIFACT }}
