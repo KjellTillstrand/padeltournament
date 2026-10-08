@@ -237,6 +237,10 @@
       currentSchedule = state.schedule;
       currentRoundIndex = state.currentRoundIndex;
       tournamentStarted = state.tournamentStarted;
+      // A setup that has not started still holds its schedule's own player names
+      // (names are assigned at Start), and its module is not loaded again: they
+      // are the defaults a blank name input falls back to, whatever the format.
+      if (!tournamentStarted) storeDefaultPlayerNames(currentSchedule.players);
       courtNames = state.courtNames;
       tournamentFormat = state.format;
       mexicanoPlayerCount = state.mexicanoPlayerCount;
