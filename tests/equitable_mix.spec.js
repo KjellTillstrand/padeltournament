@@ -107,6 +107,28 @@ const spread = (counts) => {
 const repeated = (partner) =>
   [...partner].filter(([, n]) => n > 1).map(([pair, n]) => `${pair.replace('|', '-')}: ${n}`);
 
+// Expected values for the engine's equity report, written here from their
+// definitions rather than taken from the engine, so a change to the engine's
+// formulas fails these tests instead of moving the oracle with it.
+
+// With B = n mod 4 resting each round, someone must rest twice once
+// rounds * B > n; the widest spacing any bench rotation then allows is
+// floor(n / B) rounds. Null when nobody has to rest twice.
+function independentRestGapTarget(n, rounds) {
+  const B = n % 4;
+  return B > 0 && rounds * B > n ? Math.floor(n / B) : null;
+}
+
+// The least sum of squared opponent counts the same number of opponent
+// meetings can have: spread over all pairs as evenly as possible (every
+// count the floor or ceiling of the mean).
+function opponentLowerBound(n, opponent) {
+  const pairs = (n * (n - 1)) / 2;
+  const total = [...opponent.values()].reduce((sum, o) => sum + o, 0);
+  const q = Math.floor(total / pairs);
+  return pairs * q * q + (total - q * pairs) * (2 * q + 1);
+}
+
 // Everything the engine promises unconditionally: correct shape, no repeated
 // partner, sit-out counts within one. Also checks that the engine's own
 // equity report (opponent mix and rests) agrees with the independent count.
@@ -123,14 +145,27 @@ function expectSound(schedule, n, rounds, label) {
   expect(equity.sitOutSpread, `${label}: equity.sitOutSpread`).toBe(sitOuts.max - sitOuts.min);
   const gap = smallestRestGap(schedule);
   expect(equity.restGap, `${label}: equity.restGap`).toBe(gap);
-  const target = n % 4 && rounds * (n % 4) > n ? Math.floor(n / (n % 4)) : null;
+  const target = independentRestGapTarget(n, rounds);
   expect(equity.restGapTarget, `${label}: equity.restGapTarget`).toBe(target);
-  expect(equity.restSpaced, `${label}: equity.restSpaced`).toBe(target === null || gap >= target);
+  if (target === null) {
+    // At most n rests in all, and sit-out counts within one (checked above):
+    // nobody rests twice, so there is no gap and nothing to space.
+    expect(gap, `${label}: nobody rests twice`).toBeNull();
+    expect(equity.restSpaced, `${label}: equity.restSpaced`).toBe(true);
+  } else {
+    // More than n rests: someone rests twice. The target is a proven bound
+    // (no player resting twice within g rounds needs g * (n mod 4) <= n), so
+    // no order spaces rests wider; spaced means the bound is reached.
+    expect(gap, `${label}: someone rests twice`).not.toBeNull();
+    expect(gap, `${label}: smallest rest gap within the proven bound`).toBeLessThanOrEqual(target);
+    expect(equity.restSpaced, `${label}: equity.restSpaced`).toBe(gap >= target);
+  }
   const opp = spread(opponent);
-  expect(schedule.equity.opponentSpread, `${label}: equity.opponentSpread`).toBe(opp.max - opp.min);
-  expect(schedule.equity.optimal, `${label}: equity.optimal agrees with cost`).toBe(
-    schedule.equity.cost === schedule.equity.lowerBound
-  );
+  expect(equity.opponentSpread, `${label}: equity.opponentSpread`).toBe(opp.max - opp.min);
+  const cost = [...opponent.values()].reduce((sum, o) => sum + o * o, 0);
+  expect(equity.cost, `${label}: equity.cost`).toBe(cost);
+  expect(equity.lowerBound, `${label}: equity.lowerBound`).toBe(opponentLowerBound(n, opponent));
+  expect(equity.optimal, `${label}: equity.optimal`).toBe(cost === opponentLowerBound(n, opponent));
   return opp;
 }
 
@@ -245,12 +280,15 @@ test.describe('Equitable schedules for any length', () => {
 
   test('R-EQUITABLE-MIX: provably unbalanceable shapes land exactly on their floor', () => {
     // The floors above 2 and the one not implied by counting: the engine's
-    // default-seed schedule costs exactly lowerBound + floor, the proven least.
+    // default-seed schedule costs exactly lowerBound + floor, the proven least
+    // (lowerBound counted here, not taken from the engine's report).
     for (const [shape, floor] of [['6/3', 2], ['9/4', 4], ['9/5', 4], ['12/5', 4]]) {
       const [n, rounds] = shape.split('/').map(Number);
       expect(feasibility.costFloor(n, rounds), `${shape}: floor`).toBe(floor);
-      const { equity } = generateSchedule({ players: n, rounds });
-      expect(equity.cost, `${shape}: cost`).toBe(equity.lowerBound + floor);
+      const schedule = generateSchedule({ players: n, rounds });
+      const { opponent } = meetingCounts(schedule);
+      expect(schedule.equity.cost, `${shape}: cost`).toBe(opponentLowerBound(n, opponent) + floor);
+      expectSound(schedule, n, rounds, shape);
     }
   });
 
@@ -432,11 +470,24 @@ const ODD_SIZED = [
 ];
 
 test.describe('Rest rounds for player counts that are not a multiple of 4', () => {
+  // The ODD_SIZED x SEEDS schedules, generated once per worker and shared by
+  // the tests below that only read them (three tests used to generate all 30
+  // each). Filled on first use rather than in a beforeAll: with fullyParallel
+  // a beforeAll runs in every worker that picks up any test of this block,
+  // including those that never read the cache. The reproducibility test
+  // generates its own schedules, so the cache cannot mask nondeterminism.
+  const oddSized = new Map();
+  const oddSizedSchedule = (n, rounds, seed) => {
+    const key = `${n}/${rounds}/${seed}`;
+    if (!oddSized.has(key)) oddSized.set(key, generateSchedule({ players: n, rounds, seed }));
+    return oddSized.get(key);
+  };
+
   test('R-EQUITABLE-MIX: odd-sized tournaments never repeat a partner, keep opponent counts within one and rest N mod 4 players per round', () => {
     for (const { players: n, rounds } of ODD_SIZED) {
       for (const seed of SEEDS) {
         const label = `${n}/${rounds}, seed ${seed}`;
-        const schedule = generateSchedule({ players: n, rounds, seed });
+        const schedule = oddSizedSchedule(n, rounds, seed);
         expectEquitable(schedule, n, rounds, label);
         schedule.rounds.forEach((round, r) => {
           expect(round.matches, `${label}, round ${r + 1}: courts`).toHaveLength(Math.floor(n / 4));
@@ -453,7 +504,7 @@ test.describe('Rest rounds for player counts that are not a multiple of 4', () =
     for (const { players: n, rounds } of ODD_SIZED) {
       for (const seed of SEEDS) {
         const label = `${n}/${rounds}, seed ${seed}`;
-        const { equity } = generateSchedule({ players: n, rounds, seed });
+        const { equity } = oddSizedSchedule(n, rounds, seed);
         const { sitOuts } = equity;
         expect(sitOuts, `${label}: one count per player`).toHaveLength(n);
         expect(Math.max(...sitOuts) - Math.min(...sitOuts), `${label}: sit-out counts ${sitOuts}`)
@@ -478,6 +529,15 @@ test.describe('Rest rounds for player counts that are not a multiple of 4', () =
       sitOutSpread: 1, restGap: null, restGapTarget: null, restSpaced: true,
     }));
     expect(short.sitOuts.filter((s) => s === 1)).toHaveLength(10);
+    // Schedules that reach the target (pinned at the default seed), so the
+    // "spaced" arm of expectSound's restSpaced check runs: no other schedule
+    // in this file reaches its target.
+    for (const [n, rounds] of [[11, 4], [23, 8]]) {
+      const schedule = generateSchedule({ players: n, rounds });
+      expect(smallestRestGap(schedule), `${n}/${rounds}: rests spaced to the target`)
+        .toBe(independentRestGapTarget(n, rounds));
+      expectEquitable(schedule, n, rounds, `${n}/${rounds}`);
+    }
     expect(rest.restGapTarget(14, 10)).toBe(7);
     expect(rest.restGapTarget(14, 7)).toBeNull();
     expect(rest.restGapTarget(15, 6)).toBe(5);
@@ -487,15 +547,21 @@ test.describe('Rest rounds for player counts that are not a multiple of 4', () =
 
   test('R-EQUITABLE-MIX: rests are spaced apart, never back to back', () => {
     // Soft goal: rounds are reordered towards restGapTarget (not always
-    // reached; the round contents come from the equity search). Hard floor
-    // pinned here: from 9 players up no player rests in two rounds in a row.
+    // reached; the round contents come from the equity search). Pinned at
+    // seeds 1-3, not guaranteed by the engine: for these shapes no player
+    // rests in two rounds in a row.
     for (const { players: n, rounds } of ODD_SIZED) {
       for (const seed of SEEDS) {
         const label = `${n}/${rounds}, seed ${seed}`;
-        const schedule = generateSchedule({ players: n, rounds, seed });
-        if (schedule.equity.restGapTarget === null) continue;
+        const schedule = oddSizedSchedule(n, rounds, seed);
         const gap = smallestRestGap(schedule);
-        expect(gap, `${label}: smallest rest gap (target ${schedule.equity.restGapTarget})`).toBeGreaterThan(1);
+        const target = independentRestGapTarget(n, rounds);
+        if (target === null) {
+          // Nobody has to rest twice, and nobody does: no gap to check.
+          expect(gap, `${label}: nobody rests twice`).toBeNull();
+          continue;
+        }
+        expect(gap, `${label}: smallest rest gap (target ${target})`).toBeGreaterThan(1);
       }
     }
   });
@@ -525,8 +591,14 @@ test.describe('Rest rounds for player counts that are not a multiple of 4', () =
     expect(gapOf(rotation)).toBe(7);
     expect(gapOf(scrambled)).toBe(1);
     const spaced = rest.spaceRests(scrambled, n, 1);
-    expect(gapOf(spaced), 'smallest rest gap after spaceRests').toBeGreaterThanOrEqual(rest.restGapTarget(n, 10));
+    expect(gapOf(spaced), 'smallest rest gap after spaceRests').toBeGreaterThanOrEqual(7);
     expect([...spaced].sort(), 'the same rounds, reordered').toEqual([...scrambled].sort());
+    // The budget is a hard cap, not rounded up to a whole sweep of swaps.
+    // With none the order is untouched; with one evaluation only the first
+    // swap (rounds 0 and 1) is scored, and it leaves players 0 and 1 resting
+    // back to back, so it is not taken. A full sweep would find a better one.
+    expect(rest.spaceRests(scrambled, n, 1, 0), 'a budget of 0').toEqual(scrambled);
+    expect(rest.spaceRests(scrambled, n, 1, 1), 'a budget of 1').toEqual(scrambled);
   });
 
   test('R-EQUITABLE-MIX: odd-sized schedules are reproducible from the seed', () => {

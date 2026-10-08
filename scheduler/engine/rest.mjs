@@ -75,16 +75,21 @@ function compare(a, b) {
  * Reorder the rounds (seat rows: courts first, then the B sit-outs) so that
  * each player's rests fall as far apart as possible, towards restGapTarget.
  * Hill climbing over swaps of two rounds, with seeded kicks from the best
- * order after a stall, under ORDER_EVALUATIONS; it only ever keeps a better
- * order, so the result is never worse spaced than the input. Deterministic
- * for a given input and seed.
+ * order after a stall, spending at most maxEvaluations order evaluations (a
+ * hard cap, checked per evaluation); it only ever keeps a better order, so
+ * the result is never worse spaced than the input. Deterministic for a given
+ * input, seed and budget.
  * @returns {number[][]} the same rows, reordered (a new array).
  */
 export function spaceRests(rows, N, seed, maxEvaluations = ORDER_EVALUATIONS) {
   const R = rows.length;
   const A = 4 * Math.floor(N / 4);
   const target = restGapTarget(N, R);
-  if (target === null || R < 3) return rows.slice();
+  // No target: nobody has to rest twice. (No separate case is needed for
+  // fewer than 3 rounds: shortfall counts gaps 1 .. target - 1, so target 1
+  // leaves nothing to improve and the loop never runs, and a target of
+  // floor(N / B) >= 2 means R * B > N >= 2 * B, so R >= 3.)
+  if (target === null) return rows.slice();
   const last = new Int32Array(N);
   const now = new Int32Array(target);
   const bestShort = new Int32Array(target);
@@ -101,12 +106,14 @@ export function spaceRests(rows, N, seed, maxEvaluations = ORDER_EVALUATIONS) {
     order[j] = t;
   };
   while (compare(bestShort, zero) > 0 && evaluations < maxEvaluations) {
-    // Best-improvement step over every swap of two rounds.
+    // Best-improvement step over every swap of two rounds. A sweep cut short
+    // by the budget still takes the best swap it has seen.
     let pickI = -1;
     let pickJ = -1;
     const pick = cur.slice();
-    for (let i = 0; i < R; i++) {
+    sweep: for (let i = 0; i < R; i++) {
       for (let j = i + 1; j < R; j++) {
+        if (evaluations >= maxEvaluations) break sweep;
         swap(i, j);
         evaluations++;
         shortfall(rows, order, N, A, target, last, now);
@@ -127,11 +134,18 @@ export function spaceRests(rows, N, seed, maxEvaluations = ORDER_EVALUATIONS) {
       }
       continue;
     }
+    if (evaluations >= maxEvaluations) break;
     // A local optimum: restart from the best order with a few random swaps.
+    // The kicked order is kept as the best when it beats it outright, even if
+    // no swap improves on it afterwards.
     for (let r = 0; r < R; r++) order[r] = best[r];
     for (let k = 0; k < ORDER_KICK; k++) swap(randInt(rand, R), randInt(rand, R));
     cur.set(shortfall(rows, order, N, A, target, last, now));
     evaluations++;
+    if (compare(cur, bestShort) < 0) {
+      bestShort.set(cur);
+      best = order.slice();
+    }
   }
   return best.map((r) => rows[r]);
 }
