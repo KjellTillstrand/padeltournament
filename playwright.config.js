@@ -39,6 +39,10 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   /* Retry on CI only */
   retries: process.env.CI ? 2 : 0,
+  /* On CI a test that fails and then passes on retry ("flaky") fails the run, so
+   * a flake blocks the release gate and the deploy instead of passing silently.
+   * Retries stay on so the flake is still reported with its failing attempt. */
+  failOnFlakyTests: !!process.env.CI,
   /* Opt out of parallel tests on CI. */
   workers: process.env.CI ? 1 : undefined,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters
