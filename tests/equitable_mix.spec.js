@@ -280,12 +280,15 @@ test.describe('Equitable schedules for any length', () => {
 
   test('R-EQUITABLE-MIX: provably unbalanceable shapes land exactly on their floor', () => {
     // The floors above 2 and the one not implied by counting: the engine's
-    // default-seed schedule costs exactly lowerBound + floor, the proven least.
+    // default-seed schedule costs exactly lowerBound + floor, the proven least
+    // (lowerBound counted here, not taken from the engine's report).
     for (const [shape, floor] of [['6/3', 2], ['9/4', 4], ['9/5', 4], ['12/5', 4]]) {
       const [n, rounds] = shape.split('/').map(Number);
       expect(feasibility.costFloor(n, rounds), `${shape}: floor`).toBe(floor);
-      const { equity } = generateSchedule({ players: n, rounds });
-      expect(equity.cost, `${shape}: cost`).toBe(equity.lowerBound + floor);
+      const schedule = generateSchedule({ players: n, rounds });
+      const { opponent } = meetingCounts(schedule);
+      expect(schedule.equity.cost, `${shape}: cost`).toBe(opponentLowerBound(n, opponent) + floor);
+      expectSound(schedule, n, rounds, shape);
     }
   });
 
