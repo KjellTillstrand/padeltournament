@@ -1151,3 +1151,109 @@ test.describe('Rest rounds survive selection, play and reload', () => {
     expect(errors).toEqual([]);
   });
 });
+
+// A setup restored before Start (a reload, or a format switch after one) never
+// loads its schedule module again, so the default names a blank player input
+// falls back to must come with the restored schedule. Start must still work.
+test.describe('Default player names in a setup restored before Start', () => {
+  function collectErrors(page) {
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+    });
+    return errors;
+  }
+
+  function collectDialogs(page) {
+    const messages = [];
+    page.on('dialog', (dialog) => {
+      messages.push(dialog.message());
+      dialog.accept();
+    });
+    return messages;
+  }
+
+  async function storedState(page) {
+    return page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+  }
+
+  // The names the started tournament should carry, sorted (Start shuffles
+  // them): the typed ones, and the default name (P1, P2, ...) of every slot
+  // left blank.
+  function expectedNames(count, typed) {
+    return Array.from({ length: count }, (_, i) => typed[i] || `P${i + 1}`).sort();
+  }
+
+  test('R-STATE-PERSIST, R-PLAYER-NAMES: a reloaded 16-player setup starts with blank names falling back to their defaults', async ({ page }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    await page.goto('/');
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+
+    // Given a 16-player schedule is loaded and named, but not started,
+    await page.selectOption('#scheduleSelect', '16p15r.js');
+    await page.fill('#tournamentName', 'Restored Cup');
+    // and the page is reloaded, which restores that setup.
+    await page.reload();
+    await expect(page.locator('#tournamentTitle')).toHaveText('Restored Cup');
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(16);
+    await expect(page.locator('.round')).toHaveCount(0);
+
+    // When the Organizer names two players, empties two name fields and starts,
+    const typed = { 0: 'Ada', 1: 'Bea' };
+    await page.fill('#playerInput_0', 'Ada');
+    await page.fill('#playerInput_1', 'Bea');
+    await page.fill('#playerInput_3', '');
+    await page.fill('#playerInput_9', '');
+    await page.click('#startTournamentBtn');
+
+    // Then the tournament starts,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.court')).toHaveCount(4);
+    // and each emptied slot carries its default name.
+    expect([...(await storedState(page)).schedule.players].sort()).toEqual(expectedNames(16, typed));
+    const cells = await page.locator('.scoreboard-container td').allTextContents();
+    expect(cells).toEqual(expect.arrayContaining(['Ada', 'Bea', 'P4', 'P10']));
+    expect(dialogs).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-PLAYER-NAMES: a reloaded Mexicano setup switched to Americano starts with a blank name falling back to its default', async ({ page }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    await page.goto('/');
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+
+    // Given a named Mexicano setup that has not started,
+    await page.fill('#tournamentName', 'Switch Cup');
+    await page.selectOption('#formatSelect', 'mexicano');
+    // restored by a reload,
+    await page.reload();
+    await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Switch Cup');
+
+    // When the Organizer switches to Americano, names one player, empties
+    // another name field and starts,
+    await page.selectOption('#formatSelect', 'americano');
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(12);
+    const typed = { 0: 'Ada' };
+    await page.fill('#playerInput_0', 'Ada');
+    await page.fill('#playerInput_5', '');
+    await page.click('#startTournamentBtn');
+
+    // Then the Americano tournament starts,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.court')).toHaveCount(3);
+    // and the emptied slot carries its default name.
+    const state = await storedState(page);
+    expect(state.format).toBe('americano');
+    expect([...state.schedule.players].sort()).toEqual(expectedNames(12, typed));
+    const cells = await page.locator('.scoreboard-container td').allTextContents();
+    expect(cells).toEqual(expect.arrayContaining(['Ada', 'P6']));
+    expect(dialogs).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+});
