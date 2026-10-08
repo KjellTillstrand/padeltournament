@@ -107,6 +107,28 @@ const spread = (counts) => {
 const repeated = (partner) =>
   [...partner].filter(([, n]) => n > 1).map(([pair, n]) => `${pair.replace('|', '-')}: ${n}`);
 
+// Expected values for the engine's equity report, written here from their
+// definitions rather than taken from the engine, so a change to the engine's
+// formulas fails these tests instead of moving the oracle with it.
+
+// With B = n mod 4 resting each round, someone must rest twice once
+// rounds * B > n; the widest spacing any bench rotation then allows is
+// floor(n / B) rounds. Null when nobody has to rest twice.
+function independentRestGapTarget(n, rounds) {
+  const B = n % 4;
+  return B > 0 && rounds * B > n ? Math.floor(n / B) : null;
+}
+
+// The least sum of squared opponent counts the same number of opponent
+// meetings can have: spread over all pairs as evenly as possible (every
+// count the floor or ceiling of the mean).
+function opponentLowerBound(n, opponent) {
+  const pairs = (n * (n - 1)) / 2;
+  const total = [...opponent.values()].reduce((sum, o) => sum + o, 0);
+  const q = Math.floor(total / pairs);
+  return pairs * q * q + (total - q * pairs) * (2 * q + 1);
+}
+
 // Everything the engine promises unconditionally: correct shape, no repeated
 // partner, sit-out counts within one. Also checks that the engine's own
 // equity report (opponent mix and rests) agrees with the independent count.
@@ -123,19 +145,27 @@ function expectSound(schedule, n, rounds, label) {
   expect(equity.sitOutSpread, `${label}: equity.sitOutSpread`).toBe(sitOuts.max - sitOuts.min);
   const gap = smallestRestGap(schedule);
   expect(equity.restGap, `${label}: equity.restGap`).toBe(gap);
-  const target = rest.restGapTarget(n, rounds);
+  const target = independentRestGapTarget(n, rounds);
   expect(equity.restGapTarget, `${label}: equity.restGapTarget`).toBe(target);
-  expect(equity.restSpaced, `${label}: equity.restSpaced`).toBe(target === null || gap === null || gap >= target);
-  // The target is a proven bound (no player resting twice within g rounds
-  // needs g * (n mod 4) <= n), so no order can space rests wider.
-  if (gap !== null && target !== null) {
+  if (target === null) {
+    // At most n rests in all, and sit-out counts within one (checked above):
+    // nobody rests twice, so there is no gap and nothing to space.
+    expect(gap, `${label}: nobody rests twice`).toBeNull();
+    expect(equity.restSpaced, `${label}: equity.restSpaced`).toBe(true);
+  } else {
+    // More than n rests: someone rests twice. The target is a proven bound
+    // (no player resting twice within g rounds needs g * (n mod 4) <= n), so
+    // no order spaces rests wider; spaced means the bound is reached.
+    expect(gap, `${label}: someone rests twice`).not.toBeNull();
     expect(gap, `${label}: smallest rest gap within the proven bound`).toBeLessThanOrEqual(target);
+    expect(equity.restSpaced, `${label}: equity.restSpaced`).toBe(gap >= target);
   }
   const opp = spread(opponent);
-  expect(schedule.equity.opponentSpread, `${label}: equity.opponentSpread`).toBe(opp.max - opp.min);
-  expect(schedule.equity.optimal, `${label}: equity.optimal agrees with cost`).toBe(
-    schedule.equity.cost === schedule.equity.lowerBound
-  );
+  expect(equity.opponentSpread, `${label}: equity.opponentSpread`).toBe(opp.max - opp.min);
+  const cost = [...opponent.values()].reduce((sum, o) => sum + o * o, 0);
+  expect(equity.cost, `${label}: equity.cost`).toBe(cost);
+  expect(equity.lowerBound, `${label}: equity.lowerBound`).toBe(opponentLowerBound(n, opponent));
+  expect(equity.optimal, `${label}: equity.optimal`).toBe(cost === opponentLowerBound(n, opponent));
   return opp;
 }
 
@@ -496,6 +526,15 @@ test.describe('Rest rounds for player counts that are not a multiple of 4', () =
       sitOutSpread: 1, restGap: null, restGapTarget: null, restSpaced: true,
     }));
     expect(short.sitOuts.filter((s) => s === 1)).toHaveLength(10);
+    // Schedules that reach the target (pinned at the default seed), so the
+    // "spaced" arm of expectSound's restSpaced check runs: no other schedule
+    // in this file reaches its target.
+    for (const [n, rounds] of [[11, 4], [23, 8]]) {
+      const schedule = generateSchedule({ players: n, rounds });
+      expect(smallestRestGap(schedule), `${n}/${rounds}: rests spaced to the target`)
+        .toBe(independentRestGapTarget(n, rounds));
+      expectEquitable(schedule, n, rounds, `${n}/${rounds}`);
+    }
     expect(rest.restGapTarget(14, 10)).toBe(7);
     expect(rest.restGapTarget(14, 7)).toBeNull();
     expect(rest.restGapTarget(15, 6)).toBe(5);
@@ -512,9 +551,14 @@ test.describe('Rest rounds for player counts that are not a multiple of 4', () =
       for (const seed of SEEDS) {
         const label = `${n}/${rounds}, seed ${seed}`;
         const schedule = oddSizedSchedule(n, rounds, seed);
-        if (schedule.equity.restGapTarget === null) continue;
         const gap = smallestRestGap(schedule);
-        expect(gap, `${label}: smallest rest gap (target ${schedule.equity.restGapTarget})`).toBeGreaterThan(1);
+        const target = independentRestGapTarget(n, rounds);
+        if (target === null) {
+          // Nobody has to rest twice, and nobody does: no gap to check.
+          expect(gap, `${label}: nobody rests twice`).toBeNull();
+          continue;
+        }
+        expect(gap, `${label}: smallest rest gap (target ${target})`).toBeGreaterThan(1);
       }
     }
   });
@@ -544,7 +588,7 @@ test.describe('Rest rounds for player counts that are not a multiple of 4', () =
     expect(gapOf(rotation)).toBe(7);
     expect(gapOf(scrambled)).toBe(1);
     const spaced = rest.spaceRests(scrambled, n, 1);
-    expect(gapOf(spaced), 'smallest rest gap after spaceRests').toBeGreaterThanOrEqual(rest.restGapTarget(n, 10));
+    expect(gapOf(spaced), 'smallest rest gap after spaceRests').toBeGreaterThanOrEqual(7);
     expect([...spaced].sort(), 'the same rounds, reordered').toEqual([...scrambled].sort());
     // The budget is a hard cap, not rounded up to a whole sweep of swaps.
     // With none the order is untouched; with one evaluation only the first
