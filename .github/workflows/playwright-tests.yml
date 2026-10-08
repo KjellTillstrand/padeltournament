@@ -111,12 +111,15 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    # The Pages artifact name is scoped to this run attempt. Artifacts belong to
-    # the run, not to the attempt, so a re-run of a failed deploy still sees the
-    # earlier attempt's artifact. Under one shared name, deploy-pages (which
-    # selects by name and refuses 0 or more than 1 match) and the identity check
-    # below would both be ambiguous. One name feeds the upload, the check and the
-    # deploy, so the three cannot drift apart.
+    # The Pages artifact name is scoped to this run attempt. On a re-run, an
+    # earlier attempt's artifact may or may not remain in the run: run
+    # 37643143891 (re-run of a failed deploy) kept both attempts' artifacts;
+    # run 37818542522 (full re-run of a successful run) dropped attempt 1's.
+    # Artifact ids do not rise across attempts, so "newest" cannot pick ours
+    # either. Per-attempt names keep both deploy-pages (which selects by name
+    # and refuses 0 or more than 1 match) and the identity check below
+    # unambiguous whichever happens. One name feeds the upload, the check and
+    # the deploy, so the three cannot drift apart.
     env:
       PAGES_ARTIFACT: github-pages-${{ github.run_attempt }}
     steps:
