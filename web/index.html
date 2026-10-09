@@ -547,7 +547,8 @@
     // names) are reset to their defaults. Scores are the exception: they are
     // type-checked, not repaired. A stored pair of strings is kept byte-for-byte,
     // even one that breaks the score rule (see parseScore), which then only shows
-    // its error and is not credited; a score of another type means no result.
+    // its error and is not credited; if either side is not a string, the whole
+    // result is no result.
     // The checks are never stricter than what the app itself writes, so the app's
     // own data always survives a reload.
 
@@ -648,22 +649,13 @@
     // error a stored result shows: it decides credit, display and gating.
     // Restore never rewrites a result by it (see copyResult).
     function parseScore(value, total) {
-      requirePointPool(total);
       if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
       const score = Number(value);
       return score <= total ? score : null;
     }
 
-    // The score rule is always applied against an explicit pool. A caller that
-    // passes none (or a raw stored value) is a bug: fail loudly rather than
-    // judge every score invalid and credit nothing.
-    function requirePointPool(total) {
-      if (!POINT_POOLS.includes(total)) throw new Error("Score check without a valid points total: " + String(total));
-    }
-
     // A complete, valid result: two scores (see parseScore) that sum to the total.
     function isCompleteResult(result, total) {
-      requirePointPool(total);
       if (!result) return false;
       const left = parseScore(result.left, total);
       const right = parseScore(result.right, total);

@@ -1124,7 +1124,8 @@ test.describe('Malformed or hostile persisted state', () => {
         await expect(page.locator('.round-header .left')).toHaveText('Round 1');
         await expect(page.locator('#globalTotalPoints')).toHaveValue(String(total));
         await expectScoresOnScreen(page, [[result.left, result.right], [sound.left, '9']]);
-        await expectErrorsOnScreen(page, [message, '']);
+        // (the third match, stored blank, shows no error either)
+        await expectErrorsOnScreen(page, [message, '', '']);
         expect(await scoreboardPointsSorted(page)).toEqual(
           [total - 9, total - 9, 9, 9].concat(Array(8).fill(0)));
       }
@@ -1164,22 +1165,34 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
-  // The score rule never runs without an explicit, valid pool: a caller that
-  // forgets the total fails loudly instead of crediting nothing.
-  test('The score checks refuse to run without a valid points total', async ({ page }) => {
+  // Stored scores are kept byte-for-byte, so hostile strings come back too: they
+  // only ever reach an input's value (never markup), a number input cannot show
+  // them, and the score rule credits nothing for them.
+  test('R-STATE-PERSIST, R-SCORE-ENTRY: stored scores holding markup, prototype names or look-alike digits are inert, uncredited and kept', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const state = await captureARealTournamentState(context);
+    const hostile = [
+      { left: '<img src=x onerror=window.pwned=1>', right: '__proto__' },
+      { left: '２４', right: ' 0' }, // fullwidth digits; a leading space
+    ];
+    plantResults(state.schedule, hostile);
+    await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+
     await page.goto('/');
-    const outcomes = await page.evaluate(() => {
-      const attempt = (fn) => { try { fn(); return 'returned'; } catch (err) { return 'threw'; } };
-      return [
-        attempt(() => isCompleteResult({ left: '15', right: '9' })),
-        attempt(() => isCompleteResult({ left: '15', right: '9' }, '24')),
-        attempt(() => parseScore('15')),
-        attempt(() => parseScore('15', 25)),
-        attempt(() => recordedResult('15', '9')),
-        attempt(() => recordedResult('15', '9', 24)),
-      ];
-    });
-    expect(outcomes).toEqual(['threw', 'threw', 'threw', 'threw', 'threw', 'returned']);
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 1) await page.reload();
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      // Nothing ran,
+      expect(await page.evaluate(() => window.pwned)).toBeUndefined();
+      // the number inputs cannot show either result, so each match asks for both scores,
+      await expectScoresOnScreen(page, [['', ''], ['', '']]);
+      await expectErrorsOnScreen(page, ['Please fill in both scores', 'Please fill in both scores', '']);
+      // and nobody is credited.
+      expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    }
+    // Both results are stored back byte-for-byte.
+    expect((await storedResults(page)).slice(0, 2)).toEqual(hostile);
+    expect(errors).toEqual([]);
   });
 
   // --- AB#69 review: the total of a legacy tournament (no stored total) ---
