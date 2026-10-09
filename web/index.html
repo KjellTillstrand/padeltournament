@@ -368,7 +368,8 @@
           mexicanoPlayerCount = currentSchedule.players.length;
           generatePlayerInputs(currentSchedule.players);
         }
-        // Tournaments saved before the points total was stored carry none: 24.
+        // Tournaments saved before the points total was stored carry none: it is
+        // inferred from their results (storedTotalPoints), else 24.
         totalPoints = selectedTournament.totalPoints;
         applyFormatUI();
         document.getElementById("tournamentName").value = selectedTournament.tournamentName;
@@ -592,6 +593,29 @@
       return Number.isInteger(total) && POINT_POOLS.includes(total) ? total : DEFAULT_TOTAL_POINTS;
     }
 
+    // The points total of a stored tournament state or saved tournament, read
+    // before its results are checked against it. A stored total (even an
+    // invalid one) is normalized. Only a legacy record, saved before the total
+    // was stored (no totalPoints key at all), has it inferred from its results:
+    // every complete stored pair (both sides plain digits) must sum to the same
+    // value, and that value must be a pool. Otherwise it is 24.
+    function storedTotalPoints(record) {
+      if (Object.prototype.hasOwnProperty.call(record, "totalPoints")) return normalizeTotalPoints(record.totalPoints);
+      const sums = new Set();
+      const rounds = isPlainObject(record.schedule) && Array.isArray(record.schedule.rounds) ? record.schedule.rounds : [];
+      rounds.forEach(round => {
+        if (!isPlainObject(round) || !Array.isArray(round.matches)) return;
+        round.matches.forEach(match => {
+          const result = isPlainObject(match) ? match.result : null;
+          if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return;
+          if (!/^\d+$/.test(result.left) || !/^\d+$/.test(result.right)) return;
+          sums.add(Number(result.left) + Number(result.right));
+        });
+      });
+      const [sum] = sums;
+      return sums.size === 1 ? normalizeTotalPoints(sum) : DEFAULT_TOTAL_POINTS;
+    }
+
     // Two teams of two, each entry an integer index into the player list.
     // Returns a copy, or null when the shape is wrong.
     function copyTeamIndices(teamIndices, playerCount) {
@@ -607,13 +631,22 @@
     // fraction, exponent or spaces). Returns it, or null for anything else,
     // including no entry ("").
     function parseScore(value, total) {
+      requirePointPool(total);
       if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
       const score = Number(value);
       return score <= total ? score : null;
     }
 
+    // The score rule is always applied against an explicit pool. A caller that
+    // passes none (or a raw stored value) is a bug: fail loudly rather than
+    // judge every score invalid and blank the results.
+    function requirePointPool(total) {
+      if (!POINT_POOLS.includes(total)) throw new Error("Score check without a valid points total: " + String(total));
+    }
+
     // A complete, valid result: two scores (see parseScore) that sum to the total.
     function isCompleteResult(result, total) {
+      requirePointPool(total);
       if (!result) return false;
       const left = parseScore(result.left, total);
       const right = parseScore(result.right, total);
@@ -632,8 +665,10 @@
     // A result of the wrong shape is repaired to "no result recorded"; a pair that
     // breaks the score rule for the tournament's total (out of range, fractional,
     // not summing to the total, one side only) to "no score yet", so the match
-    // can be scored again.
+    // can be scored again (unless it is in a locked Mexicano round, which stays
+    // read-only; only tampered storage can put an invalid pair there).
     function copyResult(result, total) {
+      requirePointPool(total);
       if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return null;
       return recordedResult(result.left, result.right, total);
     }
@@ -759,8 +794,8 @@
       if (!isPlainObject(state)) return null;
       const started = state.tournamentStarted === true;
       const format = normalizeFormat(state.format);
-      // Normalized first: stored results are checked against it.
-      const total = normalizeTotalPoints(state.totalPoints);
+      // Read first: stored results are checked against it.
+      const total = storedTotalPoints(state);
       // A setup that has not started holds the Americano schedule (whatever the
       // format) and no seed: the seed is drawn at Start.
       const play = started
@@ -789,7 +824,7 @@
     function copySavedTournament(entry) {
       if (!isPlainObject(entry) || typeof entry.tournamentName !== "string" || entry.tournamentName.trim() === "") return null;
       const format = normalizeFormat(entry.format); // saved tournaments are always started
-      const total = normalizeTotalPoints(entry.totalPoints); // stored results are checked against it
+      const total = storedTotalPoints(entry); // stored results are checked against it
       const play = copyStartedPlay(format, entry.schedule, entry.mexicanoSeed, total);
       if (!play) return null;
       const schedule = play.schedule;

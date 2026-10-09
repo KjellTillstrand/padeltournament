@@ -488,13 +488,16 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
       const generate = page.locator('#generateNextRoundBtn');
       const matches = page.locator('.matches-container .match');
 
-      // When both courts hold scores that sum to 24 instead (the input auto-completes to
-      // the pool, so this is planted in the stored state before the page loads),
-      const planted = await page.evaluate(() => {
+      // When the first court holds a score summing to the pool and the second one
+      // summing to 24 instead (the input auto-completes to the pool, so both are
+      // planted in the stored state before the page loads),
+      const valid = { left: String(pool / 2 + 2), right: String(pool / 2 - 2) };
+      const planted = await page.evaluate((first) => {
         const state = JSON.parse(localStorage.getItem('tournamentState'));
-        state.schedule.rounds[0].matches.forEach((m) => { m.result = { left: '12', right: '12' }; });
+        state.schedule.rounds[0].matches[0].result = first;
+        state.schedule.rounds[0].matches[1].result = { left: '12', right: '12' };
         return JSON.stringify(state);
-      });
+      }, valid);
       await page.addInitScript((json) => {
         if (!sessionStorage.getItem('planted')) {
           sessionStorage.setItem('planted', '1');
@@ -502,16 +505,20 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
         }
       }, planted);
       await page.reload();
-      // Then those results are restored as not entered (AB#69: a stored pair must
-      // sum to the tournament's own total), the next round shall not be offered,
-      // and every court is flagged.
-      await expect(matches.nth(0).locator('.result-overlay-left input')).toHaveValue('');
+      // Then the plant loaded: the valid score is kept (as entered), while 12/12
+      // is restored as not entered (AB#69: a stored pair must sum to the
+      // tournament's own total). The next round shall not be offered, and only
+      // the second court is flagged.
+      await expect(matches.nth(0).locator('.result-overlay-left input')).toHaveValue(valid.left);
+      await expect(matches.nth(0).locator('.result-overlay-right input')).toHaveValue(valid.right);
       await expect(matches.nth(1).locator('.result-overlay-left input')).toHaveValue('');
+      await expect(matches.nth(1).locator('.result-overlay-right input')).toHaveValue('');
       await expect(generate).toBeDisabled();
-      await expect(page.locator('.matches-container .match.score-missing')).toHaveCount(2);
+      await expect(page.locator('.matches-container .match.score-missing')).toHaveCount(1);
+      await expect(matches.nth(1)).toHaveClass(/score-missing/);
 
-      // When the scores sum to the pool,
-      await organizer.attemptsTo(EnterTheScore(0, pool / 2 + 2), EnterTheScore(1, pool / 2 - 2));
+      // When the second court's score sums to the pool too,
+      await organizer.attemptsTo(EnterTheScore(1, pool / 2 - 2));
       // Then the next round is offered, and generating it works.
       await expect(page.locator('.matches-container .match.score-missing')).toHaveCount(0);
       await expect(generate).toBeEnabled();
