@@ -214,6 +214,20 @@ test.describe('One score rule for entry, validation and completion', () => {
     });
   }
 
+  test('R-SCORE-ENTRY: typing the unparseable 1e into the right-hand score shows the range error', async ({ page }) => {
+    await startWithPointsTotal(page, 24);
+    const match = page.locator('.result-overlay-container').first();
+    // A valid score first, so the left side holds a complement to clear.
+    await match.locator('.result-overlay-left input').fill('15');
+    await expect(match.locator('.result-overlay-right input')).toHaveValue('9');
+    await match.locator('.result-overlay-right input').fill('');
+    await match.locator('.result-overlay-right input').pressSequentially('1e');
+
+    await expect(match.locator('.error-message')).toContainText('whole number from 0 to 24');
+    await expect(match.locator('.result-overlay-left input')).toHaveValue('');
+    expect((await scoreboardPoints(page)).every((p) => p === 0)).toBe(true);
+  });
+
   for (const entered of ['12.5', '1e1', '-3']) {
     test(`R-SCORE-ENTRY, R-POINT-POOLS: the entry ${entered} shows an error and is not credited`, async ({ page }) => {
       await startWithPointsTotal(page, 24);

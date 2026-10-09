@@ -505,14 +505,19 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
         }
       }, planted);
       await page.reload();
-      // Then the plant loaded: the valid score is kept (as entered), while 12/12
-      // is restored as not entered (AB#69: a stored pair must sum to the
-      // tournament's own total). The next round shall not be offered, and only
-      // the second court is flagged.
+      // Then the plant loaded: both scores are kept as stored (AB#69: restore
+      // never blanks a result). The valid one is credited; 12/12 shows its
+      // error and is credited to nobody. The next round shall not be offered,
+      // and only the second court is flagged.
       await expect(matches.nth(0).locator('.result-overlay-left input')).toHaveValue(valid.left);
       await expect(matches.nth(0).locator('.result-overlay-right input')).toHaveValue(valid.right);
-      await expect(matches.nth(1).locator('.result-overlay-left input')).toHaveValue('');
-      await expect(matches.nth(1).locator('.result-overlay-right input')).toHaveValue('');
+      await expect(matches.nth(0).locator('.error-message')).toHaveText('');
+      await expect(matches.nth(1).locator('.result-overlay-left input')).toHaveValue('12');
+      await expect(matches.nth(1).locator('.result-overlay-right input')).toHaveValue('12');
+      await expect(matches.nth(1).locator('.error-message')).toContainText('Sum must equal ' + pool);
+      const points = (await page.locator('.scoreboard-container tr td:nth-child(2)').allTextContents())
+        .map(Number).sort((a, b) => b - a);
+      expect(points).toEqual([pool / 2 + 2, pool / 2 + 2, pool / 2 - 2, pool / 2 - 2, 0, 0, 0, 0]);
       await expect(generate).toBeDisabled();
       await expect(page.locator('.matches-container .match.score-missing')).toHaveCount(1);
       await expect(matches.nth(1)).toHaveClass(/score-missing/);
