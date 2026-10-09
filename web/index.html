@@ -180,6 +180,10 @@
     const POINT_POOLS = [16, 21, 24, 32]; // the #globalTotalPoints options
     const DEFAULT_TOTAL_POINTS = 24;
     let totalPoints = DEFAULT_TOTAL_POINTS;
+    // Whether the tournament holds legacy results kept as stored, some of which
+    // break the score rule (see storedScoring). Persisted, and cleared on save
+    // once none does (currentLegacyResults).
+    let legacyResults = false;
 
     // Limits for anything read back from localStorage (see "Persisted-state validation").
     // Each is at least as loose as what the app itself can write.
@@ -193,6 +197,13 @@
       document.getElementById("tournamentTitle").textContent = this.value || "Tournament Title";
     });
 
+    // Whether the running tournament still holds a kept legacy result that breaks
+    // the score rule; updates legacyResults, which only ever goes from true to false.
+    function currentLegacyResults() {
+      legacyResults = legacyResults && hasBrokenResult(currentSchedule, totalPoints);
+      return legacyResults;
+    }
+
     // Save tournament state to localStorage.
     function saveTournamentState() {
       const state = {
@@ -204,7 +215,8 @@
         format: tournamentFormat,
         mexicanoPlayerCount: mexicanoPlayerCount,
         mexicanoSeed: mexicanoSeed,
-        totalPoints: totalPoints
+        totalPoints: totalPoints,
+        legacyResults: currentLegacyResults()
       };
       writeStoredJson("tournamentState", state);
     }
@@ -246,6 +258,7 @@
       mexicanoPlayerCount = state.mexicanoPlayerCount;
       mexicanoSeed = state.mexicanoSeed;
       totalPoints = state.totalPoints;
+      legacyResults = state.legacyResults;
       document.getElementById("tournamentName").value = state.tournamentName;
       document.getElementById("tournamentTitle").textContent = state.tournamentName || "Tournament Title";
       return true;
@@ -258,6 +271,7 @@
       mexicanoPlayerCount = DEFAULT_MEXICANO_PLAYERS;
       mexicanoSeed = null;
       totalPoints = DEFAULT_TOTAL_POINTS;
+      legacyResults = false;
       document.getElementById("tournamentName").value = "";
       document.getElementById("tournamentTitle").textContent = "Tournament Title";
       resetTournamentState(); // also drops the stored state and loads the default schedule
@@ -330,6 +344,7 @@
         format: tournamentFormat,
         mexicanoSeed: mexicanoSeed,
         totalPoints: totalPoints,
+        legacyResults: currentLegacyResults(),
         savedAt: new Date().toISOString()
       };
       let savedTournaments = readSavedTournaments();
@@ -369,8 +384,9 @@
           generatePlayerInputs(currentSchedule.players);
         }
         // Tournaments saved before the points total was stored carry none: it is
-        // inferred from their results (storedTotalPoints), else 24.
+        // inferred from their results, which are kept as stored (storedScoring).
         totalPoints = selectedTournament.totalPoints;
+        legacyResults = selectedTournament.legacyResults;
         applyFormatUI();
         document.getElementById("tournamentName").value = selectedTournament.tournamentName;
         document.getElementById("tournamentTitle").textContent = selectedTournament.tournamentName;
@@ -475,6 +491,7 @@
       currentSchedule = null;
       currentRoundIndex = 0;
       mexicanoSeed = null;
+      legacyResults = false;
       document.getElementById("formatSelect").disabled = false;
       document.getElementById("playerCountSelect").disabled = false;
       document.getElementById("scheduleSelect").disabled = false;
@@ -587,33 +604,64 @@
     }
 
     // Only one of the offered point pools is kept, as the number the app writes;
-    // anything else (state saved before the total was stored, hostile values)
-    // means 24, the default every older tournament was played to.
+    // anything else (a hostile or malformed stored value) means 24, the default.
+    // A record with no stored total at all is legacy: see storedScoring.
     function normalizeTotalPoints(total) {
       return Number.isInteger(total) && POINT_POOLS.includes(total) ? total : DEFAULT_TOTAL_POINTS;
     }
 
-    // The points total of a stored tournament state or saved tournament, read
-    // before its results are checked against it. A stored total (even an
-    // invalid one) is normalized. Only a legacy record, saved before the total
-    // was stored (no totalPoints key at all), has it inferred from its results:
-    // every complete stored pair (both sides plain digits) must sum to the same
-    // value, and that value must be a pool. Otherwise it is 24.
-    function storedTotalPoints(record) {
-      if (Object.prototype.hasOwnProperty.call(record, "totalPoints")) return normalizeTotalPoints(record.totalPoints);
-      const sums = new Set();
-      const rounds = isPlainObject(record.schedule) && Array.isArray(record.schedule.rounds) ? record.schedule.rounds : [];
+    // How a stored tournament state or saved tournament is scored, read before
+    // its results are copied: { total, keepResults }.
+    // - A stored total (even an invalid one) is normalized, never inferred over.
+    // - A legacy record, saved before the total was stored (no totalPoints key
+    //   at all), has it inferred from its results (inferLegacyTotal), and its
+    //   results are kept exactly as stored: a legacy tournament may mix sums
+    //   (played to 32, reloaded at 24, scored on), and every one was played.
+    // - legacyResults (see hasBrokenResult) keeps results as stored on later
+    //   restores, once the total is stored too. A planted flag can only keep
+    //   string pairs that are then shown with their error and never credited
+    //   (the score rule still decides), so it cannot change a score.
+    function storedScoring(record) {
+      if (Object.prototype.hasOwnProperty.call(record, "totalPoints")) {
+        return { total: normalizeTotalPoints(record.totalPoints), keepResults: record.legacyResults === true };
+      }
+      return { total: inferLegacyTotal(record.schedule), keepResults: true };
+    }
+
+    // A legacy record's total: among its complete stored pairs (both sides plain
+    // digits), the most common sum that is a pool; on a tie, the pool of the
+    // earliest such pair in round order; with none, 24.
+    function inferLegacyTotal(schedule) {
+      const counts = new Map(); // insertion order: first appearance in round order
+      const rounds = isPlainObject(schedule) && Array.isArray(schedule.rounds) ? schedule.rounds : [];
       rounds.forEach(round => {
         if (!isPlainObject(round) || !Array.isArray(round.matches)) return;
         round.matches.forEach(match => {
           const result = isPlainObject(match) ? match.result : null;
           if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return;
           if (!/^\d+$/.test(result.left) || !/^\d+$/.test(result.right)) return;
-          sums.add(Number(result.left) + Number(result.right));
+          const sum = Number(result.left) + Number(result.right);
+          if (POINT_POOLS.includes(sum)) counts.set(sum, (counts.get(sum) || 0) + 1);
         });
       });
-      const [sum] = sums;
-      return sums.size === 1 ? normalizeTotalPoints(sum) : DEFAULT_TOTAL_POINTS;
+      let total = DEFAULT_TOTAL_POINTS;
+      let best = 0;
+      counts.forEach((count, sum) => {
+        if (count > best) { total = sum; best = count; }
+      });
+      return total;
+    }
+
+    // Whether any match holds a result that breaks the score rule (neither
+    // complete nor empty): only kept legacy results can. While one does, the
+    // tournament carries legacyResults so it is still kept on the next restore.
+    function hasBrokenResult(schedule, total) {
+      if (!schedule || !Array.isArray(schedule.rounds)) return false;
+      return schedule.rounds.some(round => Array.isArray(round.matches) && round.matches.some(match => {
+        const result = match.result;
+        if (!result || (result.left === "" && result.right === "")) return false;
+        return !isCompleteResult(result, total);
+      }));
     }
 
     // Two teams of two, each entry an integer index into the player list.
@@ -662,19 +710,22 @@
     }
 
     // Scores are the raw values of the score inputs: strings ("" when not entered).
-    // A result of the wrong shape is repaired to "no result recorded"; a pair that
-    // breaks the score rule for the tournament's total (out of range, fractional,
-    // not summing to the total, one side only) to "no score yet", so the match
-    // can be scored again (unless it is in a locked Mexicano round, which stays
-    // read-only; only tampered storage can put an invalid pair there).
-    function copyResult(result, total) {
-      requirePointPool(total);
+    // A result of the wrong shape is repaired to "no result recorded". With
+    // scoring.keepResults (legacy results, see storedScoring) a string pair is
+    // kept as stored. Otherwise a pair that breaks the score rule for the
+    // tournament's total (out of range, fractional, not summing to the total,
+    // one side only) is repaired to "no score yet", so the match can be scored
+    // again (unless it is in a locked Mexicano round, which stays read-only;
+    // only tampered storage can put an invalid pair there).
+    function copyResult(result, scoring) {
+      requirePointPool(scoring.total);
       if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return null;
-      return recordedResult(result.left, result.right, total);
+      if (scoring.keepResults) return { left: result.left, right: result.right };
+      return recordedResult(result.left, result.right, scoring.total);
     }
 
     // A rebuilt match, or null when its structure is unusable.
-    function copyMatch(match, players, courtCount, requireTeamIndices, total) {
+    function copyMatch(match, players, courtCount, requireTeamIndices, scoring) {
       if (!isPlainObject(match)) return null;
       // The court number becomes a CSS class and a data attribute: an in-range integer only.
       if (!Number.isInteger(match.court) || match.court < 1 || match.court > courtCount) return null;
@@ -686,7 +737,7 @@
       const copy = {
         court: match.court,
         teams: match.teams.map(team => team.slice()),
-        result: copyResult(match.result, total)
+        result: copyResult(match.result, scoring)
       };
       // teamIndices maps players to schedule slots when names are assigned at start:
       // a tournament that has not started yet cannot do without it; a started one
@@ -701,8 +752,9 @@
     // flow read, each of the right type and in range; null when it is unusable.
     // Byes (who rests) are never read from storage: they are rebuilt from the
     // checked matches (setByes), so they always name exactly the unseated players.
-    // Results are checked against total, the tournament's (normalized) points total.
-    function copySchedule(schedule, requireTeamIndices, total) {
+    // Results are copied by scoring (see storedScoring): the tournament's points
+    // total, and whether its results are kept as stored.
+    function copySchedule(schedule, requireTeamIndices, scoring) {
       if (!isPlainObject(schedule)) return null;
       const playerList = schedule.players;
       // At least one full court; with a count that is not a multiple of four the
@@ -719,7 +771,7 @@
         if (!isPlainObject(round) || !Number.isInteger(round.roundNumber) ||
           round.roundNumber < 1 || round.roundNumber > MAX_ROUNDS) return null;
         if (!Array.isArray(round.matches) || round.matches.length < 1 || round.matches.length > courtCount) return null;
-        const matchCopies = round.matches.map(match => copyMatch(match, players, courtCount, requireTeamIndices, total));
+        const matchCopies = round.matches.map(match => copyMatch(match, players, courtCount, requireTeamIndices, scoring));
         if (matchCopies.includes(null)) return null;
         roundCopies.push({ roundNumber: round.roundNumber, matches: matchCopies });
       }
@@ -756,8 +808,8 @@
     // numbered 1, 2, 3, ... in order, and in every round each court used exactly once
     // and each player seated at most once (the rest are its byes). This is a shape
     // check only: it does not prove the app generated these rounds.
-    function copyMexicanoSchedule(schedule, total) {
-      const copy = copySchedule(schedule, false, total);
+    function copyMexicanoSchedule(schedule, scoring) {
+      const copy = copySchedule(schedule, false, scoring);
       if (!copy) return null;
       const playerCount = copy.players.length;
       if (playerCount < MIN_MEXICANO_PLAYERS || playerCount > MAX_MEXICANO_PLAYERS) return null;
@@ -777,13 +829,13 @@
     // both at Start); without them it is not used to generate further rounds. The
     // seed is shape-checked only: it is not authenticated, and round 1 is not
     // re-derived from it.
-    function copyStartedPlay(format, schedule, seed, total) {
+    function copyStartedPlay(format, schedule, seed, scoring) {
       if (format !== "mexicano") {
-        const copy = copySchedule(schedule, false, total);
+        const copy = copySchedule(schedule, false, scoring);
         return copy ? { schedule: copy, mexicanoSeed: null } : null;
       }
       if (!isValidMexicanoSeed(seed)) return null;
-      const copy = copyMexicanoSchedule(schedule, total);
+      const copy = copyMexicanoSchedule(schedule, scoring);
       return copy ? { schedule: copy, mexicanoSeed: seed } : null;
     }
 
@@ -794,15 +846,16 @@
       if (!isPlainObject(state)) return null;
       const started = state.tournamentStarted === true;
       const format = normalizeFormat(state.format);
-      // Read first: stored results are checked against it.
-      const total = storedTotalPoints(state);
+      // Read first: stored results are copied by it.
+      const scoring = storedScoring(state);
       // A setup that has not started holds the Americano schedule (whatever the
       // format) and no seed: the seed is drawn at Start.
       const play = started
-        ? copyStartedPlay(format, state.schedule, state.mexicanoSeed, total)
-        : { schedule: copySchedule(state.schedule, true, total), mexicanoSeed: null };
+        ? copyStartedPlay(format, state.schedule, state.mexicanoSeed, scoring)
+        : { schedule: copySchedule(state.schedule, true, scoring), mexicanoSeed: null };
       if (!play || !play.schedule) return null;
       const schedule = play.schedule;
+      const total = scoring.total;
       return {
         schedule: schedule,
         currentRoundIndex: normalizeRoundIndex(state.currentRoundIndex, schedule),
@@ -814,7 +867,8 @@
         mexicanoPlayerCount: started && format === "mexicano"
           ? schedule.players.length : normalizeMexicanoPlayerCount(state.mexicanoPlayerCount),
         mexicanoSeed: play.mexicanoSeed,
-        totalPoints: total
+        totalPoints: total,
+        legacyResults: scoring.keepResults && hasBrokenResult(schedule, total)
       };
     }
 
@@ -824,10 +878,11 @@
     function copySavedTournament(entry) {
       if (!isPlainObject(entry) || typeof entry.tournamentName !== "string" || entry.tournamentName.trim() === "") return null;
       const format = normalizeFormat(entry.format); // saved tournaments are always started
-      const total = storedTotalPoints(entry); // stored results are checked against it
-      const play = copyStartedPlay(format, entry.schedule, entry.mexicanoSeed, total);
+      const scoring = storedScoring(entry); // stored results are copied by it
+      const play = copyStartedPlay(format, entry.schedule, entry.mexicanoSeed, scoring);
       if (!play) return null;
       const schedule = play.schedule;
+      const total = scoring.total;
       const copy = {
         tournamentName: entry.tournamentName,
         schedule: schedule,
@@ -835,7 +890,10 @@
         courtNames: normalizeCourtNames(entry.courtNames),
         format: format,
         mexicanoSeed: play.mexicanoSeed,
-        totalPoints: total
+        totalPoints: total,
+        // Written back as is whenever the saved list is rewritten, so a legacy
+        // entry keeps its total and its results.
+        legacyResults: scoring.keepResults && hasBrokenResult(schedule, total)
       };
       if (typeof entry.savedAt === "string") copy.savedAt = entry.savedAt;
       return copy;
@@ -1008,30 +1066,39 @@
       const errorSpan = document.createElement('span');
       errorSpan.className = 'error-message';
       overlayContainer.appendChild(errorSpan);
-      if (match.result) {
-        leftInput.value = match.result.left;
-        rightInput.value = match.result.right;
-      } else {
-        match.result = { left: '', right: '' };
-      }
       // Only a valid score (see parseScore) is completed; an empty or invalid
       // entry clears the other side, so no stale or negative complement remains.
       function updateOpposite(source, target) {
         const score = parseScore(source.value, total);
         target.value = score === null ? '' : String(total - score);
       }
-      function validate() {
+      // Text a number input cannot parse (such as "1e") reads as "", but it is
+      // an invalid entry, not a missing one: validity.badInput tells them apart.
+      function isInvalidEntry(input) {
+        return input.validity.badInput || (input.value !== '' && parseScore(input.value, total) === null);
+      }
+      function showScoreError() {
         const leftVal = parseScore(leftInput.value, total);
         const rightVal = parseScore(rightInput.value, total);
-        const invalidEntry = (leftInput.value !== '' && leftVal === null) ||
-          (rightInput.value !== '' && rightVal === null);
-        if (invalidEntry) {
+        if (isInvalidEntry(leftInput) || isInvalidEntry(rightInput)) {
           errorSpan.textContent = " Each score must be a whole number from 0 to " + total;
         } else if (leftVal === null || rightVal === null) {
           errorSpan.textContent = " Please fill in both scores";
         } else if (leftVal + rightVal !== total) {
           errorSpan.textContent = " Sum must equal " + total;
         } else { errorSpan.textContent = ""; }
+      }
+      if (match.result) {
+        leftInput.value = match.result.left;
+        rightInput.value = match.result.right;
+        // A kept legacy result that breaks the score rule shows why from the start.
+        const empty = match.result.left === '' && match.result.right === '';
+        if (!empty && !isCompleteResult(match.result, total)) showScoreError();
+      } else {
+        match.result = { left: '', right: '' };
+      }
+      function validate() {
+        showScoreError();
         // An invalid entry stays visible (with its error) but is not recorded.
         match.result = recordedResult(leftInput.value, rightInput.value, total);
         updateAllScoreboards();

@@ -199,6 +199,21 @@ test.describe('One score rule for entry, validation and completion', () => {
     await expect(match.locator('.error-message')).toHaveText('');
   });
 
+  // Text a number input cannot parse reports an empty value; it is still an
+  // invalid entry, not a missing one. ("+5" is not used: Chromium drops the
+  // "+" keystroke, so it types as a valid 5.)
+  for (const typed of ['1e', '-']) {
+    test(`R-SCORE-ENTRY: typing the unparseable ${typed} shows the range error`, async ({ page }) => {
+      await startWithPointsTotal(page, 24);
+      const match = page.locator('.result-overlay-container').first();
+      await match.locator('.result-overlay-left input').pressSequentially(typed);
+
+      await expect(match.locator('.error-message')).toContainText('whole number from 0 to 24');
+      await expect(match.locator('.result-overlay-right input')).toHaveValue('');
+      expect((await scoreboardPoints(page)).every((p) => p === 0)).toBe(true);
+    });
+  }
+
   for (const entered of ['12.5', '1e1', '-3']) {
     test(`R-SCORE-ENTRY, R-POINT-POOLS: the entry ${entered} shows an error and is not credited`, async ({ page }) => {
       await startWithPointsTotal(page, 24);

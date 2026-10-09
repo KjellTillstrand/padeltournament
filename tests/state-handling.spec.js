@@ -111,6 +111,19 @@ test.describe('Malformed or hostile persisted state', () => {
     }, entries);
   }
 
+  // Like plantStorage, but only before the first navigation of this tab: a
+  // reload then reads what the app itself stored, not the plant again.
+  async function plantStorageOnce(page, entries) {
+    await page.addInitScript((seed) => {
+      if (sessionStorage.getItem('planted')) return;
+      sessionStorage.setItem('planted', '1');
+      for (const [key, value] of Object.entries(seed)) {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      }
+    }, entries);
+  }
+
   // Uncaught exceptions AND console errors. The load handler's last-resort
   // catch logs a console error, while rejecting bad data only warns, so this
   // tells "validated" apart from "crashed and was rescued".
@@ -1136,21 +1149,24 @@ test.describe('Malformed or hostile persisted state', () => {
       const attempt = (fn) => { try { fn(); return 'returned'; } catch (err) { return 'threw'; } };
       return [
         attempt(() => copyResult({ left: '15', right: '9' })),
-        attempt(() => copyResult({ left: '15', right: '9' }, '24')),
+        attempt(() => copyResult({ left: '15', right: '9' }, {})),
+        attempt(() => copyResult({ left: '15', right: '9' }, { total: '24', keepResults: false })),
+        attempt(() => copyResult({ left: '15', right: '9' }, { total: undefined, keepResults: true })),
         attempt(() => isCompleteResult({ left: '15', right: '9' })),
         attempt(() => parseScore('15')),
         attempt(() => parseScore('15', 25)),
-        attempt(() => copyResult({ left: '15', right: '9' }, 24)),
+        attempt(() => copyResult({ left: '15', right: '9' }, { total: 24, keepResults: false })),
       ];
     });
-    expect(outcomes).toEqual(['threw', 'threw', 'threw', 'threw', 'threw', 'returned']);
+    expect(outcomes).toEqual(['threw', 'threw', 'threw', 'threw', 'threw', 'threw', 'threw', 'returned']);
   });
 
   // --- AB#69 review: a legacy tournament (no stored total) keeps its results ---
   // Before AB#62 the points total was not stored, so a tournament played to 16,
   // 21 or 32 comes back without one. Its total is inferred from its complete
-  // stored results when they all sum to the same pool; otherwise it is 24. A
-  // total that IS stored, however hostile, is never inferred over (AB#62).
+  // stored results: the most common sum that is a pool, else 24. Its results
+  // are kept as stored. A total that IS stored, however hostile, is never
+  // inferred over (AB#62).
   const LEGACY_32_RESULTS = [{ left: '20', right: '12' }, { left: '18', right: '14' }];
   const plantResults = (schedule, results) => {
     results.forEach((result, i) => { schedule.rounds[0].matches[i].result = result; });
@@ -1190,28 +1206,175 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
-  const LEGACY_FALLBACKS = [
-    ['results summing to different pools', [{ left: '20', right: '12' }, { left: '15', right: '9' }], [['', ''], ['15', '9']]],
-    ['no complete result', [{ left: '15', right: '' }, { left: '', right: '' }], [['', ''], ['', '']]],
-    ['results agreeing on a sum that is no pool', [{ left: '13', right: '12' }, { left: '20', right: '5' }], [['', ''], ['', '']]],
+  // A legacy tournament may mix sums: played to 32, reloaded (the setting fell
+  // back to 24), then scored to 24. Its total is the most common pool sum, and
+  // every stored result is kept as it is: one that breaks the rule under that
+  // total shows its error, is not credited, and survives reloads (the state
+  // carries legacyResults) until the Organizer corrects it.
+  const LEGACY_MIXED_RESULTS = [{ left: '20', right: '12' }, { left: '18', right: '14' }, { left: '15', right: '9' }];
+
+  async function expectMixedLegacyAt32(page) {
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('32');
+    await expectScoresOnScreen(page, [['20', '12'], ['18', '14'], ['15', '9']]);
+    const matches = page.locator('.result-overlay-container');
+    await expect(matches.nth(0).locator('.error-message')).toHaveText('');
+    await expect(matches.nth(1).locator('.error-message')).toHaveText('');
+    await expect(matches.nth(2).locator('.error-message')).toContainText('Sum must equal 32');
+    // Only the results valid at 32 are credited.
+    expect(await scoreboardPointsSorted(page)).toEqual([20, 20, 18, 18, 14, 14, 12, 12, 0, 0, 0, 0]);
+  }
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a legacy state with mixed sums restores at its most common pool, keeping every result across reloads', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a legacy state (no stored total) with two results summing to 32 and one to 24.
+    const state = await captureARealTournamentState(context);
+    delete state.totalPoints;
+    plantResults(state.schedule, LEGACY_MIXED_RESULTS);
+    await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+
+    // When the app loads, then it plays to 32 and keeps all three results,
+    await page.goto('/');
+    await expectMixedLegacyAt32(page);
+
+    // and the state it stores keeps them too, flagged as legacy results,
+    await page.locator('.result-overlay-container').nth(0).locator('.result-overlay-left input').fill('20');
+    let stored = await storedJson(page, 'tournamentState');
+    expect(stored.totalPoints).toBe(32);
+    expect(stored.legacyResults).toBe(true);
+    expect(stored.schedule.rounds[0].matches.map((m) => m.result)).toEqual(LEGACY_MIXED_RESULTS);
+
+    // so a reload, and another one, still show all three.
+    await page.reload();
+    await expectMixedLegacyAt32(page);
+    await page.reload();
+    await expectMixedLegacyAt32(page);
+    stored = await storedJson(page, 'tournamentState');
+    expect(stored.legacyResults).toBe(true);
+    expect(stored.schedule.rounds[0].matches.map((m) => m.result)).toEqual(LEGACY_MIXED_RESULTS);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: correcting the last legacy result that breaks the rule clears the legacy flag', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const state = await captureARealTournamentState(context);
+    delete state.totalPoints;
+    plantResults(state.schedule, LEGACY_MIXED_RESULTS);
+    await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+    await page.goto('/');
+    await expectMixedLegacyAt32(page);
+
+    // When the Organizer corrects 15/9 to a score summing to 32,
+    const third = page.locator('.result-overlay-container').nth(2);
+    await third.locator('.result-overlay-left input').fill('16');
+    await expect(third.locator('.result-overlay-right input')).toHaveValue('16');
+    await expect(third.locator('.error-message')).toHaveText('');
+
+    // Then the stored state no longer carries the flag, and everything reloads as valid.
+    const stored = await storedJson(page, 'tournamentState');
+    expect(stored.totalPoints).toBe(32);
+    expect(stored.legacyResults).toBe(false);
+    await page.reload();
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('32');
+    await expectScoresOnScreen(page, [['20', '12'], ['18', '14'], ['16', '16']]);
+    expect(await scoreboardPointsSorted(page)).toEqual([20, 20, 18, 18, 16, 16, 16, 16, 14, 14, 12, 12]);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a legacy saved tournament with mixed sums loads at its most common pool, keeping every result', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given a legacy saved tournament with two results summing to 32 and one to 24.
+    const { schedule } = await captureARealTournamentState(context);
+    plantResults(schedule, LEGACY_MIXED_RESULTS);
+    const entry = { tournamentName: 'Legacy Mixed Cup', schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' };
+    await plantStorageOnce(page, { tournamentState: null, savedTournaments: JSON.stringify([entry]) });
+
+    // When the Organizer loads it, then it plays to 32 with all three results,
+    await page.goto('/');
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Legacy Mixed Cup');
+    await expectMixedLegacyAt32(page);
+    let stored = await storedJson(page, 'tournamentState');
+    expect(stored.totalPoints).toBe(32);
+    expect(stored.legacyResults).toBe(true);
+
+    // and saving it again (the saved list is rewritten) keeps them too.
+    await page.click('#saveTournamentBtn');
+    const [saved] = await storedJson(page, 'savedTournaments');
+    expect(saved.totalPoints).toBe(32);
+    expect(saved.legacyResults).toBe(true);
+    expect(saved.schedule.rounds[0].matches.map((m) => m.result)).toEqual(LEGACY_MIXED_RESULTS);
+    await page.reload();
+    await expectMixedLegacyAt32(page);
+    expect(errors).toEqual([]);
+  });
+
+  // Equally common pool sums: the pool of the earliest such result (round order) wins.
+  const TIES = [
+    ['16 first', [[{ left: '10', right: '6' }, { left: '20', right: '12' }], [{ left: '18', right: '14' }, { left: '9', right: '7' }]], '16'],
+    ['32 first', [[{ left: '20', right: '12' }, { left: '10', right: '6' }], [{ left: '9', right: '7' }, { left: '18', right: '14' }]], '32'],
   ];
-  for (const [description, results, expected] of LEGACY_FALLBACKS) {
-    test(`R-STATE-PERSIST, R-POINT-POOLS: a legacy state (no stored total) with ${description} restores at 24`, async ({ page, context }) => {
+  for (const [description, [round1, round2], total] of TIES) {
+    test(`R-STATE-PERSIST, R-POINT-POOLS: a legacy state tied between 16 and 32 (${description}) restores at the earliest pool`, async ({ page, context }) => {
       const errors = collectErrors(page);
       const state = await captureARealTournamentState(context);
       delete state.totalPoints;
-      plantResults(state.schedule, results);
+      plantResults(state.schedule, round1);
+      round2.forEach((result, i) => { state.schedule.rounds[1].matches[i].result = result; });
       await plantStorage(page, { tournamentState: JSON.stringify(state) });
 
       await page.goto('/');
 
-      // It plays to 24, and only results that are valid at 24 are kept.
       await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-      await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
-      await expectScoresOnScreen(page, expected);
+      await expect(page.locator('#globalTotalPoints')).toHaveValue(total);
+      // Nothing is blanked; the result off the chosen pool shows its error.
+      await expectScoresOnScreen(page, round1.map((r) => [r.left, r.right]));
+      const matches = page.locator('.result-overlay-container');
+      await expect(matches.nth(0).locator('.error-message')).toHaveText('');
+      await expect(matches.nth(1).locator('.error-message')).not.toHaveText('');
       expect(errors).toEqual([]);
     });
   }
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a legacy state with no result summing to a pool restores at 24 with nothing blanked', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const state = await captureARealTournamentState(context);
+    delete state.totalPoints;
+    const results = [{ left: '13', right: '12' }, { left: '20', right: '5' }, { left: '15', right: '' }];
+    plantResults(state.schedule, results);
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    await page.goto('/');
+
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+    await expectScoresOnScreen(page, [['13', '12'], ['20', '5'], ['15', '']]);
+    // None of them is valid at 24: each says why, and nobody is credited.
+    const matches = page.locator('.result-overlay-container');
+    for (let i = 0; i < 3; i++) await expect(matches.nth(i).locator('.error-message')).not.toHaveText('');
+    expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    expect(errors).toEqual([]);
+  });
+
+  // A planted legacyResults flag only keeps string pairs as stored; they are
+  // then shown with their error and never credited, so it cannot change a score.
+  test('R-STATE-PERSIST, R-POINT-POOLS: a planted legacy flag on a state with a stored total keeps results without crediting them', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const state = await captureARealTournamentState(context);
+    state.totalPoints = 24;
+    state.legacyResults = true;
+    plantResults(state.schedule, [{ left: '20', right: '20' }, { left: '15', right: '9' }]);
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    await page.goto('/');
+
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+    await expectScoresOnScreen(page, [['20', '20'], ['15', '9']]);
+    await expect(page.locator('.result-overlay-container').nth(0).locator('.error-message')).toContainText('Sum must equal 24');
+    expect(await scoreboardPointsSorted(page)).toEqual([15, 15, 9, 9].concat(Array(8).fill(0)));
+    expect(errors).toEqual([]);
+  });
 
   for (const [description, totalPoints] of [['a numeric string', '32'], ['a value outside the pools', 25], ['null', null]]) {
     test(`R-STATE-PERSIST, R-POINT-POOLS: a stored total that is ${description} is not inferred over, even with results summing to 32`, async ({ page, context }) => {
