@@ -190,16 +190,20 @@
 
     // localStorage keys. The origin's storage is shared with every other page served
     // from it (see "Persisted-state validation"), so the app's keys carry its own
-    // prefix. The unprefixed legacy keys are only ever read to migrate them (see
-    // migrateLegacyStorage).
+    // prefix. The unprefixed legacy keys are only ever read to migrate them, and a
+    // migrated key's marker stops it being migrated again (see migrateLegacyStorage).
     const STATE_KEY = "padeltournament:tournamentState";
     const SAVED_TOURNAMENTS_KEY = "padeltournament:savedTournaments";
     const LEGACY_STATE_KEY = "tournamentState";
     const LEGACY_SAVED_TOURNAMENTS_KEY = "savedTournaments";
+    const STATE_MIGRATED_KEY = "padeltournament:migrated:tournamentState";
+    const SAVED_TOURNAMENTS_MIGRATED_KEY = "padeltournament:migrated:savedTournaments";
 
     // Migrate the legacy keys now, synchronously, while this script is still
     // running: no event handler is registered yet, so nothing the app does can
-    // write a prefixed key first and pre-empt the migration. It needs no DOM.
+    // write a prefixed key first and pre-empt the migration. It needs no DOM, and
+    // reads only constants declared above this line (moving a const below it is a
+    // TDZ error the per-key catch would hide as a skipped migration).
     migrateLegacyStorage();
 
     // Update header when tournament name changes.
@@ -882,32 +886,46 @@
     // of it was carried over.
     // migrateLegacyStorage runs at the top of the app script on every load, before
     // any handler can write a prefixed key. For each legacy key, independently:
-    // - nothing happens while the prefixed key exists (migrated before, or newer
-    //   data) or the legacy key is absent;
+    // - nothing happens once the key's migrated marker exists (it was migrated
+    //   before), while the prefixed key exists (newer data), or when the legacy
+    //   key is absent;
     // - the legacy value goes through the copy layer above, so nothing unchecked
     //   is carried over. With nothing usable (unparsable, not the app's data, or
-    //   an empty saved list: nothing to migrate) nothing is written and the legacy
-    //   key is left in place;
+    //   an empty saved list: nothing to migrate) nothing is written (no marker
+    //   either) and the legacy key is left in place;
     // - otherwise the usable copy is written under the prefixed key. If that write
-    //   fails, nothing else happens, and the next load tries again for as long as
-    //   the prefixed key stays absent;
+    //   fails, it is logged as an error, no marker is written and the legacy key
+    //   is left in place. A later load retries only while the prefixed key stays
+    //   absent: the app's own next write to that key (the autosave on leaving the
+    //   page or any other state save; Save or Delete for the saved list) ends that
+    //   window for good, and the legacy value is never read again;
+    // - right after a successful write the key's migrated marker is written, so
+    //   the legacy value is never migrated again, not even when the app later
+    //   removes the prefixed key (choosing a schedule, or dropping an unusable
+    //   stored state, removes the stored state) and the page is closed before its
+    //   next save. Should the marker write itself fail (logged as a warning), the
+    //   value can be migrated again whenever the prefixed key is absent;
     // - the legacy key is removed only when that copy is lossless (isLosslessCopy).
     //   A copy that repaired, dropped or left out anything (a reset round index,
     //   an extra field, a skipped saved tournament) leaves the legacy value in
-    //   place indefinitely: the prefixed key now exists, so it is never read
-    //   again. That stale copy is the accepted price of never deleting data the
-    //   app did not fully carry over.
+    //   place indefinitely, never read again (the marker). That stale copy is the
+    //   accepted price of never deleting data the app did not fully carry over.
+    // The markers came with the prefixed keys, before any release: no released
+    // build migrated without writing one, so a migrated key without its marker
+    // needs no handling.
     // An error while migrating one key is logged as an error and leaves that
     // legacy key in place; it stops neither the other key's migration nor the app.
     function migrateLegacyStorage() {
-      migrateLegacyKey(LEGACY_STATE_KEY, STATE_KEY, copyTournamentState);
-      migrateLegacyKey(LEGACY_SAVED_TOURNAMENTS_KEY, SAVED_TOURNAMENTS_KEY, copyLegacySavedTournaments);
+      migrateLegacyKey(LEGACY_STATE_KEY, STATE_KEY, STATE_MIGRATED_KEY, copyTournamentState);
+      migrateLegacyKey(LEGACY_SAVED_TOURNAMENTS_KEY, SAVED_TOURNAMENTS_KEY, SAVED_TOURNAMENTS_MIGRATED_KEY,
+        copyLegacySavedTournaments);
     }
 
     // copyLegacy(parsed) returns the copy to store under newKey, or null when
-    // there is nothing usable to migrate.
-    function migrateLegacyKey(legacyKey, newKey, copyLegacy) {
+    // there is nothing usable to migrate. migratedKey records a done migration.
+    function migrateLegacyKey(legacyKey, newKey, migratedKey, copyLegacy) {
       try {
+        if (localStorage.getItem(migratedKey) !== null) return;
         if (localStorage.getItem(newKey) !== null) return;
         if (localStorage.getItem(legacyKey) === null) return;
         const legacy = readStoredJson(legacyKey);
@@ -916,7 +934,12 @@
           console.warn("Leaving an unusable legacy localStorage value in place:", legacyKey);
           return;
         }
-        if (!writeStoredJson(newKey, copy)) return;
+        if (!writeStoredJson(newKey, copy)) {
+          // DEFERRED: AB#88 (recover a legacy value whose migration write failed)
+          console.error("Could not write the migrated copy of a legacy localStorage value; leaving it in place:", legacyKey);
+          return;
+        }
+        writeStoredJson(migratedKey, true);
         if (isLosslessCopy(legacy, copy)) localStorage.removeItem(legacyKey);
         else console.warn("Migrated the usable part of a legacy localStorage value; leaving the value in place:", legacyKey);
       } catch (err) {

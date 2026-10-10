@@ -2,6 +2,7 @@
 const { test, expect } = require('@playwright/test');
 const {
   STATE_KEY, SAVED_TOURNAMENTS_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
+  STATE_MIGRATED_KEY, SAVED_TOURNAMENTS_MIGRATED_KEY,
 } = require('./storage-keys');
 
 test.describe('General Functionality of Tournament Manager', () => {
@@ -1499,8 +1500,8 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
-  // --- legacy (unprefixed) keys: migrated while the prefixed key is absent, and
-  // removed only when the migrated copy is lossless ---
+  // --- legacy (unprefixed) keys: migrated once (a marker records it) while the
+  // prefixed key is absent, and removed only when the migrated copy is lossless ---
   async function storedRaw(page, key) {
     return page.evaluate((k) => localStorage.getItem(k), key);
   }
@@ -1509,8 +1510,12 @@ test.describe('Malformed or hostile persisted state', () => {
     await page.goto('/');
     const appKeys = await page.evaluate(() => ({
       STATE_KEY, SAVED_TOURNAMENTS_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
+      STATE_MIGRATED_KEY, SAVED_TOURNAMENTS_MIGRATED_KEY,
     }));
-    expect(appKeys).toEqual({ STATE_KEY, SAVED_TOURNAMENTS_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY });
+    expect(appKeys).toEqual({
+      STATE_KEY, SAVED_TOURNAMENTS_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
+      STATE_MIGRATED_KEY, SAVED_TOURNAMENTS_MIGRATED_KEY,
+    });
   });
 
   // A tournament in progress at round 3, with scores and custom tournament,
@@ -1631,32 +1636,50 @@ test.describe('Malformed or hostile persisted state', () => {
         expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawSaved);
         expect(await storedRaw(page, STATE_KEY)).toBeNull();
         expect(await storedRaw(page, SAVED_TOURNAMENTS_KEY)).toBeNull();
+        expect(await storedRaw(page, STATE_MIGRATED_KEY)).toBeNull();
+        expect(await storedRaw(page, SAVED_TOURNAMENTS_MIGRATED_KEY)).toBeNull();
       }
       expect(errors).toEqual([]);
     });
   }
 
-  test('R-STATE-PERSIST: a partly usable legacy saved list migrates its usable entries and is kept whole', async ({ page, context }) => {
-    const errors = collectErrors(page);
-    // Given a legacy saved list of one sound save and one foreign entry.
-    const { schedule } = await captureARealTournamentState(context);
-    const rawSaved = JSON.stringify([
-      { tournamentName: 'Sound Save', schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' },
-      { id: 7, title: 'note' },
-    ]);
-    await plantStorageOnce(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: null, [LEGACY_SAVED_TOURNAMENTS_KEY]: rawSaved });
+  // A saved tournament holding every field a save writes, exactly as the copy
+  // layer rebuilds it: on its own, its migrated copy is lossless.
+  function aLosslessLegacySave(name, schedule) {
+    return {
+      tournamentName: name, schedule, currentRoundIndex: 0, courtNames: [],
+      format: 'americano', mexicanoSeed: null, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z',
+    };
+  }
 
-    // When the app loads.
-    await page.goto('/');
+  // The same sound save, alone and next to a foreign entry: only the foreign
+  // entry (which the copy skips) decides whether the legacy list is kept.
+  for (const [description, withForeignEntry, legacyKept] of [
+    ['a legacy saved list of one sound save is migrated and removed', false, false],
+    ['a partly usable legacy saved list migrates its usable entries and is kept whole', true, true],
+  ]) {
+    test(`R-STATE-PERSIST: ${description}`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a legacy saved list of one sound (lossless) save, and maybe a foreign entry.
+      const { schedule } = await captureALegacyTournamentInProgress(context);
+      const sound = aLosslessLegacySave('Sound Save', schedule);
+      const rawSaved = JSON.stringify(withForeignEntry ? [sound, { id: 7, title: 'note' }] : [sound]);
+      await plantStorageOnce(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: null, [LEGACY_SAVED_TOURNAMENTS_KEY]: rawSaved });
 
-    // Then the sound save is migrated and offered,
-    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
-    await expect(page.locator('#savedTournamentSelect option')).toContainText('Sound Save');
-    expect((await storedJson(page, SAVED_TOURNAMENTS_KEY)).map((t) => t.tournamentName)).toEqual(['Sound Save']);
-    // And the legacy list, which holds data the copy layer rejected, is kept as it was.
-    expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawSaved);
-    expect(errors).toEqual([]);
-  });
+      // When the app loads.
+      await page.goto('/');
+
+      // Then the sound save is migrated, as it was, and offered,
+      await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+      await expect(page.locator('#savedTournamentSelect option')).toContainText('Sound Save');
+      expect(await storedJson(page, SAVED_TOURNAMENTS_KEY)).toEqual([sound]);
+      expect(await storedRaw(page, SAVED_TOURNAMENTS_MIGRATED_KEY)).not.toBeNull();
+      // and the legacy list is removed only when nothing in it was left out: one
+      // holding data the copy layer rejected is kept as it was.
+      expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(legacyKept ? rawSaved : null);
+      expect(errors).toEqual([]);
+    });
+  }
 
   test('R-STATE-PERSIST: legacy keys are not migrated again once the prefixed keys exist', async ({ page, context }) => {
     const errors = collectErrors(page);
@@ -1704,11 +1727,16 @@ test.describe('Malformed or hostile persisted state', () => {
     // When the app loads.
     await page.goto('/');
 
-    // Then the app still runs, and the legacy list is left for a later load.
+    // Then the app still runs, and the legacy list is left for a later load: no
+    // migrated marker is written, so the migration can be tried again.
     await expectAFreshSetup(page);
     expect(await storedRaw(page, SAVED_TOURNAMENTS_KEY)).toBeNull();
+    expect(await storedRaw(page, SAVED_TOURNAMENTS_MIGRATED_KEY)).toBeNull();
     expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawSaved);
-    expect(errors).toEqual([]);
+    // And the failed write is reported as an error (not just a warning), and only it.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not write the migrated copy of a legacy localStorage value');
+    expect(errors[0]).toContain(LEGACY_SAVED_TOURNAMENTS_KEY);
   });
 
   test('R-STATE-PERSIST: a legacy state is kept when its migrated copy cannot be written, and migrates on the next load', async ({ page, context }) => {
@@ -1731,20 +1759,76 @@ test.describe('Malformed or hostile persisted state', () => {
     // When the app loads.
     await page.goto('/');
 
-    // Then it runs as a fresh setup, and the legacy state is left in place.
+    // Then it runs as a fresh setup, the legacy state is left in place, no
+    // migrated marker is written,
     await expectAFreshSetup(page);
     expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    expect(await storedRaw(page, STATE_MIGRATED_KEY)).toBeNull();
     expect(await storedRaw(page, LEGACY_STATE_KEY)).toBe(rawState);
+    // and the failed write is reported as an error (not just a warning), and only it.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not write the migrated copy of a legacy localStorage value');
+    expect(errors[0]).toContain(LEGACY_STATE_KEY);
 
     // When it loads again, with storage working.
     await page.reload();
 
-    // Then the migration is tried again: the tournament resumes from it.
+    // Then the migration is tried again: the tournament resumes from it, now
+    // marked as migrated, with no further error.
     await expect(page.locator('.round-header .left')).toHaveText('Round 3');
     await expect(page.locator('#tournamentTitle')).toHaveText('Legacy Cup');
     expect((await storedJson(page, STATE_KEY)).tournamentName).toBe('Legacy Cup');
+    expect(await storedRaw(page, STATE_MIGRATED_KEY)).not.toBeNull();
     expect(await storedRaw(page, LEGACY_STATE_KEY)).toBeNull();
+    expect(errors).toHaveLength(1);
+  });
+
+  test('R-STATE-PERSIST: a legacy state kept after a lossy migration is not migrated again when the stored state is later removed', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = [];
+    // Given a legacy state exactly as the app stored it before its keys were
+    // prefixed (right after Start: with the schedule module's own fields, which
+    // the copy leaves out, so the legacy value is kept).
+    const state = await captureALegacyTournamentInProgress(context);
+    state.schedule.playerCount = state.schedule.players.length;
+    state.schedule.totalRounds = state.schedule.rounds.length;
+    const rawState = JSON.stringify(state);
+    await plantStorageOnce(page, { [STATE_KEY]: null, [LEGACY_STATE_KEY]: rawState });
+
+    // When the app loads, it migrates: the tournament resumes, the legacy value
+    // is kept and the migration is marked as done.
+    await page.goto('/');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Legacy Cup');
+    expect(await storedRaw(page, LEGACY_STATE_KEY)).toBe(rawState);
+    expect(await storedRaw(page, STATE_MIGRATED_KEY)).not.toBeNull();
+
+    // And the Organizer starts a new tournament without saving the old one, then
+    // chooses another schedule, which removes the stored state,
+    page.on('dialog', (dialog) => {
+      dialogs.push(dialog.message());
+      if (dialog.type() === 'confirm') dialog.dismiss(); else dialog.accept();
+    });
+    await page.click('#newTournamentBtn');
+    await expect(page.locator('.round')).toHaveCount(0);
+    await page.selectOption('#scheduleSelect', '16p15r.js');
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    // and the page is closed without its save on leaving (as a killed tab is).
+    await page.close({ runBeforeUnload: false });
+
+    // When the app is opened again.
+    const next = await context.newPage();
+    const nextErrors = collectErrors(next);
+    await next.goto('/');
+
+    // Then it shows a fresh setup, not the old tournament: the kept legacy value
+    // is not migrated again.
+    await expectAFreshSetup(next);
+    expect(await storedRaw(next, STATE_KEY)).toBeNull();
+    expect(await storedRaw(next, STATE_MIGRATED_KEY)).not.toBeNull();
+    expect(await storedRaw(next, LEGACY_STATE_KEY)).toBe(rawState);
+    expect(dialogs).toEqual(['Do you want to save the current tournament before creating a new one?', 'Ready for a new tournament!']);
     expect(errors).toEqual([]);
+    expect(nextErrors).toEqual([]);
   });
 
   // An empty list is nothing to migrate, and may be another page's.
@@ -1758,9 +1842,11 @@ test.describe('Malformed or hostile persisted state', () => {
       await page.goto('/');
 
       // Then no saved tournament is offered, nothing is written under the
-      // prefixed key, and the legacy value is untouched, byte for byte.
+      // prefixed key (nor a migrated marker), and the legacy value is untouched,
+      // byte for byte.
       await expect(page.locator('#savedTournamentSelect option')).toHaveCount(0);
       expect(await storedRaw(page, SAVED_TOURNAMENTS_KEY)).toBeNull();
+      expect(await storedRaw(page, SAVED_TOURNAMENTS_MIGRATED_KEY)).toBeNull();
       expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawSaved);
       expect(errors).toEqual([]);
     });
@@ -1773,6 +1859,9 @@ test.describe('Malformed or hostile persisted state', () => {
     ['an out-of-range round index', (s) => { s.currentRoundIndex = 99; }, 'Round 1'],
     ["an extra field (another page's data)", (s) => { s.siblingSecretData = { token: 'keep-me' }; }, 'Round 3'],
     ['an invalid court name entry', (s) => { s.courtNames = [42]; }, 'Round 3'],
+    ['17 court names (the copy keeps the first 16)', (s) => {
+      s.courtNames = Array.from({ length: 17 }, (_, i) => `Court ${i + 1}`);
+    }, 'Round 3'],
     ["the schedule module's own fields, as stored right after Start", (s) => {
       s.schedule.playerCount = s.schedule.players.length;
       s.schedule.totalRounds = s.schedule.rounds.length;
