@@ -197,6 +197,11 @@
     const LEGACY_STATE_KEY = "tournamentState";
     const LEGACY_SAVED_TOURNAMENTS_KEY = "savedTournaments";
 
+    // Migrate the legacy keys now, synchronously, while this script is still
+    // running: no event handler is registered yet, so nothing the app does can
+    // write a prefixed key first and pre-empt the migration. It needs no DOM.
+    migrateLegacyStorage();
+
     // Update header when tournament name changes.
     document.getElementById("tournamentName").addEventListener("input", function () {
       document.getElementById("tournamentTitle").textContent = this.value || "Tournament Title";
@@ -276,12 +281,6 @@
 
     // Restore tournament state from localStorage.
     window.addEventListener("load", function () {
-      try {
-        migrateLegacyStorage();
-      } catch (err) {
-        // Best effort: whatever was not migrated stays under its legacy key.
-        console.warn("Could not migrate the legacy saved state.", err);
-      }
       try {
         showInitialView();
       } catch (err) {
@@ -877,41 +876,82 @@
 
     // --- Legacy storage migration ---
     // Before its keys were prefixed, the app stored its data under the generic
-    // LEGACY_* keys, which another page on this origin may use as well. Each
-    // legacy key is migrated once, on load: only while the prefixed key is
-    // absent, and only through the copy layer above, so nothing unchecked is
-    // carried over. The legacy key is removed only after the prefixed write
-    // succeeded, and only when the copy layer accepted ALL of it: a value it
-    // rejects, in whole or in part, may be another page's data and is left in
-    // place, never deleted.
+    // LEGACY_* keys, which another page on this origin may use as well. Whatever
+    // is under them may be another page's data, so it is never deleted unless all
+    // of it was carried over.
+    // migrateLegacyStorage runs at the top of the app script on every load, before
+    // any handler can write a prefixed key. For each legacy key, independently:
+    // - nothing happens while the prefixed key exists (migrated before, or newer
+    //   data) or the legacy key is absent;
+    // - the legacy value goes through the copy layer above, so nothing unchecked
+    //   is carried over. With nothing usable (unparsable, not the app's data, or
+    //   an empty saved list: nothing to migrate) nothing is written and the legacy
+    //   key is left in place;
+    // - otherwise the usable copy is written under the prefixed key. If that write
+    //   fails, nothing else happens, and the next load tries again for as long as
+    //   the prefixed key stays absent;
+    // - the legacy key is removed only when that copy is lossless (isLosslessCopy).
+    //   A copy that repaired, dropped or left out anything (a reset round index,
+    //   an extra field, a skipped saved tournament) leaves the legacy value in
+    //   place indefinitely: the prefixed key now exists, so it is never read
+    //   again. That stale copy is the accepted price of never deleting data the
+    //   app did not fully carry over.
+    // An error while migrating one key is logged as an error and leaves that
+    // legacy key in place; it stops neither the other key's migration nor the app.
     function migrateLegacyStorage() {
-      migrateLegacyKey(LEGACY_STATE_KEY, STATE_KEY, function (state) {
-        const copy = copyTournamentState(state);
-        return { copy: copy, complete: copy !== null };
-      });
-      migrateLegacyKey(LEGACY_SAVED_TOURNAMENTS_KEY, SAVED_TOURNAMENTS_KEY, function (saved) {
-        if (!Array.isArray(saved)) return { copy: null, complete: false };
-        const copies = saved.map(copySavedTournament).filter(entry => entry !== null);
-        // A list none of whose entries is a saved tournament is not ours: migrate nothing.
-        if (copies.length === 0 && saved.length > 0) return { copy: null, complete: false };
-        return { copy: copies, complete: copies.length === saved.length };
-      });
+      migrateLegacyKey(LEGACY_STATE_KEY, STATE_KEY, copyTournamentState);
+      migrateLegacyKey(LEGACY_SAVED_TOURNAMENTS_KEY, SAVED_TOURNAMENTS_KEY, copyLegacySavedTournaments);
     }
 
-    // copyLegacy(parsed) returns { copy, complete }: the value to store under
-    // newKey (null: nothing usable, migrate nothing) and whether that copy holds
-    // all of the legacy value (only then is the legacy key removed).
+    // copyLegacy(parsed) returns the copy to store under newKey, or null when
+    // there is nothing usable to migrate.
     function migrateLegacyKey(legacyKey, newKey, copyLegacy) {
-      if (localStorage.getItem(newKey) !== null) return; // migrated before, or newer data
-      if (localStorage.getItem(legacyKey) === null) return;
-      const result = copyLegacy(readStoredJson(legacyKey));
-      if (result.copy === null) {
-        console.warn("Leaving an unusable legacy localStorage value in place:", legacyKey);
-        return;
+      try {
+        if (localStorage.getItem(newKey) !== null) return;
+        if (localStorage.getItem(legacyKey) === null) return;
+        const legacy = readStoredJson(legacyKey);
+        const copy = copyLegacy(legacy);
+        if (copy === null) {
+          console.warn("Leaving an unusable legacy localStorage value in place:", legacyKey);
+          return;
+        }
+        if (!writeStoredJson(newKey, copy)) return;
+        if (isLosslessCopy(legacy, copy)) localStorage.removeItem(legacyKey);
+        else console.warn("Migrated the usable part of a legacy localStorage value; leaving the value in place:", legacyKey);
+      } catch (err) {
+        console.error("Could not migrate a legacy localStorage value; leaving it in place:", legacyKey, err);
       }
-      if (!writeStoredJson(newKey, result.copy)) return; // kept for the next load
-      if (result.complete) localStorage.removeItem(legacyKey);
-      else console.warn("Leaving the unusable part of a legacy localStorage value in place:", legacyKey);
+    }
+
+    // The usable saved tournaments of a legacy saved list, or null when there is
+    // nothing to migrate: not a list, an empty list, or a list none of whose
+    // entries is a saved tournament (not the app's data).
+    function copyLegacySavedTournaments(saved) {
+      if (!Array.isArray(saved) || saved.length === 0) return null;
+      const copies = saved.map(copySavedTournament).filter(entry => entry !== null);
+      return copies.length > 0 ? copies : null;
+    }
+
+    // The one rule for removing a legacy key: the copy, as stored (after its JSON
+    // round trip), is structurally identical to the parsed legacy value. The same
+    // arrays, the same object keys (in any order), the same primitive values; any
+    // repaired, dropped or extra field makes it not lossless.
+    function isLosslessCopy(legacy, copy) {
+      return sameJsonValue(legacy, JSON.parse(JSON.stringify(copy)));
+    }
+
+    // Recurses along the copy only, whose depth the copy layer bounds: a deeply
+    // nested legacy value fails a key or length check and is never walked.
+    function sameJsonValue(original, copy) {
+      if (copy === null || typeof copy !== "object") return original === copy;
+      if (Array.isArray(copy)) {
+        return Array.isArray(original) && original.length === copy.length &&
+          copy.every((item, index) => sameJsonValue(original[index], item));
+      }
+      if (!isPlainObject(original)) return false;
+      const keys = Object.keys(copy);
+      return Object.keys(original).length === keys.length && keys.every(key =>
+        Object.prototype.hasOwnProperty.call(original, key) && sameJsonValue(original[key], copy[key]));
     }
 
     function formatSavedAt(savedAt) {
