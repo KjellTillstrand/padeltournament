@@ -27,6 +27,11 @@ step), never prose alone, per the retro rule (REQ-490).
 | DF-9 | `install.sh --check` fails on every `/model` switch, tripping drain preflight | gate (check fix) | open |
 | DF-10 | Drain parent roll-up names states the mock board doesn't have | process-step + gate | open |
 | DF-11 | A specialist's self-reported bar isn't the bar the drain records | verification-step | open |
+| DF-12 | `check-batch-belongs.sh` passes an empty batch | gate (script fix) | open |
+| DF-13 | The forge port can't update a proposal's description | gate (port op) | open |
+| DF-14 | Refinement doesn't assess impact on persisted data | process-step | open |
+| DF-15 | Parallel tracks: the session still moves per track, and shared local resources have no lock | process-step | open |
+| DF-16 | A local test bar run under heavy machine load fails spuriously | verification-step | open |
 
 ---
 
@@ -163,6 +168,10 @@ step), never prose alone, per the retro rule (REQ-490).
   refusal for `git -C <outside>`, `--git-dir` and `--work-tree`.
 - **Target:** the worktree-isolation hook (dotfiles-claude `home/hooks/…`, if
   it is the harness's).
+- **More evidence (batch 2, 2026-10-08..10):** the guard refused agents' inline
+  Playwright lock loop (`until mkdir "$L" …; do sleep 20; done; …`), with no git
+  involved, because the lock path contains `/git/`. Agents moved the identical
+  loop into a `/tmp` script.
 - **Verify:** hook tests:
   - commands with `/x/git/y` path arguments, and a `--jq` filter containing
     `[1]`, are allowed;
@@ -291,6 +300,19 @@ step), never prose alone, per the retro rule (REQ-490).
   findings".
 - **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §2e (ordering) and
   §2f.
+- **More evidence (batch 2, 2026-10-08..10):** run against the PR number,
+  `/code-review` escalated real defects:
+  - **AB#64 (PR #41):** the reviewer had flagged a partly circular oracle as
+    non-blocking and approved. `/code-review` showed it could never fail, which
+    led to the "independent oracles, no silent skips" fix round.
+  - **AB#69 (PR #44, first revision):** `/code-review` found the mixed-legacy
+    data loss and the `+5`/`1e` message gap after both agent reviewers had
+    approved.
+
+  The record for AB#69 is PR #44's description. For AB#64 it is the board's
+  write-back comment, since PR #41's description doesn't mention
+  `/code-review`. There are no GitHub review comments. It is a distinct,
+  load-bearing pass.
 - **Verify:** a skill-text assertion that §2e names the PR-number form, plus an
   assertion that §2e says a code-review result with no review text is recorded
   as "not run".
@@ -382,5 +404,194 @@ step), never prose alone, per the retro rule (REQ-490).
 - **Verify:** a skill-text assertion that §2f records the drain's own run. A
   fixture where a completion report says `pass` but the drain's run is red: the
   item does not proceed to propose.
-- **Related:** padeltournament AB#71 (New) will make CI fail on any flaky test, which
-  closes the CI-side half (retries currently hide flakes from the release gate).
+- **Related:** padeltournament AB#71 (Deployed 2026-10-09, PR #43) makes the CI
+  test step fail on any flaky test, which closes most of the CI-side half. Two
+  Low residuals are accepted in PR #43:
+  - the coverage gate still counts a pass on retry;
+  - re-running a failed `main` run can deploy if the flake then passes.
+- **Mitigation evidence (the drain applied this by hand; not a new defect)**
+  from drain-491-closeout batch 2, 2026-10-07..10: the drain
+  recorded only its own solo runs of `npm test` for every item, with `CI` unset,
+  serialised behind a shared lock (see DF-15). Specialists ran targeted specs
+  only. No item's recorded bar was a specialist's report.
+
+## DF-12: `check-batch-belongs.sh` passes an empty batch
+
+- **Status:** open
+- **Source:** drain-491-closeout batch 2 preflight, 2026-10-08
+- **Goal:** the belongs check can't report "every item belongs" about a batch
+  it never saw.
+- **Problem:** given `[]`, the script prints "0 item(s), all carry …" and exits
+  0. A caller that builds the item-document array wrongly therefore gets a
+  vacuous pass. The preflight then reads as satisfied while proving nothing.
+- **Evidence:**
+  - A zsh `for i in $ids` loop didn't word-split the ready ids. The script got
+    0 documents and exited 0. The corrected run over 16 documents exited 3, with
+    all 16 fields unset.
+  - Re-checked on dotfiles-claude `origin/main`:
+    `check-batch-belongs.sh --items <[]> …` exits 0.
+- **Mechanism (gate, script fix):** SKILL.md §0 step 6 already says, as an
+  instruction, that an array whose length differs from the number of ids is a
+  systemic STOP. This mechanises that rule.
+  - Add `--expect-count N`, where the drain passes the number of ids
+    `query_ready` returned.
+  - If the document count differs from N, exit 65.
+  - An empty set passes only as `--expect-count 0`: a legitimately empty ready
+    queue, where the drain has nothing to drain anyway.
+  - An empty set without the flag exits 65.
+- **Target (dotfiles-claude):** `scripts/drain/check-batch-belongs.sh`;
+  `home/skills/drain/SKILL.md` §0 step 6, to pass `--expect-count`.
+- **Verify:** bats cases:
+  - `[]` without the flag exits 65;
+  - `[]` with `--expect-count 0` exits 0;
+  - a count mismatch exits 65.
+- **Related:** batch 1 of the same drain skipped §0 step 6 entirely, and nothing
+  noticed. That is the "instructed step, not a hook" gap tracked upstream as
+  AB#684. Add this as evidence there; it isn't a separate entry.
+
+## DF-13: The forge port can't update a proposal's description
+
+- **Status:** open
+- **Source:** drain-491-closeout batch 2, AB#69 (PR #44), 2026-10-09
+- **Goal:** after a fix round, the PR description (the human-facing record of
+  what ships and why) can be brought up to date without leaving the port.
+- **Problem:** the port's public ops are `create_branch propose_change
+  get_proposal get_checks get_reviews land_proposal …`. None updates a
+  proposal. AB#69 went through 4 review rounds that changed its design, so its
+  description had to be rewritten before landing, and the only route was raw
+  `gh pr edit`. That steps outside the port's identity guard (`_fgh_guard`) and
+  capability resolution, its no-write mode, and the drain skill's rule never to
+  substitute a raw code-host CLI.
+- **Evidence:**
+  - PR #44's description was updated with `gh pr edit --body-file`.
+  - The drain also waited for CI with raw `gh run watch` and `gh pr checks`
+    loops. One `gh run watch` exited 0 while its run was still in progress;
+    `get_checks`, the prescribed route, caught it.
+- **Related finding, the squash commit message:** `land_proposal` runs
+  `gh pr merge --squash` without `--subject` or `--body`. On this repo, where
+  `squash_merge_commit_message` is `COMMIT_MESSAGES`, the squash commit
+  therefore carries the concatenated commit messages, not the PR description.
+  On `main`, 0bac161 (#44) still contains the first commit's superseded line
+  "restore as empty, re-enterable". So after a design change, the commit
+  message on `main` goes stale too.
+- **Mechanism (gate, port op):**
+  - Add `update_proposal <id> --title <t> --body-file <f>`, behind the same
+    guard and no-write handling as `propose_change`.
+  - Add `land_proposal … --body-from-proposal`, so the squash message is the
+    final description.
+  - Optionally add `wait_checks <id> --timeout <s>`, which wraps the bounded
+    `get_checks` poll.
+  - `validate-config.sh` flags `gh pr edit` and `gh run watch` call sites in
+    the drain skill.
+- **Target (dotfiles-claude):** `scripts/forge/port.sh`, the github and mock
+  adapters, `docs/forge-port.md`, `home/skills/drain/SKILL.md` §2f.
+- **Verify:** adapter tests on the mock forge:
+  - `update_proposal` changes the body, honours no-write mode, and refuses
+    under a failed identity guard;
+  - `land_proposal --body-from-proposal` produces a squash message equal to the
+    current description.
+
+## DF-14: Refinement doesn't assess impact on persisted data
+
+- **Status:** open
+- **Source:** drain-491-closeout batch 2, AB#69 (PR #44), 2026-10-09..10
+- **Goal:** a story that changes how stored state is read or validated arrives
+  at the drain with its legacy-data behaviour already decided.
+- **Problem:** AB#69's story body said to range-check stored results on restore.
+  It said nothing about data that older versions legitimately wrote. Reviewers
+  then found data loss twice:
+  - legacy totals never stored;
+  - saves the live AB#62 code had already re-saved with `totalPoints: 24`.
+
+  It took 4 review rounds and 3 operator decisions to converge on "never blank
+  stored results".
+- **Evidence:**
+  - PR #44's description, which records 4 review rounds and the operator's 3
+    restore decisions.
+  - Its commits: d3bd1e2 (original), then fix rounds ee9afb4, 75e4c59, 7dd27b3
+    and b4126a6.
+- **Mechanism (process-step):** `/refine` adds a required **Persisted data**
+  section to any story whose target files read or write stored state. The
+  project declares which paths those are, for example a `gate.json`
+  `persisted_state` list. The section must:
+  - list which stored shapes older versions wrote;
+  - state what happens to each on restore;
+  - name the operator decision when data could be lost.
+
+  The drain's §1 batch gate refuses such a story while the section is missing.
+- **Target (dotfiles-claude):** `home/skills/refine/SKILL.md`,
+  `docs/work-item-schema.md`, `home/skills/drain/SKILL.md` §1.
+- **Verify:** a refine fixture where a story touching a declared persisted-state
+  path without the section is flagged.
+
+## DF-15: Parallel tracks: the session still moves per track, and shared local resources have no lock
+
+- **Status:** open. Evidence for upstream AB#713 (explicit-path track
+  worktrees), plus one new gap.
+- **Source:** drain-491-closeout batch 2, 2026-10-08..10
+- **Goal:** parallel tracks run without moving the session's worktree under a
+  live writer, and without colliding on shared local resources.
+- **Already in the drain:**
+  - §2c dispatches with `isolation: worktree`.
+  - `parallel.md` gives per-item worktrees and markers, plus a hook-enforced
+    one-writer rule.
+  - §2b forbids switching while a writer is live.
+- **Residual gaps:**
+  1. **The session still moves per item.** §2b has the session `EnterWorktree`
+     per item, and the isolation guard is session-global. The part that would
+     remove the need to switch is deferred as AB#713.
+  2. **No exclusive-resource locking.** Only prose covers resources two tracks'
+     bars would share (`parallel.md` § Staggering verification). There is no
+     declared resource and no lock. Here that resource is the project's fixed
+     Playwright port, 8199, so concurrent test runs collide.
+
+  On gap 1, §2b also explicitly allows entering a new track's worktree while
+  another writer is live, which is exactly the hazard the guard's session-global
+  scope creates.
+- **Evidence:** batch 2 worked around both by hand.
+  - Writers were dispatched with `isolation: worktree` and wrote their own
+    markers, so the session never left the main checkout.
+  - Every Playwright run, the drain's included, took a shared `mkdir` lock.
+  - The earlier 2026-09-30 switch incident was an inline side task, not a
+    parallel track. It shows the guard's session-global scope, not a track
+    failure.
+- **Mechanism (process-step):**
+  - (1) is AB#713: add this batch as evidence.
+  - (2) is new. A project declares exclusive local resources, for example
+    `gate.json` `exclusive: ["playwright:8199"]`, and the drain's bar wrapper
+    takes the matching lock. The inline lock loop trips DF-3, so the lock must
+    live in a script.
+- **Target (dotfiles-claude):** `home/skills/drain/references/parallel.md`,
+  `home/skills/drain/SKILL.md` §2d, `scripts/drain/` (a lock helper), and
+  AB#713.
+- **Verify:** a lock-helper bats test where two concurrent holders serialise,
+  and a declared resource is locked by the bar wrapper.
+
+## DF-16: A local test bar run under heavy machine load fails spuriously
+
+- **Status:** open
+- **Source:** drain-491-closeout batch 2, AB#64 and AB#76, 2026-10-08..10
+- **Goal:** a red local bar means the change is wrong, not that the machine is
+  saturated.
+- **Problem:** the machine's load average reached 100 to 275, and under that
+  load browser tests time out. The cause is inferred, not proven: `ps` showed
+  self-hosted Azure DevOps agent processes (`azdo-agent-1..4`) among the top CPU
+  users at the time.
+- **Evidence:**
+  - AB#64: one `tournament_store` timeout at load ~100. It didn't reproduce in
+    150 repeats.
+  - AB#76: 5 Firefox `newPage`/`click` timeouts in untouched specs at load
+    224–275. The suite took 47 min, against a normal 2–5. The same commit re-ran
+    green (816/816) once load fell below 30.
+  - The drain added a load-gated re-run by hand both times.
+- **Mechanism (verification-step):**
+  - The bar wrapper records `uptime` before and after each run.
+  - It refuses to start, and waits, while load is above a project-declared
+    ceiling.
+  - A red result recorded above that ceiling is marked "environmental,
+    re-run", never "pass". The re-run must be green at normal load before
+    publish.
+- **Target (dotfiles-claude):** the per-project bar wrapper (see DF-11),
+  `home/skills/drain/SKILL.md` §2d.
+- **Verify:** wrapper tests with a stubbed load average, covering a wait above
+  the ceiling and a red-under-load result recorded as non-final.
