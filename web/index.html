@@ -895,10 +895,14 @@
     //   either) and the legacy key is left in place;
     // - otherwise the usable copy is written under the prefixed key. If that write
     //   fails, it is logged as an error, no marker is written and the legacy key
-    //   is left in place. A later load retries only while the prefixed key stays
-    //   absent: the app's own next write to that key (the autosave on leaving the
-    //   page or any other state save; Save or Delete for the saved list) ends that
-    //   window for good, and the legacy value is never read again;
+    //   is left in place. A later load retries whenever the prefixed key is
+    //   absent at load: the app's own next write to that key (the autosave on
+    //   leaving the page or any other state save; Save or Delete for the saved
+    //   list) closes that window only until the app next removes the key. The
+    //   saved list is never removed, so for it the window ends for good; the
+    //   stored state is removed by choosing a schedule or dropping an unusable
+    //   state, so a page closed before its next save migrates the legacy state
+    //   again. DEFERRED: AB#88 (recover or retire a value whose write failed);
     // - right after a successful write the key's migrated marker is written, so
     //   the legacy value is never migrated again, not even when the app later
     //   removes the prefixed key (choosing a schedule, or dropping an unusable

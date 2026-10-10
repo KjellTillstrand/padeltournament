@@ -1855,6 +1855,7 @@ test.describe('Malformed or hostile persisted state', () => {
   // A legacy value the copy layer accepts only by repairing it, dropping part of
   // it, or both, may hold data that is not the app's: it is migrated (the app
   // uses the repaired copy), but the legacy value itself is kept as it was.
+  // DEFERRED: AB#89 (pin the 16-court truncation; fit of R-STATE-PERSIST tags on migration tests)
   const LEGACY_STATES_NEEDING_REPAIR = [
     ['an out-of-range round index', (s) => { s.currentRoundIndex = 99; }, 'Round 1'],
     ["an extra field (another page's data)", (s) => { s.siblingSecretData = { token: 'keep-me' }; }, 'Round 3'],
