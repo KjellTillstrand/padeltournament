@@ -1559,6 +1559,18 @@
         ? schedule : null;
     }
 
+    // Point #scheduleSelect at the option of the given schedule, so a restored or
+    // loaded tournament shows the schedule it plays. Nothing extra is stored: an
+    // option "<N>p<R>r.js" is the shipped schedule with N players over R rounds, and
+    // renaming players or entering results keeps both counts. A schedule whose
+    // counts match no option (a legacy or hostile one) leaves the select as it is.
+    function showScheduleInSelect(schedule) {
+      if (!schedule || !Array.isArray(schedule.players) || !Array.isArray(schedule.rounds)) return;
+      const select = document.getElementById("scheduleSelect");
+      const moduleName = schedule.players.length + "p" + schedule.rounds.length + "r.js";
+      if (Array.from(select.options).some(option => option.value === moduleName)) select.value = moduleName;
+    }
+
     function loadScheduleFromModule(moduleName) {
       const schedule = scheduleForModule(moduleName);
       if (!schedule) {
@@ -1609,6 +1621,7 @@
       document.getElementById("formatSelect").value = tournamentFormat;
       document.getElementById("playerCountSelect").value = String(mexicanoPlayerCount);
       document.getElementById("globalTotalPoints").value = String(totalPoints);
+      if (!mexicano) showScheduleInSelect(currentSchedule);
       show(document.getElementById("scheduleSelectLabel"), !mexicano);
       show(document.getElementById("scheduleSelect"), !mexicano);
       show(document.getElementById("playerCountLabel"), mexicano);

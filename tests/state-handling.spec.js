@@ -1467,6 +1467,34 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(stored.schedule.rounds[0].matches.slice(0, 2).map((m) => m.result)).toEqual(LEGACY_32_RESULTS);
     expect(errors).toEqual([]);
   });
+
+  test('R-STATE-PERSIST, R-SCHEDULE-SELECT: a restored or loaded schedule that matches no option leaves the schedule select alone', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given a running tournament and a saved one, both 16 players over 5 rounds:
+    // a shape no shipped schedule has (there is no 16p5r.js).
+    const state = await captureARealTournamentState(context, { schedule: '16p15r.js' });
+    state.schedule.rounds = state.schedule.rounds.slice(0, 5);
+    const entry = { tournamentName: 'Odd Shape Cup', schedule: state.schedule, currentRoundIndex: 0 };
+    await plantStorageOnce(page, { tournamentState: JSON.stringify(state), savedTournaments: JSON.stringify([entry]) });
+
+    // When the app restores it (and again after a reload),
+    await page.goto('/');
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 1) await page.reload();
+      // Then the tournament runs, and the select keeps the option it had.
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('#tournamentContainer .court')).toHaveCount(4);
+      await expect(page.locator('#scheduleSelect')).toHaveValue('12p11r.js');
+    }
+
+    // And loading the saved one leaves it alone too.
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Odd Shape Cup');
+    await expect(page.locator('#tournamentContainer .court')).toHaveCount(4);
+    await expect(page.locator('#scheduleSelect')).toHaveValue('12p11r.js');
+    expect(errors).toEqual([]);
+  });
 });
 
 // Counts that are not a multiple of four: floor(N/4) courts play and the others
@@ -1675,5 +1703,131 @@ test.describe('Default player names in a setup restored before Start', () => {
     expect(cells).toEqual(expect.arrayContaining(['Ada', 'P6']));
     expect(dialogs).toEqual([]);
     expect(errors).toEqual([]);
+  });
+});
+
+// The schedule select is locked while a tournament runs, but it must still show
+// the schedule that tournament plays, however it came back: a reload, a new tab
+// or a load. Each option value <N>p<R>r.js names the schedule with N players
+// over R rounds, so a restored schedule's own counts identify its option.
+test.describe('Schedule select after a restore or a load', () => {
+  function collectErrors(page) {
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+    });
+    return errors;
+  }
+
+  // Accept every notice; decline "save first?" on New Tournament.
+  function collectDialogs(page) {
+    const messages = [];
+    page.on('dialog', (dialog) => {
+      messages.push(dialog.message());
+      if (dialog.type() === 'confirm') dialog.dismiss(); else dialog.accept();
+    });
+    return messages;
+  }
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+  });
+
+  async function startTournament(page, moduleName, name) {
+    await page.selectOption('#scheduleSelect', moduleName);
+    await page.fill('#tournamentName', name);
+    await page.click('#startTournamentBtn');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+  }
+
+  // The select shows the schedule, both after a reload and in a fresh tab
+  // (which has no form state of its own to restore).
+  async function expectTheSelectAfterReloadAndInANewTab(page, context, moduleName, { started = true } = {}) {
+    await page.reload();
+    await expect(page.locator('#scheduleSelect')).toHaveValue(moduleName);
+    const fresh = await context.newPage();
+    const errors = collectErrors(fresh);
+    await fresh.goto('/');
+    await expect(fresh.locator('#scheduleSelect')).toHaveValue(moduleName);
+    if (started) await expect(fresh.locator('#scheduleSelect')).toBeDisabled();
+    else await expect(fresh.locator('#scheduleSelect')).toBeEnabled();
+    expect(errors).toEqual([]);
+    await fresh.close();
+  }
+
+  test('R-STATE-PERSIST, R-SCHEDULE-SELECT: a started 16-player tournament still shows its schedule after a reload', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a 16-player tournament is running,
+    await startTournament(page, '16p15r.js', 'Sixteen Cup');
+    // When the page is reloaded (or opened in a new tab),
+    // Then the locked select still shows the 16-player schedule.
+    await expectTheSelectAfterReloadAndInANewTab(page, context, '16p15r.js');
+    await expect(page.locator('#scheduleSelect')).toBeDisabled();
+    await expect(page.locator('.scoreboard-container table tr')).toHaveCount(17);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-SCHEDULE-SELECT: a loaded 16-player tournament shows its schedule, not the one chosen for the new tournament', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given a 16-player tournament is saved,
+    await startTournament(page, '16p15r.js', 'Saved Sixteen');
+    await page.click('#saveTournamentBtn');
+    // and a new tournament is set up at the default size,
+    await page.click('#newTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(3);
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await page.selectOption('#scheduleSelect', '12p11r.js');
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(12);
+
+    // When the Organizer loads the saved one,
+    await page.click('#loadTournamentBtn');
+
+    // Then the select shows the 16-player schedule it plays,
+    await expect(page.locator('#tournamentTitle')).toHaveText('Saved Sixteen');
+    await expect(page.locator('.scoreboard-container table tr')).toHaveCount(17);
+    await expect(page.locator('#scheduleSelect')).toHaveValue('16p15r.js');
+    await expect(page.locator('#scheduleSelect')).toBeDisabled();
+    // and still does once the loaded tournament is restored.
+    await expectTheSelectAfterReloadAndInANewTab(page, context, '16p15r.js');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-SCHEDULE-SELECT: a started 13-player (sit-out) tournament still shows its schedule after a reload', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    await startTournament(page, '13p13r.js', 'Thirteen Cup');
+    await expectTheSelectAfterReloadAndInANewTab(page, context, '13p13r.js');
+    await expect(page.locator('.resting-players .resting-player')).toHaveCount(1);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-SCHEDULE-SELECT: a 16-player setup not yet started still shows its schedule after a reload', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    await page.selectOption('#scheduleSelect', '16p15r.js');
+    await page.fill('#tournamentName', 'Pending Sixteen');
+    await expectTheSelectAfterReloadAndInANewTab(page, context, '16p15r.js', { started: false });
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(16);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-SCHEDULE-SELECT: every shipped option names a schedule with exactly its player and round counts', async ({ page }) => {
+    // The select is set from a restored schedule's counts, so no two options may
+    // share them, and each module must hold the counts its name claims.
+    const options = await page.evaluate(() =>
+      Array.from(document.getElementById('scheduleSelect').options, (option) => {
+        const match = /^(\d+)p(\d+)r\.js$/.exec(option.value);
+        const schedule = match ? window[`schedule${match[1]}p${match[2]}r`] : null;
+        return {
+          value: option.value,
+          claimed: match ? [Number(match[1]), Number(match[2])] : null,
+          actual: schedule ? [schedule.players.length, schedule.rounds.length] : null,
+        };
+      }));
+    expect(options.length).toBe(17);
+    for (const option of options) expect(option.actual, option.value).toEqual(option.claimed);
+    expect(new Set(options.map((option) => option.claimed.join('/'))).size).toBe(options.length);
   });
 });
