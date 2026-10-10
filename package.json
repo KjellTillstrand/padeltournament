@@ -3,7 +3,7 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.0",
     "@types/node": "^26.6.3",
     "http-server": "14.1.1"
   },
