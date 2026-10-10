@@ -1,5 +1,6 @@
 // tests/format_select.spec.js
 const { test, expect } = require('@playwright/test');
+const { STATE_KEY } = require('./storage-keys');
 
 // --- Screenplay kernel (Actor / Task / Question) ---
 class Actor {
@@ -144,11 +145,11 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(await organizer.asksFor(ActiveFormat)).toBe('Mexicano');
 
     // And the choice is stored at once, not only when the page unloads.
-    let stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    let stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
     expect(stored.format).toBe('mexicano');
     expect(stored.mexicanoPlayerCount).toBe(12);
     await organizer.attemptsTo(ChooseThePlayerCount(9));
-    stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
     expect(stored.mexicanoPlayerCount).toBe(9);
     expect(errors).toEqual([]);
   });
@@ -173,7 +174,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     expect(await organizer.asksFor(ActiveFormat)).toBe('Mexicano');
     await expect(page.locator('#formatSelect')).toBeDisabled();
     await expect(page.locator('#playerCountSelect')).toBeDisabled();
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
     expect(stored.tournamentStarted).toBe(true);
     expect(stored.format).toBe('mexicano');
     expect(stored.schedule.players).toHaveLength(9);
@@ -196,7 +197,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     // Then the reset setup, still Mexicano, is stored at once.
     await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
     await expectTheMexicanoSetup(page, 14);
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
     expect(stored).not.toBeNull();
     expect(stored.tournamentStarted).toBe(false);
     expect(stored.format).toBe('mexicano');
@@ -224,7 +225,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
 
     // Then the fresh, nameless Americano setup is stored at once.
     await expect(page.locator('#startTournamentBtn')).toBeEnabled();
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
     expect(stored).not.toBeNull();
     expect(stored.tournamentStarted).toBe(false);
     expect(stored.tournamentName).toBe('');
@@ -362,7 +363,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
     expect(await organizer.asksFor(ActiveFormat)).toBe('Americano');
     await expect(page.locator('#formatSelect')).toBeDisabled();
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
     expect(stored.format).toBe('americano');
     expect(errors).toEqual([]);
   });
@@ -375,7 +376,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
 
     // Given a setup with Mexicano chosen for 10 players (stored at once),
     await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(10));
-    const before = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    const before = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
     expect(before.format).toBe('mexicano');
     expect(before.mexicanoPlayerCount).toBe(10);
 
@@ -385,7 +386,7 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     // Then the active format shall still read Mexicano, with its setup intact.
     expect(await organizer.asksFor(ActiveFormat)).toBe('Mexicano');
     await expectTheMexicanoSetup(page, 10);
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
     expect(stored.format).toBe('mexicano');
     expect(stored.mexicanoPlayerCount).toBe(10);
     expect(errors).toEqual([]);

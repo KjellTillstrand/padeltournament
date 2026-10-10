@@ -1,5 +1,6 @@
 // tests/tournament_name_save_unique.spec.js
 const { test, expect } = require('@playwright/test');
+const { SAVED_TOURNAMENTS_KEY } = require('./storage-keys');
 
 test.describe('Tournament Save Unique Name Functionality', () => {
   test.beforeEach(async ({ page }) => {
@@ -26,7 +27,7 @@ test.describe('Tournament Save Unique Name Functionality', () => {
     await page.waitForTimeout(500);
 
     // Retrieve the saved tournaments from localStorage.
-    let savedTournaments = await page.evaluate(() => JSON.parse(localStorage.getItem('savedTournaments')));
+    let savedTournaments = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), SAVED_TOURNAMENTS_KEY);
     expect(savedTournaments).toHaveLength(1);
     expect(savedTournaments[0].tournamentName).toBe('Test Tournament');
 
@@ -47,7 +48,7 @@ test.describe('Tournament Save Unique Name Functionality', () => {
     await page.waitForTimeout(500);
 
     // Retrieve the updated saved tournaments.
-    savedTournaments = await page.evaluate(() => JSON.parse(localStorage.getItem('savedTournaments')));
+    savedTournaments = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), SAVED_TOURNAMENTS_KEY);
     // Expect two saved tournaments now.
     expect(savedTournaments).toHaveLength(2);
     const names = savedTournaments.map(t => t.tournamentName);

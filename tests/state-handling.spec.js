@@ -1,5 +1,8 @@
 // general-functionality.spec.js
 const { test, expect } = require('@playwright/test');
+const {
+  STATE_KEY, SAVED_TOURNAMENTS_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
+} = require('./storage-keys');
 
 test.describe('General Functionality of Tournament Manager', () => {
 
@@ -58,7 +61,7 @@ test.describe('General Functionality of Tournament Manager', () => {
     // Then create a new page and verify the state is saved.
     const newPage = await context.newPage();
     await newPage.goto('/');
-    const savedState = await newPage.evaluate(() => localStorage.getItem('tournamentState'));
+    const savedState = await newPage.evaluate((key) => localStorage.getItem(key), STATE_KEY);
     expect(savedState).not.toBeNull();
     const state = JSON.parse(savedState);
     expect(state.tournamentName).toBe('AutoSave Test');
@@ -94,7 +97,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await donor.fill('#tournamentName', 'Base Cup');
     if (started) await donor.click('#startTournamentBtn');
     else await donor.fill('#courtNameInput_1', 'Centre');
-    const state = JSON.parse(await donor.evaluate(() => localStorage.getItem('tournamentState')));
+    const state = JSON.parse(await donor.evaluate((key) => localStorage.getItem(key), STATE_KEY));
     await donor.close();
     expect(state.tournamentStarted).toBe(started);
     return state;
@@ -170,7 +173,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
   }
 
-  // --- tournamentState that cannot be restored: fresh setup ---
+  // --- a tournament state that cannot be restored: fresh setup ---
   const UNREADABLE_STATES = [
     ['invalid JSON', '{"schedule": '],
     ['a JSON string', '"hello"'],
@@ -182,7 +185,7 @@ test.describe('Malformed or hostile persisted state', () => {
     test(`A tournament state holding ${description} falls back to a fresh setup`, async ({ page }) => {
       const errors = collectErrors(page);
       // Given the stored tournament state is unreadable.
-      await plantStorage(page, { tournamentState: raw });
+      await plantStorage(page, { [STATE_KEY]: raw });
 
       // When the app loads.
       await page.goto('/');
@@ -220,7 +223,7 @@ test.describe('Malformed or hostile persisted state', () => {
       // Given a running tournament whose stored schedule has been tampered with.
       const state = await captureARealTournamentState(context);
       corrupt(state.schedule);
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       // When the app loads.
       await page.goto('/');
@@ -232,7 +235,7 @@ test.describe('Malformed or hostile persisted state', () => {
     });
   }
 
-  // --- tournamentState with a sound structure but bad fields: sane restore ---
+  // --- a tournament state with a sound structure but bad fields: sane restore ---
   const REPAIRABLE_FIELDS = [
     {
       description: 'an out-of-range round index',
@@ -288,7 +291,7 @@ test.describe('Malformed or hostile persisted state', () => {
       // Given a running tournament whose stored fields have been tampered with.
       const state = await captureARealTournamentState(context);
       corrupt(state);
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       // When the app loads.
       await page.goto('/');
@@ -343,7 +346,7 @@ test.describe('Malformed or hostile persisted state', () => {
       expect(expected).toHaveLength(2);
       expect(state.schedule.rounds[0].byes).toEqual(expect.arrayContaining(expected));
       corrupt(state.schedule);
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       // When the app loads.
       await page.goto('/');
@@ -356,7 +359,7 @@ test.describe('Malformed or hostile persisted state', () => {
       expect(await restingOnScreen(page)).toEqual(expected);
       await expect(page.locator('.scoreboard-container table tr')).toHaveCount(11);
       // and what it stores back holds those byes, not the planted ones.
-      const stored = await storedJson(page, 'tournamentState');
+      const stored = await storedJson(page, STATE_KEY);
       expect(stored.schedule.rounds[0].byes).toEqual(expected);
       expect(await page.evaluate(() => window.pwned)).toBeUndefined();
       expect(errors).toEqual([]);
@@ -368,7 +371,7 @@ test.describe('Malformed or hostile persisted state', () => {
     // Given a running 12-player tournament whose stored rounds claim byes.
     const state = await captureARealTournamentState(context);
     state.schedule.rounds.forEach((round) => { round.byes = [state.schedule.players[0]]; });
-    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
     // When the app loads.
     await page.goto('/');
@@ -377,7 +380,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
     await expect(page.locator('.court')).toHaveCount(3);
     await expect(page.locator('.resting-players')).toHaveCount(0);
-    const stored = await storedJson(page, 'tournamentState');
+    const stored = await storedJson(page, STATE_KEY);
     expect(stored.schedule.rounds.every((round) => !('byes' in round))).toBe(true);
     expect(errors).toEqual([]);
   });
@@ -391,7 +394,7 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(expected).toHaveLength(1);
     schedule.rounds[1].byes = ['Nobody', ...schedule.players];
     const saved = [{ tournamentName: 'Odd Cup', schedule, currentRoundIndex: 1, savedAt: '2026-01-01T00:00:00.000Z' }];
-    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+    await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify(saved) });
 
     // When the app loads and the Organizer loads the save.
     await page.goto('/');
@@ -403,7 +406,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expect(page.locator('.court')).toHaveCount(3);
     expect(await restingOnScreen(page)).toEqual(expected);
-    expect((await storedJson(page, 'tournamentState')).schedule.rounds[1].byes).toEqual(expected);
+    expect((await storedJson(page, STATE_KEY)).schedule.rounds[1].byes).toEqual(expected);
     expect(errors).toEqual([]);
   });
 
@@ -415,7 +418,7 @@ test.describe('Malformed or hostile persisted state', () => {
     state.schedule.rounds[0].matches = state.schedule.rounds[0].matches.slice(0, 1);
     const expected = restingIn(state.schedule, state.schedule.rounds[0]);
     expect(expected).toHaveLength(5);
-    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
     // When the app loads and the tournament is started.
     await page.goto('/');
@@ -428,7 +431,7 @@ test.describe('Malformed or hostile persisted state', () => {
     // (under the names drawn at the start).
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
     await expect(page.locator('.court')).toHaveCount(1);
-    const started = (await storedJson(page, 'tournamentState')).schedule;
+    const started = (await storedJson(page, STATE_KEY)).schedule;
     expect(await restingOnScreen(page)).toEqual(restingIn(started, started.rounds[0]));
     expect(await restingOnScreen(page)).toHaveLength(5);
     expect(errors).toEqual([]);
@@ -459,7 +462,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await lefts.nth(1).fill('15');
     await donor.click('#generateNextRoundBtn');
     await expect(donor.locator('.round-header .left')).toHaveText('Round 2');
-    const state = JSON.parse(await donor.evaluate(() => localStorage.getItem('tournamentState')));
+    const state = JSON.parse(await donor.evaluate((key) => localStorage.getItem(key), STATE_KEY));
     await donor.close();
     expect(state.tournamentStarted).toBe(true);
     expect(state.format).toBe('mexicano');
@@ -486,7 +489,7 @@ test.describe('Malformed or hostile persisted state', () => {
     // Given a running Mexicano tournament whose stored round index is out of range,
     const state = await captureARealMexicanoState(context);
     state.currentRoundIndex = 7;
-    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
     // When the app loads,
     await page.goto('/');
@@ -501,7 +504,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('[id^="playerInput_"]')).toHaveCount(9);
     await page.getByRole('button', { name: 'NEXT ROUND', exact: true }).click();
     await expectRoundTwoOfAMexicano(page);
-    expect((await storedJson(page, 'tournamentState')).mexicanoSeed).toBe(state.mexicanoSeed);
+    expect((await storedJson(page, STATE_KEY)).mexicanoSeed).toBe(state.mexicanoSeed);
     expect(errors).toEqual([]);
   });
 
@@ -536,7 +539,7 @@ test.describe('Malformed or hostile persisted state', () => {
       // Given a running Mexicano tournament whose stored state has been tampered with,
       const state = await captureARealMexicanoState(context);
       corrupt(state);
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       // When the app loads,
       await page.goto('/');
@@ -555,12 +558,12 @@ test.describe('Malformed or hostile persisted state', () => {
       const errors = collectErrors(page);
       const state = await captureARealMexicanoState(context);
       state.mexicanoSeed = seed;
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       await page.goto('/');
 
       await expectRoundTwoOfAMexicano(page);
-      expect((await storedJson(page, 'tournamentState')).mexicanoSeed).toBe(seed);
+      expect((await storedJson(page, STATE_KEY)).mexicanoSeed).toBe(seed);
       expect(errors).toEqual([]);
     });
   }
@@ -571,7 +574,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const state = await captureARealTournamentState(context);
     state.format = 'mexicano';
     state.mexicanoPlayerCount = 16;
-    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
     // When the app loads.
     await page.goto('/');
@@ -607,7 +610,7 @@ test.describe('Malformed or hostile persisted state', () => {
       save('Americano Table Cup', { schedule: americanoSchedule, mexicanoSeed: undefined }),
       save('Sound Mexicano Cup', {}),
     ];
-    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+    await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify(saved) });
 
     // When the app loads,
     await page.goto('/');
@@ -629,7 +632,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await lefts.nth(1).fill('12');
     await page.click('#generateNextRoundBtn');
     await expect(page.locator('.round-header .left')).toHaveText('Round 3');
-    const stored = await storedJson(page, 'tournamentState');
+    const stored = await storedJson(page, STATE_KEY);
     expect(stored.format).toBe('mexicano');
     expect(stored.mexicanoSeed).toBe(state.mexicanoSeed);
     expect(stored.schedule.rounds).toHaveLength(3);
@@ -656,7 +659,7 @@ test.describe('Malformed or hostile persisted state', () => {
       const state = await captureARealTournamentState(context, { started: false });
       if (format === undefined) delete state.format; else state.format = format;
       if (count === undefined) delete state.mexicanoPlayerCount; else state.mexicanoPlayerCount = count;
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       // When the app loads.
       await page.goto('/');
@@ -672,7 +675,7 @@ test.describe('Malformed or hostile persisted state', () => {
         await expect(page.locator('#startTournamentBtn')).toBeEnabled();
         await page.click('#startTournamentBtn');
         await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-        expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+        expect((await storedJson(page, STATE_KEY)).format).toBe('americano');
       } else {
         // And a Mexicano setup offers the restored count of players, and starts.
         await expect(page.locator('#playerCountSelect')).toBeVisible();
@@ -682,7 +685,7 @@ test.describe('Malformed or hostile persisted state', () => {
         await page.click('#startTournamentBtn');
         await expect(page.locator('.round-header .left')).toHaveText('Round 1');
         await expect(page.locator('.court')).toHaveCount(Math.floor(Number(restoredCount) / 4));
-        const stored = await storedJson(page, 'tournamentState');
+        const stored = await storedJson(page, STATE_KEY);
         expect(stored.format).toBe('mexicano');
         expect(stored.schedule.players).toHaveLength(Number(restoredCount));
       }
@@ -697,7 +700,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const state = await captureARealTournamentState(context, { started: false });
     state.schedule.x = DEEP;
     state.schedule.rounds[0].matches[0].y = DEEP;
-    await plantStorage(page, { tournamentState: toSeedWithDeepValues(state) });
+    await plantStorage(page, { [STATE_KEY]: toSeedWithDeepValues(state) });
 
     // When the app loads.
     await page.goto('/');
@@ -711,20 +714,20 @@ test.describe('Malformed or hostile persisted state', () => {
     // And it can be started, which saves a state without the extra properties.
     await page.click('#startTournamentBtn');
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-    const saved = await storedJson(page, 'tournamentState');
+    const saved = await storedJson(page, STATE_KEY);
     expect(saved.tournamentStarted).toBe(true);
     expect(saved.schedule).not.toHaveProperty('x');
     expect(saved.schedule.rounds[0].matches[0]).not.toHaveProperty('y');
     expect(errors).toEqual([]);
   });
 
-  // --- savedTournaments ---
+  // --- saved tournaments ---
   for (const [description, raw] of [['invalid JSON', '[{"tournamentName": '], ['a non-list', '{"0": {}}']]) {
     test(`Saved tournaments holding ${description} leave an empty, working saved-tournament list`, async ({ page }) => {
       const errors = collectErrors(page);
       const dialogs = collectDialogs(page);
       // Given the stored saved-tournament list is unreadable.
-      await plantStorage(page, { tournamentState: null, savedTournaments: raw });
+      await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: raw });
 
       // When the app loads.
       await page.goto('/');
@@ -758,7 +761,7 @@ test.describe('Malformed or hostile persisted state', () => {
       // Sound, apart from a timestamp that cannot be printed.
       { tournamentName: 'Spring Cup', schedule, currentRoundIndex: 1, courtNames: ['Centre'], savedAt: UNPRINTABLE },
     ];
-    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+    await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify(saved) });
 
     // When the app loads.
     await page.goto('/');
@@ -790,7 +793,7 @@ test.describe('Malformed or hostile persisted state', () => {
       // Given a saved tournament whose format has been tampered with.
       const { schedule } = await captureARealTournamentState(context);
       const saved = [{ tournamentName: 'Autumn Cup', schedule, currentRoundIndex: 0, format, savedAt: '2026-01-01T00:00:00.000Z' }];
-      await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+      await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify(saved) });
 
       // When the app loads and the Organizer loads the save.
       await page.goto('/');
@@ -801,7 +804,7 @@ test.describe('Malformed or hostile persisted state', () => {
       await expect(page.locator('#tournamentTitle')).toHaveText('Autumn Cup');
       await expect(page.locator('.round-header .left')).toHaveText('Round 1');
       await expect(page.locator('#formatSelect')).toHaveValue('americano');
-      expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
+      expect((await storedJson(page, STATE_KEY)).format).toBe('americano');
       expect(errors).toEqual([]);
     });
   }
@@ -819,7 +822,7 @@ test.describe('Malformed or hostile persisted state', () => {
       savedAt: '2026-01-01T00:00:00.000Z',
       y: DEEP,
     }];
-    await plantStorage(page, { tournamentState: null, savedTournaments: toSeedWithDeepValues(saved) });
+    await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: toSeedWithDeepValues(saved) });
 
     // When the app loads, the save is listed.
     await page.goto('/');
@@ -829,7 +832,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expectATournamentCanStart(page, 'Summer Cup');
     await page.click('#saveTournamentBtn');
     await expect(page.locator('#savedTournamentSelect option')).toHaveCount(2);
-    const stored = await storedJson(page, 'savedTournaments');
+    const stored = await storedJson(page, SAVED_TOURNAMENTS_KEY);
     expect(stored.map((t) => t.tournamentName)).toEqual(['Spring Cup', 'Summer Cup']);
     expect(stored[0]).not.toHaveProperty('y');
     expect(stored[0].schedule).not.toHaveProperty('x');
@@ -851,13 +854,13 @@ test.describe('Malformed or hostile persisted state', () => {
     const dialogs = collectDialogs(page);
     // Given storage that refuses the saved-tournament list, as when it is full
     // (the live tournament state still saves, so the tournament runs normally).
-    await page.addInitScript(() => {
+    await page.addInitScript((savedKey) => {
       const setItem = Storage.prototype.setItem;
       Storage.prototype.setItem = function (key, value) {
-        if (key === 'savedTournaments') throw new DOMException('Storage is full', 'QuotaExceededError');
+        if (key === savedKey) throw new DOMException('Storage is full', 'QuotaExceededError');
         return setItem.call(this, key, value);
       };
-    });
+    }, SAVED_TOURNAMENTS_KEY);
     await page.goto('/');
     await expectATournamentCanStart(page, 'Kept Cup');
     await page.locator('.result-overlay-left input').first().fill('10');
@@ -875,7 +878,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#tournamentTitle')).toHaveText('Kept Cup');
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
     await expect(page.locator('.result-overlay-left input').first()).toHaveValue('10');
-    const live = await storedJson(page, 'tournamentState');
+    const live = await storedJson(page, STATE_KEY);
     expect(live.tournamentStarted).toBe(true);
     expect(live.tournamentName).toBe('Kept Cup');
     expect(errors).toEqual([]);
@@ -906,7 +909,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await matches.first().locator('.result-overlay-left input').fill('15');
     await matches.last().locator('.result-overlay-left input').fill('1'.repeat(33));
     await expect(matches.last().locator('.error-message')).toContainText('whole number from 0 to 24');
-    expect((await storedJson(page, 'tournamentState')).schedule.rounds[0].matches[2].result).toEqual({ left: '', right: '' });
+    expect((await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[2].result).toEqual({ left: '', right: '' });
     await page.click('#saveTournamentBtn');
 
     // When the app is reloaded.
@@ -924,8 +927,8 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
     // And its format is kept, in the live state and in the save.
     await expect(page.locator('#formatSelect')).toHaveValue('americano');
-    expect((await storedJson(page, 'tournamentState')).format).toBe('americano');
-    expect((await storedJson(page, 'savedTournaments'))[0].format).toBe('americano');
+    expect((await storedJson(page, STATE_KEY)).format).toBe('americano');
+    expect((await storedJson(page, SAVED_TOURNAMENTS_KEY))[0].format).toBe('americano');
 
     // And a second tournament of the same name, whose unique-name suffix takes
     // it past the input cap, is saved and restored too.
@@ -954,7 +957,7 @@ test.describe('Malformed or hostile persisted state', () => {
       // Then the Mexicano setup is restored as written.
       await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
       await expect(page.locator('#playerCountSelect')).toHaveValue(count);
-      const stored = await storedJson(page, 'tournamentState');
+      const stored = await storedJson(page, STATE_KEY);
       expect(stored.format).toBe('mexicano');
       expect(stored.mexicanoPlayerCount).toBe(Number(count));
     }
@@ -989,7 +992,7 @@ test.describe('Malformed or hostile persisted state', () => {
       const state = await captureARealTournamentState(context);
       if (totalPoints === undefined) delete state.totalPoints;
       else state.totalPoints = totalPoints;
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       // When the app loads.
       await page.goto('/');
@@ -1010,7 +1013,7 @@ test.describe('Malformed or hostile persisted state', () => {
       const { schedule } = await captureARealTournamentState(context);
       const entry = { tournamentName: 'Odd Cup', schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' };
       if (totalPoints !== undefined) entry.totalPoints = totalPoints;
-      await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify([entry]) });
+      await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify([entry]) });
 
       // When the app loads and the Organizer loads the save.
       await page.goto('/');
@@ -1033,7 +1036,7 @@ test.describe('Malformed or hostile persisted state', () => {
       { ...base, tournamentName: 'Hostile Cup', totalPoints: 'x' },
       { ...base, tournamentName: 'Odd Pool Cup', totalPoints: 21 },
     ];
-    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+    await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify(saved) });
 
     // When the Organizer loads the 21-point save.
     await page.goto('/');
@@ -1094,7 +1097,7 @@ test.describe('Malformed or hostile persisted state', () => {
       else await expect(error).toContainText(text);
     }
   }
-  const storedResults = async (page, key = 'tournamentState') =>
+  const storedResults = async (page, key = STATE_KEY) =>
     (await storedJson(page, key)).schedule.rounds[0].matches.map((m) => m.result);
 
   const HOSTILE_RESULTS = [
@@ -1114,7 +1117,7 @@ test.describe('Malformed or hostile persisted state', () => {
       const sound = { left: String(total - 9), right: '9' };
       state.totalPoints = total;
       plantResults(state.schedule, [result, sound]);
-      await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+      await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state) });
 
       // When the app loads (and reloads, saving on the way out),
       await page.goto('/');
@@ -1148,7 +1151,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const { schedule } = await captureARealTournamentState(context);
     schedule.rounds[0].matches[0].result = { left: '30', right: '-6' };
     const entry = { tournamentName: 'Bad Score Cup', schedule, currentRoundIndex: 0, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z' };
-    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify([entry]) });
+    await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify([entry]) });
 
     // When the Organizer loads it.
     await page.goto('/');
@@ -1176,7 +1179,7 @@ test.describe('Malformed or hostile persisted state', () => {
       { left: '２４', right: ' 0' }, // fullwidth digits; a leading space
     ];
     plantResults(state.schedule, hostile);
-    await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+    await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state) });
 
     await page.goto('/');
     for (let pass = 0; pass < 2; pass++) {
@@ -1209,7 +1212,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const state = await captureARealTournamentState(context);
     delete state.totalPoints;
     plantResults(state.schedule, LEGACY_32_RESULTS);
-    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
     // When the app loads.
     await page.goto('/');
@@ -1224,7 +1227,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await third.locator('.result-overlay-left input').fill('3');
     await expect(third.locator('.result-overlay-right input')).toHaveValue('29');
     await expect(third.locator('.error-message')).toHaveText('');
-    const stored = await storedJson(page, 'tournamentState');
+    const stored = await storedJson(page, STATE_KEY);
     expect(stored.totalPoints).toBe(32);
     expect(stored.schedule.rounds[0].matches.slice(0, 2).map((m) => m.result)).toEqual(LEGACY_32_RESULTS);
     expect(errors).toEqual([]);
@@ -1256,7 +1259,7 @@ test.describe('Malformed or hostile persisted state', () => {
       const state = await captureARealTournamentState(context);
       delete state.totalPoints;
       plantResults(state.schedule, results);
-      await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+      await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state) });
 
       // When the app loads, and is reloaded twice (saving on the way out each time),
       await page.goto('/');
@@ -1271,7 +1274,7 @@ test.describe('Malformed or hostile persisted state', () => {
         expect(await scoreboardPointsSorted(page)).toEqual(credited);
       }
       // And what the app stored keeps every result byte-for-byte, with the total.
-      const stored = await storedJson(page, 'tournamentState');
+      const stored = await storedJson(page, STATE_KEY);
       expect(stored.totalPoints).toBe(total);
       expect(stored.schedule.rounds[0].matches.map((m) => m.result)).toEqual(results);
       expect(errors).toEqual([]);
@@ -1287,7 +1290,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const state = await captureARealTournamentState(context);
     state.totalPoints = 24;
     plantResults(state.schedule, STORED_24_WITH_32_RESULTS);
-    await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+    await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state) });
 
     await page.goto('/');
     for (let pass = 0; pass < 3; pass++) {
@@ -1315,12 +1318,12 @@ test.describe('Malformed or hostile persisted state', () => {
       { tournamentName: 'Legacy Mixed Cup', schedule: legacy.schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' },
       { tournamentName: 'Other Cup', schedule: other.schedule, currentRoundIndex: 0, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z' },
     ];
-    await plantStorageOnce(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+    await plantStorageOnce(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify(saved) });
     await page.goto('/');
     const optionValue = async (name) =>
       page.locator('#savedTournamentSelect option', { hasText: name }).getAttribute('value');
     const savedEntry = async (name) =>
-      (await storedJson(page, 'savedTournaments')).find((t) => t.tournamentName === name);
+      (await storedJson(page, SAVED_TOURNAMENTS_KEY)).find((t) => t.tournamentName === name);
 
     // When the Organizer loads the legacy one, then it plays to 32 with every result,
     await page.selectOption('#savedTournamentSelect', await optionValue('Legacy Mixed Cup'));
@@ -1364,7 +1367,7 @@ test.describe('Malformed or hostile persisted state', () => {
       delete state.totalPoints;
       plantResults(state.schedule, round1);
       round2.forEach((result, i) => { state.schedule.rounds[1].matches[i].result = result; });
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       await page.goto('/');
 
@@ -1385,7 +1388,7 @@ test.describe('Malformed or hostile persisted state', () => {
     delete state.totalPoints;
     const results = [{ left: '13', right: '12' }, { left: '20', right: '5' }, { left: '15', right: '' }];
     plantResults(state.schedule, results);
-    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
     await page.goto('/');
 
@@ -1405,7 +1408,7 @@ test.describe('Malformed or hostile persisted state', () => {
       const state = await captureARealTournamentState(context);
       state.totalPoints = totalPoints;
       plantResults(state.schedule, LEGACY_32_RESULTS);
-      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+      await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
 
       await page.goto('/');
 
@@ -1427,7 +1430,7 @@ test.describe('Malformed or hostile persisted state', () => {
     state.legacyResults = true;
     plantResults(state.schedule, [{ left: '15', right: '9' }]);
     const entry = { tournamentName: 'Stale Cup', schedule: state.schedule, currentRoundIndex: 0, totalPoints: 24, legacyResults: true, savedAt: '2026-01-01T00:00:00.000Z' };
-    await plantStorageOnce(page, { tournamentState: JSON.stringify(state), savedTournaments: JSON.stringify([entry]) });
+    await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state), [SAVED_TOURNAMENTS_KEY]: JSON.stringify([entry]) });
 
     // When the app loads, reloads (saving the state) and saves the tournament (rewriting the list),
     await page.goto('/');
@@ -1437,8 +1440,8 @@ test.describe('Malformed or hostile persisted state', () => {
     await page.click('#saveTournamentBtn');
 
     // Then neither the state nor any saved tournament carries the key any more.
-    expect(await storedJson(page, 'tournamentState')).not.toHaveProperty('legacyResults');
-    const savedList = await storedJson(page, 'savedTournaments');
+    expect(await storedJson(page, STATE_KEY)).not.toHaveProperty('legacyResults');
+    const savedList = await storedJson(page, SAVED_TOURNAMENTS_KEY);
     expect(savedList.length).toBe(2);
     for (const saved of savedList) expect(saved).not.toHaveProperty('legacyResults');
     expect(errors).toEqual([]);
@@ -1450,7 +1453,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const { schedule } = await captureARealTournamentState(context);
     plantResults(schedule, LEGACY_32_RESULTS);
     const entry = { tournamentName: 'Legacy 32 Cup', schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' };
-    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify([entry]) });
+    await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify([entry]) });
 
     // When the Organizer loads it.
     await page.goto('/');
@@ -1462,7 +1465,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#globalTotalPoints')).toHaveValue('32');
     await expectScoresOnScreen(page, [['20', '12'], ['18', '14']]);
     expect(await scoreboardPointsSorted(page)).toEqual([20, 20, 18, 18, 14, 14, 12, 12, 0, 0, 0, 0]);
-    const stored = await storedJson(page, 'tournamentState');
+    const stored = await storedJson(page, STATE_KEY);
     expect(stored.totalPoints).toBe(32);
     expect(stored.schedule.rounds[0].matches.slice(0, 2).map((m) => m.result)).toEqual(LEGACY_32_RESULTS);
     expect(errors).toEqual([]);
@@ -1476,7 +1479,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const state = await captureARealTournamentState(context, { schedule: '16p15r.js' });
     state.schedule.rounds = state.schedule.rounds.slice(0, 5);
     const entry = { tournamentName: 'Odd Shape Cup', schedule: state.schedule, currentRoundIndex: 0 };
-    await plantStorageOnce(page, { tournamentState: JSON.stringify(state), savedTournaments: JSON.stringify([entry]) });
+    await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state), [SAVED_TOURNAMENTS_KEY]: JSON.stringify([entry]) });
 
     // When the app restores it (and again after a reload),
     await page.goto('/');
@@ -1493,6 +1496,194 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#tournamentTitle')).toHaveText('Odd Shape Cup');
     await expect(page.locator('#tournamentContainer .court')).toHaveCount(4);
     await expect(page.locator('#scheduleSelect')).toHaveValue('12p11r.js');
+    expect(errors).toEqual([]);
+  });
+
+  // --- legacy (unprefixed) keys: migrated once, never deleted unless fully copied ---
+  async function storedRaw(page, key) {
+    return page.evaluate((k) => localStorage.getItem(k), key);
+  }
+
+  // A tournament in progress at round 3, with scores and custom tournament,
+  // player and court names, as the app stored it before its keys were prefixed.
+  async function captureALegacyTournamentInProgress(context) {
+    const state = await captureARealTournamentState(context);
+    state.tournamentName = 'Legacy Cup';
+    renamePlayer(state.schedule, state.schedule.players[0], 'Ada');
+    state.courtNames = ['Centre'];
+    state.currentRoundIndex = 2;
+    state.schedule.rounds.slice(0, 2).forEach((round) => round.matches.forEach((match) => {
+      match.result = { left: '14', right: '10' };
+    }));
+    state.schedule.rounds[2].matches[0].result = { left: '15', right: '9' };
+    return state;
+  }
+
+  test('R-STATE-PERSIST: a tournament stored under the legacy key resumes, migrated to the prefixed key', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a tournament in progress stored under the legacy key only.
+    const state = await captureALegacyTournamentInProgress(context);
+    await plantStorageOnce(page, { [STATE_KEY]: null, [LEGACY_STATE_KEY]: JSON.stringify(state) });
+
+    // When the returning Organizer reopens the app (and once more).
+    await page.goto('/');
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 1) await page.reload();
+      // Then the tournament resumes at round 3 with its scores and names.
+      await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+      await expect(page.locator('#tournamentTitle')).toHaveText('Legacy Cup');
+      await expect(page.locator('.result-overlay-left input').first()).toHaveValue('15');
+      await expect(page.locator('.result-overlay-right input').first()).toHaveValue('9');
+      await expect(page.locator('#courtNameInput_1')).toHaveValue('Centre');
+      await expect(page.locator('.scoreboard-container')).toContainText('Ada');
+      // And it lives under the prefixed key only: the legacy key is gone.
+      const stored = await storedJson(page, STATE_KEY);
+      expect(stored.tournamentName).toBe('Legacy Cup');
+      expect(stored.currentRoundIndex).toBe(2);
+      expect(stored.schedule.rounds[0].matches[0].result).toEqual({ left: '14', right: '10' });
+      expect(await storedRaw(page, LEGACY_STATE_KEY)).toBeNull();
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST: saved tournaments stored under the legacy key are migrated and still load', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a saved tournament list under the legacy key only.
+    const state = await captureALegacyTournamentInProgress(context);
+    const entry = {
+      tournamentName: 'Legacy Save', schedule: state.schedule, currentRoundIndex: 2,
+      courtNames: ['Centre'], savedAt: '2026-01-01T00:00:00.000Z',
+    };
+    await plantStorageOnce(page, {
+      [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: null, [LEGACY_SAVED_TOURNAMENTS_KEY]: JSON.stringify([entry]),
+    });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the list moved to the prefixed key, and the legacy key is gone.
+    expect((await storedJson(page, SAVED_TOURNAMENTS_KEY)).map((t) => t.tournamentName)).toEqual(['Legacy Save']);
+    expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBeNull();
+    // And the save is offered and loads where it was left.
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    await expect(page.locator('#savedTournamentSelect option')).toContainText('Legacy Save');
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Legacy Save');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+    await expect(page.locator('.result-overlay-left input').first()).toHaveValue('15');
+    expect(errors).toEqual([]);
+  });
+
+  // Data under the legacy keys may be another page's on this shared origin, so
+  // whatever the copy layer rejects is never deleted (nor carried over).
+  const UNUSABLE_LEGACY_VALUES = [
+    ["another page's data", () => '{"theme":"dark"}', () => '[{"id":7,"title":"note"}]'],
+    ['invalid JSON', () => '{"schedule": ', () => 'not json'],
+    ['a tampered tournament', (state) => {
+      state.schedule.rounds[0].matches[0].court = '1 2';
+      return JSON.stringify(state);
+    }, (state) => JSON.stringify({ tournamentName: 'Tampered', schedule: { players: state.schedule.players } })],
+  ];
+  for (const [description, legacyState, legacySaved] of UNUSABLE_LEGACY_VALUES) {
+    test(`R-STATE-PERSIST: legacy keys holding ${description} are left in place and the app starts fresh`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given unusable values under both legacy keys, and nothing under the prefixed keys.
+      const state = await captureARealTournamentState(context);
+      const rawState = legacyState(state);
+      const rawSaved = legacySaved(state);
+      await plantStorageOnce(page, {
+        [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: null,
+        [LEGACY_STATE_KEY]: rawState, [LEGACY_SAVED_TOURNAMENTS_KEY]: rawSaved,
+      });
+
+      // When the app loads (and again after a reload).
+      await page.goto('/');
+      for (let pass = 0; pass < 2; pass++) {
+        if (pass === 1) await page.reload();
+        // Then it shows a fresh setup with no saved tournaments,
+        await expectAFreshSetup(page);
+        await expect(page.locator('#savedTournamentSelect option')).toHaveCount(0);
+        // and both legacy values are untouched, byte for byte.
+        expect(await storedRaw(page, LEGACY_STATE_KEY)).toBe(rawState);
+        expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawSaved);
+        expect(await storedRaw(page, SAVED_TOURNAMENTS_KEY)).toBeNull();
+      }
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-STATE-PERSIST: a partly usable legacy saved list migrates its usable entries and is kept whole', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a legacy saved list of one sound save and one foreign entry.
+    const { schedule } = await captureARealTournamentState(context);
+    const rawSaved = JSON.stringify([
+      { tournamentName: 'Sound Save', schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' },
+      { id: 7, title: 'note' },
+    ]);
+    await plantStorageOnce(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: null, [LEGACY_SAVED_TOURNAMENTS_KEY]: rawSaved });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the sound save is migrated and offered,
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    await expect(page.locator('#savedTournamentSelect option')).toContainText('Sound Save');
+    expect((await storedJson(page, SAVED_TOURNAMENTS_KEY)).map((t) => t.tournamentName)).toEqual(['Sound Save']);
+    // And the legacy list, which holds data the copy layer rejected, is kept as it was.
+    expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawSaved);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST: legacy keys are not migrated again once the prefixed keys exist', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given current data under the prefixed keys AND older data under the legacy keys.
+    const state = await captureARealTournamentState(context);
+    const current = { ...state, tournamentName: 'Current Cup' };
+    const old = { ...state, tournamentName: 'Old Cup' };
+    const save = (name) => ({ tournamentName: name, schedule: state.schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' });
+    const rawOldState = JSON.stringify(old);
+    const rawOldSaved = JSON.stringify([save('Old Save')]);
+    await plantStorageOnce(page, {
+      [STATE_KEY]: JSON.stringify(current), [SAVED_TOURNAMENTS_KEY]: JSON.stringify([save('Current Save')]),
+      [LEGACY_STATE_KEY]: rawOldState, [LEGACY_SAVED_TOURNAMENTS_KEY]: rawOldSaved,
+    });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the prefixed data is what is restored and offered,
+    await expect(page.locator('#tournamentTitle')).toHaveText('Current Cup');
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    await expect(page.locator('#savedTournamentSelect option')).toContainText('Current Save');
+    // and the legacy keys are neither copied over nor removed.
+    expect((await storedJson(page, STATE_KEY)).tournamentName).toBe('Current Cup');
+    expect((await storedJson(page, SAVED_TOURNAMENTS_KEY)).map((t) => t.tournamentName)).toEqual(['Current Save']);
+    expect(await storedRaw(page, LEGACY_STATE_KEY)).toBe(rawOldState);
+    expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawOldSaved);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST: a legacy saved list is kept when its migrated copy cannot be written', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a sound legacy saved list, and storage that refuses the prefixed list.
+    const { schedule } = await captureARealTournamentState(context);
+    const rawSaved = JSON.stringify([{ tournamentName: 'Kept Save', schedule, currentRoundIndex: 0 }]);
+    await plantStorageOnce(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: null, [LEGACY_SAVED_TOURNAMENTS_KEY]: rawSaved });
+    await page.addInitScript((savedKey) => {
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === savedKey) throw new DOMException('Storage is full', 'QuotaExceededError');
+        return setItem.call(this, key, value);
+      };
+    }, SAVED_TOURNAMENTS_KEY);
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the app still runs, and the legacy list is left for a later load.
+    await expectAFreshSetup(page);
+    expect(await storedRaw(page, SAVED_TOURNAMENTS_KEY)).toBeNull();
+    expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawSaved);
     expect(errors).toEqual([]);
   });
 });
@@ -1549,7 +1740,7 @@ test.describe('Rest rounds survive selection, play and reload', () => {
       await expect(page.locator('.scoreboard-container table tr')).toHaveCount(players + 1);
 
       // and the full tournament is offered: every round, everyone rests equally.
-      const schedule = (await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')))).schedule;
+      const schedule = (await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY)).schedule;
       expect(schedule.rounds).toHaveLength(rounds);
       const rests = Object.fromEntries(names.map((n) => [n, 0]));
       for (const r of schedule.rounds) {
@@ -1594,7 +1785,7 @@ test.describe('Rest rounds survive selection, play and reload', () => {
       await expect(page.locator('.resting-players')).toHaveCount(0);
       if (r < 11) await page.getByRole('button', { name: 'NEXT ROUND' }).click();
     }
-    const schedule = (await page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')))).schedule;
+    const schedule = (await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY)).schedule;
     expect(schedule.rounds.every((round) => !('byes' in round))).toBe(true);
     expect(errors).toEqual([]);
   });
@@ -1623,7 +1814,7 @@ test.describe('Default player names in a setup restored before Start', () => {
   }
 
   async function storedState(page) {
-    return page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+    return page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
   }
 
   // The names the started tournament should carry, sorted (Start shuffles

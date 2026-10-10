@@ -188,6 +188,15 @@
     const MAX_PLAYERS = 64; // shipped schedules have 8-24 (any count)
     const MAX_ROUNDS = 128; // shipped schedules have 7-23
 
+    // localStorage keys. The origin's storage is shared with every other page served
+    // from it (see "Persisted-state validation"), so the app's keys carry its own
+    // prefix. The unprefixed legacy keys are only ever read to migrate them (see
+    // migrateLegacyStorage).
+    const STATE_KEY = "padeltournament:tournamentState";
+    const SAVED_TOURNAMENTS_KEY = "padeltournament:savedTournaments";
+    const LEGACY_STATE_KEY = "tournamentState";
+    const LEGACY_SAVED_TOURNAMENTS_KEY = "savedTournaments";
+
     // Update header when tournament name changes.
     document.getElementById("tournamentName").addEventListener("input", function () {
       document.getElementById("tournamentTitle").textContent = this.value || "Tournament Title";
@@ -206,7 +215,7 @@
         mexicanoSeed: mexicanoSeed,
         totalPoints: totalPoints
       };
-      writeStoredJson("tournamentState", state);
+      writeStoredJson(STATE_KEY, state);
     }
 
     // Store a value as JSON. A failed write (storage full or unavailable, a value
@@ -228,9 +237,9 @@
     function restoreTournamentState() {
       const state = readTournamentState();
       if (!state) {
-        if (localStorage.getItem("tournamentState") !== null) {
+        if (localStorage.getItem(STATE_KEY) !== null) {
           console.warn("Ignoring an unusable saved tournament state; starting a fresh setup.");
-          localStorage.removeItem("tournamentState");
+          localStorage.removeItem(STATE_KEY);
         }
         return false;
       }
@@ -267,6 +276,12 @@
 
     // Restore tournament state from localStorage.
     window.addEventListener("load", function () {
+      try {
+        migrateLegacyStorage();
+      } catch (err) {
+        // Best effort: whatever was not migrated stays under its legacy key.
+        console.warn("Could not migrate the legacy saved state.", err);
+      }
       try {
         showInitialView();
       } catch (err) {
@@ -339,7 +354,7 @@
       } else {
         savedTournaments.push(savedTournament);
       }
-      const saved = writeStoredJson("savedTournaments", savedTournaments);
+      const saved = writeStoredJson(SAVED_TOURNAMENTS_KEY, savedTournaments);
       populateSavedTournamentDropdown();
       alert(saved ? "Tournament saved!" : "The tournament could not be saved.");
       return saved;
@@ -391,7 +406,7 @@
       if (confirm(`Are you sure you want to delete "${tournamentName}"? Your secret sauce will vanish forever!`)) {
         let savedTournaments = readSavedTournaments();
         savedTournaments = savedTournaments.filter(t => t.tournamentName !== tournamentName);
-        writeStoredJson("savedTournaments", savedTournaments);
+        writeStoredJson(SAVED_TOURNAMENTS_KEY, savedTournaments);
         populateSavedTournamentDropdown();
         resetTournamentState();
         alert(`Tournament "${tournamentName}" deleted!`);
@@ -484,7 +499,7 @@
       inputs.forEach(input => input.disabled = false);
       document.getElementById("startTournamentBtn").disabled = false;
       document.getElementById("toggleSettingsBtn").style.display = "none";
-      localStorage.removeItem("tournamentState");
+      localStorage.removeItem(STATE_KEY);
       loadScheduleFromModule(document.getElementById("scheduleSelect").value);
       clearPlayerNameDrafts(); // a new setup starts from the default names
       renderSetupInputs(); // the chosen format is kept, with its player count
@@ -542,7 +557,7 @@
     // it is parsed defensively, shape-checked, and REBUILT from only the checked
     // fields, so nothing unchecked (extra properties, deep nesting) ever reaches the
     // app or is written back by it. A schedule whose structure is unusable is
-    // rejected whole (a stored tournamentState then falls back to a fresh setup; a
+    // rejected whole (a stored tournament state then falls back to a fresh setup; a
     // saved tournament is skipped); fields that can be repaired (round index,
     // names) are reset to their defaults. Scores are the exception: they are
     // type-checked, not repaired. A stored pair of strings is kept byte-for-byte,
@@ -795,10 +810,14 @@
       return copy ? { schedule: copy, mexicanoSeed: seed } : null;
     }
 
-    // A rebuilt copy of the stored tournamentState, or null when it is missing or
+    // A rebuilt copy of the stored tournament state, or null when it is missing or
     // unusable.
     function readTournamentState() {
-      const state = readStoredJson("tournamentState");
+      return copyTournamentState(readStoredJson(STATE_KEY));
+    }
+
+    // A rebuilt copy of a parsed tournament state, or null when it is unusable.
+    function copyTournamentState(state) {
       if (!isPlainObject(state)) return null;
       const started = state.tournamentStarted === true;
       const format = normalizeFormat(state.format);
@@ -851,9 +870,48 @@
     // The usable saved tournaments, rebuilt; unusable entries are skipped (and
     // dropped from storage the next time the list is written).
     function readSavedTournaments() {
-      const saved = readStoredJson("savedTournaments");
+      const saved = readStoredJson(SAVED_TOURNAMENTS_KEY);
       if (!Array.isArray(saved)) return [];
       return saved.map(copySavedTournament).filter(entry => entry !== null);
+    }
+
+    // --- Legacy storage migration ---
+    // Before its keys were prefixed, the app stored its data under the generic
+    // LEGACY_* keys, which another page on this origin may use as well. Each
+    // legacy key is migrated once, on load: only while the prefixed key is
+    // absent, and only through the copy layer above, so nothing unchecked is
+    // carried over. The legacy key is removed only after the prefixed write
+    // succeeded, and only when the copy layer accepted ALL of it: a value it
+    // rejects, in whole or in part, may be another page's data and is left in
+    // place, never deleted.
+    function migrateLegacyStorage() {
+      migrateLegacyKey(LEGACY_STATE_KEY, STATE_KEY, function (state) {
+        const copy = copyTournamentState(state);
+        return { copy: copy, complete: copy !== null };
+      });
+      migrateLegacyKey(LEGACY_SAVED_TOURNAMENTS_KEY, SAVED_TOURNAMENTS_KEY, function (saved) {
+        if (!Array.isArray(saved)) return { copy: null, complete: false };
+        const copies = saved.map(copySavedTournament).filter(entry => entry !== null);
+        // A list none of whose entries is a saved tournament is not ours: migrate nothing.
+        if (copies.length === 0 && saved.length > 0) return { copy: null, complete: false };
+        return { copy: copies, complete: copies.length === saved.length };
+      });
+    }
+
+    // copyLegacy(parsed) returns { copy, complete }: the value to store under
+    // newKey (null: nothing usable, migrate nothing) and whether that copy holds
+    // all of the legacy value (only then is the legacy key removed).
+    function migrateLegacyKey(legacyKey, newKey, copyLegacy) {
+      if (localStorage.getItem(newKey) !== null) return; // migrated before, or newer data
+      if (localStorage.getItem(legacyKey) === null) return;
+      const result = copyLegacy(readStoredJson(legacyKey));
+      if (result.copy === null) {
+        console.warn("Leaving an unusable legacy localStorage value in place:", legacyKey);
+        return;
+      }
+      if (!writeStoredJson(newKey, result.copy)) return; // kept for the next load
+      if (result.complete) localStorage.removeItem(legacyKey);
+      else console.warn("Leaving the unusable part of a legacy localStorage value in place:", legacyKey);
     }
 
     function formatSavedAt(savedAt) {
@@ -1592,7 +1650,7 @@
       generatePlayerInputs(currentSchedule.players);
       generateCourtNameInputs();
       document.getElementById("tournamentContainer").innerHTML = "";
-      localStorage.removeItem("tournamentState");
+      localStorage.removeItem(STATE_KEY);
     }
 
     // --- Tournament format ---
