@@ -309,8 +309,10 @@ step), never prose alone, per the retro rule (REQ-490).
     data loss and the `+5`/`1e` message gap after both agent reviewers had
     approved.
 
-  The record is the PR descriptions and the board's write-back comments; there
-  are no GitHub review comments. It is a distinct, load-bearing pass.
+  The record for AB#69 is PR #44's description. For AB#64 it is the board's
+  write-back comment, since PR #41's description doesn't mention
+  `/code-review`. There are no GitHub review comments. It is a distinct,
+  load-bearing pass.
 - **Verify:** a skill-text assertion that §2e names the PR-number form, plus an
   assertion that §2e says a code-review result with no review text is recorded
   as "not run".
@@ -428,16 +430,21 @@ step), never prose alone, per the retro rule (REQ-490).
     all 16 fields unset.
   - Re-checked on dotfiles-claude `origin/main`:
     `check-batch-belongs.sh --items <[]> …` exits 0.
-- **Mechanism (gate, script fix):** add a required `--expect-count N`, where
-  the drain passes the number of ids `query_ready` returned.
+- **Mechanism (gate, script fix):** SKILL.md §0 step 6 already says, as an
+  instruction, that an array whose length differs from the number of ids is a
+  systemic STOP. This mechanises that rule.
+  - Add `--expect-count N`, where the drain passes the number of ids
+    `query_ready` returned.
   - If the document count differs from N, exit 65.
   - An empty set passes only as `--expect-count 0`: a legitimately empty ready
     queue, where the drain has nothing to drain anyway.
-  - An empty set with N > 0, or with no `--expect-count`, exits 65.
+  - An empty set without the flag exits 65.
 - **Target (dotfiles-claude):** `scripts/drain/check-batch-belongs.sh`;
   `home/skills/drain/SKILL.md` §0 step 6, to pass `--expect-count`.
-- **Verify:** bats cases where `[]` exits 65, and where a count mismatch exits
-  65.
+- **Verify:** bats cases:
+  - `[]` without the flag exits 65;
+  - `[]` with `--expect-count 0` exits 0;
+  - a count mismatch exits 65.
 - **Related:** batch 1 of the same drain skipped §0 step 6 entirely, and nothing
   noticed. That is the "instructed step, not a hook" gap tracked upstream as
   AB#684. Add this as evidence there; it isn't a separate entry.
@@ -452,8 +459,8 @@ step), never prose alone, per the retro rule (REQ-490).
   get_proposal get_checks get_reviews land_proposal …`. None updates a
   proposal. AB#69 went through 4 review rounds that changed its design, so its
   description had to be rewritten before landing, and the only route was raw
-  `gh pr edit`. That steps outside the port's identity and capability guard
-  (`_fgh_guard`), its no-write mode, and the drain skill's rule never to
+  `gh pr edit`. That steps outside the port's identity guard (`_fgh_guard`) and
+  capability resolution, its no-write mode, and the drain skill's rule never to
   substitute a raw code-host CLI.
 - **Evidence:**
   - PR #44's description was updated with `gh pr edit --body-file`.
@@ -461,7 +468,8 @@ step), never prose alone, per the retro rule (REQ-490).
     loops. One `gh run watch` exited 0 while its run was still in progress;
     `get_checks`, the prescribed route, caught it.
 - **Related finding, the squash commit message:** `land_proposal` runs
-  `gh pr merge --squash` without `--subject` or `--body`. The squash commit
+  `gh pr merge --squash` without `--subject` or `--body`. On this repo, where
+  `squash_merge_commit_message` is `COMMIT_MESSAGES`, the squash commit
   therefore carries the concatenated commit messages, not the PR description.
   On `main`, 0bac161 (#44) still contains the first commit's superseded line
   "restore as empty, re-enterable". So after a design change, the commit
@@ -532,9 +540,14 @@ step), never prose alone, per the retro rule (REQ-490).
   1. **The session still moves per item.** §2b has the session `EnterWorktree`
      per item, and the isolation guard is session-global. The part that would
      remove the need to switch is deferred as AB#713.
-  2. **No exclusive-resource locking.** Nothing covers resources two tracks'
-     bars would share. Here that is the project's fixed Playwright port, 8199,
-     so concurrent test runs collide.
+  2. **No exclusive-resource locking.** Only prose covers resources two tracks'
+     bars would share (`parallel.md` § Staggering verification). There is no
+     declared resource and no lock. Here that resource is the project's fixed
+     Playwright port, 8199, so concurrent test runs collide.
+
+  On gap 1, §2b also explicitly allows entering a new track's worktree while
+  another writer is live, which is exactly the hazard the guard's session-global
+  scope creates.
 - **Evidence:** batch 2 worked around both by hand.
   - Writers were dispatched with `isolation: worktree` and wrote their own
     markers, so the session never left the main checkout.
