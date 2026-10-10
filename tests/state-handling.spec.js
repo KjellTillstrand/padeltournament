@@ -1793,6 +1793,54 @@ test.describe('Schedule select after a restore or a load', () => {
     await expect(page.locator('#scheduleSelect')).toBeDisabled();
     // and still does once the loaded tournament is restored.
     await expectTheSelectAfterReloadAndInANewTab(page, context, '16p15r.js');
+
+    // When the Organizer then starts a New Tournament (declining to save first),
+    await page.click('#newTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(5);
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    // Then the new setup keeps the 16-player schedule the select shows,
+    // with its default names and one court per four players.
+    await expect(page.locator('#scheduleSelect')).toHaveValue('16p15r.js');
+    await expect(page.locator('#scheduleSelect')).toBeEnabled();
+    const inputs = page.locator('[id^="playerInput_"]');
+    await expect(inputs).toHaveCount(16);
+    expect(await inputs.evaluateAll((all) => all.map((input) => input.value)))
+      .toEqual(Array.from({ length: 16 }, (_, i) => `P${i + 1}`));
+    await expect(page.locator('[id^="courtNameInput_"]')).toHaveCount(4);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-FORMAT-SELECT, R-SCHEDULE-SELECT, R-STATE-PERSIST: switching a restored Mexicano setup back to Americano shows the kept schedule', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a 16-player Americano setup, not started, switched to Mexicano,
+    await page.selectOption('#scheduleSelect', '16p15r.js');
+    await page.fill('#tournamentName', 'Switch Back Cup');
+    await page.selectOption('#formatSelect', 'mexicano');
+    await page.reload();
+    await expect(page.locator('#formatSelect')).toHaveValue('mexicano');
+
+    // and restored in a fresh tab, whose hidden select starts at the default,
+    const fresh = await context.newPage();
+    const freshErrors = collectErrors(fresh);
+    await fresh.goto('/');
+    await expect(fresh.locator('#formatSelect')).toHaveValue('mexicano');
+    await expect(fresh.locator('#scheduleSelect')).toBeHidden();
+    await expect(fresh.locator('#scheduleSelect')).toHaveValue('12p11r.js');
+    // (a Mexicano player-count choice leaves the hidden select alone)
+    await fresh.selectOption('#playerCountSelect', '20');
+    await expect(fresh.locator('[id^="playerInput_"]')).toHaveCount(20);
+    await expect(fresh.locator('#scheduleSelect')).toHaveValue('12p11r.js');
+
+    // When the Organizer switches back to Americano,
+    await fresh.selectOption('#formatSelect', 'americano');
+
+    // Then the select shows the 16-player schedule the setup kept.
+    await expect(fresh.locator('#scheduleSelect')).toBeVisible();
+    await expect(fresh.locator('#scheduleSelect')).toHaveValue('16p15r.js');
+    await expect(fresh.locator('[id^="playerInput_"]')).toHaveCount(16);
+    await expect(fresh.locator('[id^="courtNameInput_"]')).toHaveCount(4);
+    expect(freshErrors).toEqual([]);
+    await fresh.close();
     expect(errors).toEqual([]);
   });
 
