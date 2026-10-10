@@ -208,6 +208,7 @@
     });
 
     // Save tournament state to localStorage.
+    // DEFERRED: AB#88 (a save before the initial restore overwrites stored state)
     function saveTournamentState() {
       const state = {
         schedule: currentSchedule,
