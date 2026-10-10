@@ -368,7 +368,8 @@
           mexicanoPlayerCount = currentSchedule.players.length;
           generatePlayerInputs(currentSchedule.players);
         }
-        // Tournaments saved before the points total was stored carry none: 24.
+        // Tournaments saved before the points total was stored carry none: it is
+        // inferred from their results (storedTotalPoints).
         totalPoints = selectedTournament.totalPoints;
         applyFormatUI();
         document.getElementById("tournamentName").value = selectedTournament.tournamentName;
@@ -543,8 +544,13 @@
     // app or is written back by it. A schedule whose structure is unusable is
     // rejected whole (a stored tournamentState then falls back to a fresh setup; a
     // saved tournament is skipped); fields that can be repaired (round index,
-    // names, scores) are reset to their defaults. The checks are never stricter than
-    // what the app itself writes, so the app's own data always survives a reload.
+    // names) are reset to their defaults. Scores are the exception: they are
+    // type-checked, not repaired. A stored pair of strings is kept byte-for-byte,
+    // even one that breaks the score rule (see parseScore), which then only shows
+    // its error and is not credited; if either side is not a string, the whole
+    // result is no result.
+    // The checks are never stricter than what the app itself writes, so the app's
+    // own data always survives a reload.
 
     function isPlainObject(value) {
       return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -586,10 +592,45 @@
     }
 
     // Only one of the offered point pools is kept, as the number the app writes;
-    // anything else (state saved before the total was stored, hostile values)
-    // means 24, the default every older tournament was played to.
+    // anything else (a hostile or malformed stored value) means 24, the default.
+    // A record with no stored total at all is legacy: see storedTotalPoints.
     function normalizeTotalPoints(total) {
       return Number.isInteger(total) && POINT_POOLS.includes(total) ? total : DEFAULT_TOTAL_POINTS;
+    }
+
+    // The points total of a stored tournament state or saved tournament. A stored
+    // total (even an invalid one) is normalized, never inferred over. A legacy
+    // record, saved before the total was stored (no totalPoints key at all), has
+    // it inferred from its results (inferLegacyTotal). Either way the results
+    // themselves are kept as stored (copyResult): the total only decides which
+    // of them the score rule credits.
+    function storedTotalPoints(record) {
+      if (Object.prototype.hasOwnProperty.call(record, "totalPoints")) return normalizeTotalPoints(record.totalPoints);
+      return inferLegacyTotal(record.schedule);
+    }
+
+    // A legacy record's total: among its complete stored pairs (both sides plain
+    // digits), the most common sum that is a pool; on a tie, the pool of the
+    // earliest such pair in round order; with none, 24.
+    function inferLegacyTotal(schedule) {
+      const counts = new Map(); // insertion order: first appearance in round order
+      const rounds = isPlainObject(schedule) && Array.isArray(schedule.rounds) ? schedule.rounds : [];
+      rounds.forEach(round => {
+        if (!isPlainObject(round) || !Array.isArray(round.matches)) return;
+        round.matches.forEach(match => {
+          const result = isPlainObject(match) ? match.result : null;
+          if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return;
+          if (!/^\d+$/.test(result.left) || !/^\d+$/.test(result.right)) return;
+          const sum = Number(result.left) + Number(result.right);
+          if (POINT_POOLS.includes(sum)) counts.set(sum, (counts.get(sum) || 0) + 1);
+        });
+      });
+      let total = DEFAULT_TOTAL_POINTS;
+      let best = 0;
+      counts.forEach((count, sum) => {
+        if (count > best) { total = sum; best = count; }
+      });
+      return total;
     }
 
     // Two teams of two, each entry an integer index into the player list.
@@ -601,8 +642,40 @@
       return valid ? teamIndices.map(team => team.slice()) : null;
     }
 
+    // The one score rule: a score is a whole number from 0 to the points total,
+    // written as plain digits (no sign, fraction, exponent or spaces). Returns
+    // it, or null for anything else, including no entry (""). Shared by score
+    // entry, its validation, the "round complete" check, the scoreboard and the
+    // error a stored result shows: it decides credit, display and gating.
+    // Restore never rewrites a result by it (see copyResult).
+    function parseScore(value, total) {
+      if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+      const score = Number(value);
+      return score <= total ? score : null;
+    }
+
+    // A complete, valid result: two scores (see parseScore) that sum to the total.
+    function isCompleteResult(result, total) {
+      if (!result) return false;
+      const left = parseScore(result.left, total);
+      const right = parseScore(result.right, total);
+      return left !== null && right !== null && left + right === total;
+    }
+
+    // The result score entry records for the entered scores: as entered when
+    // complete and valid, otherwise "no score yet" (both ""). So the app never
+    // writes a result that breaks the score rule; it only keeps stored ones.
+    function recordedResult(left, right, total) {
+      const result = { left: left, right: right };
+      return isCompleteResult(result, total) ? result : { left: "", right: "" };
+    }
+
     // Scores are the raw values of the score inputs: strings ("" when not entered).
-    // Anything else is repaired to "no result recorded".
+    // They are type-checked, not repaired: a pair of strings is kept byte-for-byte,
+    // even one that breaks the score rule (it may be a result played under another
+    // total). Such a pair shows its error, is not credited and counts as missing
+    // until the Organizer edits it. A result of another type means "no result
+    // recorded".
     function copyResult(result) {
       if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return null;
       return { left: result.left, right: result.right };
@@ -636,6 +709,7 @@
     // flow read, each of the right type and in range; null when it is unusable.
     // Byes (who rests) are never read from storage: they are rebuilt from the
     // checked matches (setByes), so they always name exactly the unseated players.
+    // Results are type-checked only and kept as stored (copyResult).
     function copySchedule(schedule, requireTeamIndices) {
       if (!isPlainObject(schedule)) return null;
       const playerList = schedule.players;
@@ -746,7 +820,7 @@
         mexicanoPlayerCount: started && format === "mexicano"
           ? schedule.players.length : normalizeMexicanoPlayerCount(state.mexicanoPlayerCount),
         mexicanoSeed: play.mexicanoSeed,
-        totalPoints: normalizeTotalPoints(state.totalPoints)
+        totalPoints: storedTotalPoints(state)
       };
     }
 
@@ -766,7 +840,9 @@
         courtNames: normalizeCourtNames(entry.courtNames),
         format: format,
         mexicanoSeed: play.mexicanoSeed,
-        totalPoints: normalizeTotalPoints(entry.totalPoints)
+        // Written back as is whenever the saved list is rewritten, so a legacy
+        // entry keeps its inferred total (and, like every entry, its results).
+        totalPoints: storedTotalPoints(entry)
       };
       if (typeof entry.savedAt === "string") copy.savedAt = entry.savedAt;
       return copy;
@@ -939,29 +1015,42 @@
       const errorSpan = document.createElement('span');
       errorSpan.className = 'error-message';
       overlayContainer.appendChild(errorSpan);
-      if (match.result) {
-        leftInput.value = match.result.left;
-        rightInput.value = match.result.right;
-      } else {
-        match.result = { left: '', right: '' };
-      }
+      // Only a valid score (see parseScore) is completed; an empty or invalid
+      // entry clears the other side, so no stale or negative complement remains.
       function updateOpposite(source, target) {
-        if (source.value.trim() === '') {
-          target.value = '';
-        } else {
-          const sourceVal = parseInt(source.value, 10);
-          if (!isNaN(sourceVal)) { target.value = total - sourceVal; }
-        }
+        const score = parseScore(source.value, total);
+        target.value = score === null ? '' : String(total - score);
       }
-      function validate() {
-        const leftVal = leftInput.value.trim() === '' ? null : parseInt(leftInput.value, 10);
-        const rightVal = rightInput.value.trim() === '' ? null : parseInt(rightInput.value, 10);
-        if (leftVal === null || rightVal === null) {
+      // Text a number input cannot parse (such as "1e") reads as "", but it is
+      // an invalid entry, not a missing one: validity.badInput tells them apart.
+      function isInvalidEntry(input) {
+        return input.validity.badInput || (input.value !== '' && parseScore(input.value, total) === null);
+      }
+      function showScoreError() {
+        const leftVal = parseScore(leftInput.value, total);
+        const rightVal = parseScore(rightInput.value, total);
+        if (isInvalidEntry(leftInput) || isInvalidEntry(rightInput)) {
+          errorSpan.textContent = " Each score must be a whole number from 0 to " + total;
+        } else if (leftVal === null || rightVal === null) {
           errorSpan.textContent = " Please fill in both scores";
         } else if (leftVal + rightVal !== total) {
           errorSpan.textContent = " Sum must equal " + total;
         } else { errorSpan.textContent = ""; }
-        match.result = { left: leftInput.value, right: rightInput.value };
+      }
+      if (match.result) {
+        leftInput.value = match.result.left;
+        rightInput.value = match.result.right;
+        // A stored result that breaks the score rule (kept as stored, see
+        // copyResult) shows why from the start; it is not credited.
+        const empty = match.result.left === '' && match.result.right === '';
+        if (!empty && !isCompleteResult(match.result, total)) showScoreError();
+      } else {
+        match.result = { left: '', right: '' };
+      }
+      function validate() {
+        showScoreError();
+        // An invalid entry stays visible (with its error) but is not recorded.
+        match.result = recordedResult(leftInput.value, rightInput.value, total);
         updateAllScoreboards();
         updateNextRoundControl();
         saveTournamentState();
@@ -1179,20 +1268,11 @@
         roundIndex < currentSchedule.rounds.length - 1;
     }
 
-    // A complete, valid score: two whole numbers (no sign, fraction or exponent)
-    // that sum to the tournament's points total.
-    function isCompleteResult(result) {
-      if (!result || typeof result.left !== "string" || typeof result.right !== "string") return false;
-      const left = result.left.trim();
-      const right = result.right.trim();
-      if (!/^\d+$/.test(left) || !/^\d+$/.test(right)) return false;
-      return Number(left) + Number(right) === totalPoints;
-    }
-
-    // The matches of the latest round that still lack a complete, valid score.
+    // The matches of the latest round that still lack a complete, valid score
+    // (see isCompleteResult).
     function matchesMissingAScore() {
       const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
-      return latest.matches.filter(match => !isCompleteResult(match.result));
+      return latest.matches.filter(match => !isCompleteResult(match.result, totalPoints));
     }
 
     // Enable "Generate next round" only when the latest round is complete, and
@@ -1333,8 +1413,11 @@
         const round = currentSchedule.rounds[i];
         round.matches.forEach(match => {
           if (match.result) {
-            const leftScore = match.result.left.trim() === '' ? 0 : parseInt(match.result.left, 10) || 0;
-            const rightScore = match.result.right.trim() === '' ? 0 : parseInt(match.result.right, 10) || 0;
+            // Only a complete, valid result (see isCompleteResult) is credited;
+            // anything else counts 0 for both teams.
+            const complete = isCompleteResult(match.result, totalPoints);
+            const leftScore = complete ? parseScore(match.result.left, totalPoints) : 0;
+            const rightScore = complete ? parseScore(match.result.right, totalPoints) : 0;
             match.teams[0].forEach(player => { scores[player] += leftScore; });
             match.teams[1].forEach(player => { scores[player] += rightScore; });
             playedMatches.push({ teams: match.teams, scores: [leftScore, rightScore] });

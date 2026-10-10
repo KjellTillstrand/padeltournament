@@ -146,3 +146,99 @@ test.describe('A resumed tournament keeps its points total', () => {
     await expectComplement(matches.first(), 20, 12);
   });
 });
+
+// AB#69: one score rule everywhere. A score is a whole number from 0 to the
+// points total; anything else completes nothing, shows an error on its match
+// and is never credited on the scoreboard.
+test.describe('One score rule for entry, validation and completion', () => {
+  // The points column of the scoreboard on screen, as numbers.
+  async function scoreboardPoints(page) {
+    const cells = await page.locator('.scoreboard-container tr td:nth-child(2)').allTextContents();
+    return cells.map(Number);
+  }
+
+  // Scenario Outline: One entry completes the match score.
+  const examples = [
+    { total: 24, entered: 15, complement: 9 },
+    { total: 24, entered: 0, complement: 24 },
+    { total: 32, entered: 20, complement: 12 },
+  ];
+  for (const { total, entered, complement } of examples) {
+    test(`R-SCORE-ENTRY: with a points total of ${total}, entering ${entered} makes the opposing score ${complement}`, async ({ page }) => {
+      await startWithPointsTotal(page, total);
+      const match = page.locator('.result-overlay-container').first();
+      await match.locator('.result-overlay-left input').fill(String(entered));
+      await expect(match.locator('.result-overlay-right input')).toHaveValue(String(complement));
+      await expect(match.locator('.error-message')).toHaveText('');
+    });
+  }
+
+  test('R-SCORE-ENTRY, R-POINT-POOLS: a score above the total completes nothing and shows an error', async ({ page }) => {
+    await startWithPointsTotal(page, 24);
+    const match = page.locator('.result-overlay-container').first();
+    const left = match.locator('.result-overlay-left input');
+    const right = match.locator('.result-overlay-right input');
+
+    // A valid score first, then one above the total on the same side...
+    await left.fill('15');
+    await expect(right).toHaveValue('9');
+    await left.fill('30');
+    // ...leaves no negative (or stale) complement, says why, and credits nobody.
+    await expect(right).toHaveValue('');
+    await expect(match.locator('.error-message')).toContainText('whole number from 0 to 24');
+    expect((await scoreboardPoints(page)).every((p) => p === 0)).toBe(true);
+
+    // The same from the other side.
+    await right.fill('25');
+    await expect(left).toHaveValue('');
+    await expect(match.locator('.error-message')).toContainText('whole number from 0 to 24');
+
+    // And correcting it completes the match again.
+    await right.fill('24');
+    await expect(left).toHaveValue('0');
+    await expect(match.locator('.error-message')).toHaveText('');
+  });
+
+  // Text a number input cannot parse reports an empty value; it is still an
+  // invalid entry, not a missing one. ("+5" is not used: Chromium drops the
+  // "+" keystroke, so it types as a valid 5.)
+  for (const typed of ['1e', '-']) {
+    test(`R-SCORE-ENTRY: typing the unparseable ${typed} shows the range error`, async ({ page }) => {
+      await startWithPointsTotal(page, 24);
+      const match = page.locator('.result-overlay-container').first();
+      await match.locator('.result-overlay-left input').pressSequentially(typed);
+
+      await expect(match.locator('.error-message')).toContainText('whole number from 0 to 24');
+      await expect(match.locator('.result-overlay-right input')).toHaveValue('');
+      expect((await scoreboardPoints(page)).every((p) => p === 0)).toBe(true);
+    });
+  }
+
+  test('R-SCORE-ENTRY: typing the unparseable 1e into the right-hand score shows the range error', async ({ page }) => {
+    await startWithPointsTotal(page, 24);
+    const match = page.locator('.result-overlay-container').first();
+    // A valid score first, so the left side holds a complement to clear.
+    await match.locator('.result-overlay-left input').fill('15');
+    await expect(match.locator('.result-overlay-right input')).toHaveValue('9');
+    await match.locator('.result-overlay-right input').fill('');
+    await match.locator('.result-overlay-right input').pressSequentially('1e');
+
+    await expect(match.locator('.error-message')).toContainText('whole number from 0 to 24');
+    await expect(match.locator('.result-overlay-left input')).toHaveValue('');
+    expect((await scoreboardPoints(page)).every((p) => p === 0)).toBe(true);
+  });
+
+  for (const entered of ['12.5', '1e1', '-3']) {
+    test(`R-SCORE-ENTRY, R-POINT-POOLS: the entry ${entered} shows an error and is not credited`, async ({ page }) => {
+      await startWithPointsTotal(page, 24);
+      const match = page.locator('.result-overlay-container').first();
+      await match.locator('.result-overlay-left input').fill(entered);
+
+      await expect(match.locator('.error-message')).toContainText('whole number from 0 to 24');
+      await expect(match.locator('.result-overlay-right input')).toHaveValue('');
+      const points = await scoreboardPoints(page);
+      expect(points.length).toBeGreaterThan(0);
+      expect(points.every((p) => p === 0)).toBe(true);
+    });
+  }
+});

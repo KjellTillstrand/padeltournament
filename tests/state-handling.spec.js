@@ -111,6 +111,19 @@ test.describe('Malformed or hostile persisted state', () => {
     }, entries);
   }
 
+  // Like plantStorage, but only before the first navigation of this tab: a
+  // reload then reads what the app itself stored, not the plant again.
+  async function plantStorageOnce(page, entries) {
+    await page.addInitScript((seed) => {
+      if (sessionStorage.getItem('planted')) return;
+      sessionStorage.setItem('planted', '1');
+      for (const [key, value] of Object.entries(seed)) {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      }
+    }, entries);
+  }
+
   // Uncaught exceptions AND console errors. The load handler's last-resort
   // catch logs a console error, while rejecting bad data only warns, so this
   // tells "validated" apart from "crashed and was rescued".
@@ -887,9 +900,13 @@ test.describe('Malformed or hostile persisted state', () => {
     await page.click('#startTournamentBtn');
     expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
     await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
-    // with an absurdly long score typed into a score box, then saved.
-    await page.locator('.result-overlay-left input').first().fill('1'.repeat(33));
-    await page.waitForTimeout(300);
+    // with a score recorded on one match and an absurdly long one typed into
+    // another's score box (shown with its error, but never recorded), then saved.
+    const matches = page.locator('.result-overlay-container');
+    await matches.first().locator('.result-overlay-left input').fill('15');
+    await matches.last().locator('.result-overlay-left input').fill('1'.repeat(33));
+    await expect(matches.last().locator('.error-message')).toContainText('whole number from 0 to 24');
+    expect((await storedJson(page, 'tournamentState')).schedule.rounds[0].matches[2].result).toEqual({ left: '', right: '' });
     await page.click('#saveTournamentBtn');
 
     // When the app is reloaded.
@@ -898,7 +915,9 @@ test.describe('Malformed or hostile persisted state', () => {
     // Then all of it is restored as written.
     await expect(page.locator('#tournamentTitle')).toHaveText(longName);
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-    await expect(page.locator('.result-overlay-left input').first()).toHaveValue('1'.repeat(33));
+    await expect(matches.first().locator('.result-overlay-left input')).toHaveValue('15');
+    await expect(matches.first().locator('.result-overlay-right input')).toHaveValue('9');
+    await expect(matches.last().locator('.result-overlay-left input')).toHaveValue('');
     expect(await page.locator('.court-1 .court-label').textContent()).toBe('Centre\u0085');
     await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
     expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
@@ -1045,6 +1064,407 @@ test.describe('Malformed or hostile persisted state', () => {
     await page.fill('#tournamentName', 'Setup Pool Cup');
     await page.click('#startTournamentBtn');
     await expectComplementOnFirstMatch(page, 13, 8);
+    expect(errors).toEqual([]);
+  });
+
+  // --- AB#69: stored results are kept as stored; the score rule decides credit ---
+  // A score is a whole number from 0 to the tournament's points total, and a
+  // complete result sums to it. Restore type-checks results but never repairs
+  // them: a stored pair of strings that breaks the rule (it may have been played
+  // under another total) is kept byte-for-byte, shows its error, is not
+  // credited, and can be scored again.
+  const scoreboardPointsSorted = async (page) =>
+    (await page.locator('.scoreboard-container tr td:nth-child(2)').allTextContents()).map(Number).sort((a, b) => b - a);
+  const plantResults = (schedule, results) => {
+    results.forEach((result, i) => { schedule.rounds[0].matches[i].result = result; });
+  };
+  async function expectScoresOnScreen(page, expected) {
+    const matches = page.locator('.result-overlay-container');
+    for (const [i, [left, right]] of expected.entries()) {
+      await expect(matches.nth(i).locator('.result-overlay-left input')).toHaveValue(left);
+      await expect(matches.nth(i).locator('.result-overlay-right input')).toHaveValue(right);
+    }
+  }
+  // Each match's error: '' for none, else a substring it must contain.
+  async function expectErrorsOnScreen(page, expected) {
+    const matches = page.locator('.result-overlay-container');
+    for (const [i, text] of expected.entries()) {
+      const error = matches.nth(i).locator('.error-message');
+      if (text === '') await expect(error).toHaveText('');
+      else await expect(error).toContainText(text);
+    }
+  }
+  const storedResults = async (page, key = 'tournamentState') =>
+    (await storedJson(page, key)).schedule.rounds[0].matches.map((m) => m.result);
+
+  const HOSTILE_RESULTS = [
+    ['a score above the total and a negative complement', 24, { left: '30', right: '-6' }, 'whole number from 0 to 24'],
+    ['fractional scores', 24, { left: '12.5', right: '11.5' }, 'whole number from 0 to 24'],
+    ['a score in exponent notation', 24, { left: '1e1', right: '14' }, 'whole number from 0 to 24'],
+    ['whole scores that do not sum to the total', 24, { left: '20', right: '20' }, 'Sum must equal 24'],
+    ['one score only', 24, { left: '15', right: '' }, 'Please fill in both scores'],
+    ['a draw at a total of 21', 21, { left: '12', right: '12' }, 'Sum must equal 21'],
+  ];
+  for (const [description, total, result, message] of HOSTILE_RESULTS) {
+    test(`R-STATE-PERSIST, R-SCORE-ENTRY: a stored result with ${description} is kept as stored, flagged and not credited`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a started tournament whose first match holds a stored result that
+      // breaks the score rule, and whose second match holds a sound one.
+      const state = await captureARealTournamentState(context);
+      const sound = { left: String(total - 9), right: '9' };
+      state.totalPoints = total;
+      plantResults(state.schedule, [result, sound]);
+      await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+
+      // When the app loads (and reloads, saving on the way out),
+      await page.goto('/');
+      for (let pass = 0; pass < 2; pass++) {
+        if (pass === 1) await page.reload();
+        // Then the result is shown as stored, with its error, and credited to nobody,
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+        await expect(page.locator('#globalTotalPoints')).toHaveValue(String(total));
+        await expectScoresOnScreen(page, [[result.left, result.right], [sound.left, '9']]);
+        // (the third match, stored blank, shows no error either)
+        await expectErrorsOnScreen(page, [message, '', '']);
+        expect(await scoreboardPointsSorted(page)).toEqual(
+          [total - 9, total - 9, 9, 9].concat(Array(8).fill(0)));
+      }
+      // and it is stored back byte-for-byte.
+      expect((await storedResults(page)).slice(0, 2)).toEqual([result, sound]);
+
+      // And the match can be scored again.
+      const first = page.locator('.result-overlay-container').first();
+      await first.locator('.result-overlay-left input').fill('3');
+      await expect(first.locator('.result-overlay-right input')).toHaveValue(String(total - 3));
+      await expect(first.locator('.error-message')).toHaveText('');
+      expect((await storedResults(page))[0]).toEqual({ left: '3', right: String(total - 3) });
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-STATE-PERSIST, R-SCORE-ENTRY: a saved tournament with an impossible result loads with it kept as stored, flagged and not credited', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a saved tournament played to 24 whose first match holds 30 / -6.
+    const { schedule } = await captureARealTournamentState(context);
+    schedule.rounds[0].matches[0].result = { left: '30', right: '-6' };
+    const entry = { tournamentName: 'Bad Score Cup', schedule, currentRoundIndex: 0, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z' };
+    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify([entry]) });
+
+    // When the Organizer loads it.
+    await page.goto('/');
+    await page.click('#loadTournamentBtn');
+
+    // Then that match shows the stored score with its error, nobody is credited,
+    await expect(page.locator('#tournamentTitle')).toHaveText('Bad Score Cup');
+    await expectScoresOnScreen(page, [['30', '-6']]);
+    await expectErrorsOnScreen(page, ['whole number from 0 to 24']);
+    expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    expect((await storedResults(page))[0]).toEqual({ left: '30', right: '-6' });
+    // and it can be scored again.
+    await expectComplementOnFirstMatch(page, 15, 9);
+    expect(errors).toEqual([]);
+  });
+
+  // Stored scores are kept byte-for-byte, so hostile strings come back too: they
+  // only ever reach an input's value (never markup), a number input cannot show
+  // them, and the score rule credits nothing for them.
+  test('R-STATE-PERSIST, R-SCORE-ENTRY: stored scores holding markup, prototype names or look-alike digits are inert, uncredited and kept', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const state = await captureARealTournamentState(context);
+    const hostile = [
+      { left: '<img src=x onerror=window.pwned=1>', right: '__proto__' },
+      { left: '２４', right: ' 0' }, // fullwidth digits; a leading space
+    ];
+    plantResults(state.schedule, hostile);
+    await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+
+    await page.goto('/');
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 1) await page.reload();
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      // Nothing ran,
+      expect(await page.evaluate(() => window.pwned)).toBeUndefined();
+      // the number inputs cannot show either result, so each match asks for both scores,
+      await expectScoresOnScreen(page, [['', ''], ['', '']]);
+      await expectErrorsOnScreen(page, ['Please fill in both scores', 'Please fill in both scores', '']);
+      // and nobody is credited.
+      expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    }
+    // Both results are stored back byte-for-byte.
+    expect((await storedResults(page)).slice(0, 2)).toEqual(hostile);
+    expect(errors).toEqual([]);
+  });
+
+  // --- AB#69 review: the total of a legacy tournament (no stored total) ---
+  // Before AB#62 the points total was not stored, so a tournament played to 16,
+  // 21 or 32 comes back without one. Its total is inferred from its complete
+  // stored results: the most common sum that is a pool (on a tie, the earliest
+  // such result's), else 24. A total that IS stored, however hostile, is never
+  // inferred over (AB#62). Results are kept as stored either way.
+  const LEGACY_32_RESULTS = [{ left: '20', right: '12' }, { left: '18', right: '14' }];
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a legacy state played to 32 (no stored total) restores at 32 with its results kept', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a running tournament stored before the total was, with two results summing to 32.
+    const state = await captureARealTournamentState(context);
+    delete state.totalPoints;
+    plantResults(state.schedule, LEGACY_32_RESULTS);
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then it resumes at 32 with both results kept and credited,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('32');
+    await expectScoresOnScreen(page, [['20', '12'], ['18', '14']]);
+    expect(await scoreboardPointsSorted(page)).toEqual([20, 20, 18, 18, 14, 14, 12, 12, 0, 0, 0, 0]);
+    // and a new score completes to 32, which is now stored with the tournament.
+    const third = page.locator('.result-overlay-container').nth(2);
+    await third.locator('.result-overlay-left input').fill('3');
+    await expect(third.locator('.result-overlay-right input')).toHaveValue('29');
+    await expect(third.locator('.error-message')).toHaveText('');
+    const stored = await storedJson(page, 'tournamentState');
+    expect(stored.totalPoints).toBe(32);
+    expect(stored.schedule.rounds[0].matches.slice(0, 2).map((m) => m.result)).toEqual(LEGACY_32_RESULTS);
+    expect(errors).toEqual([]);
+  });
+
+  // A legacy tournament may mix sums: played to 32, reloaded (the setting fell
+  // back to 24), then scored to 24. Every result is kept across reloads; those
+  // off the inferred total show their error and are not credited.
+  const MIXED_LEGACY = [
+    {
+      description: 'mostly played to 32',
+      results: [{ left: '20', right: '12' }, { left: '18', right: '14' }, { left: '15', right: '9' }],
+      total: 32,
+      messages: ['', '', 'Sum must equal 32'],
+      credited: [20, 20, 18, 18, 14, 14, 12, 12, 0, 0, 0, 0],
+    },
+    {
+      description: 'mostly played to 24',
+      results: [{ left: '20', right: '12' }, { left: '15', right: '9' }, { left: '14', right: '10' }],
+      total: 24,
+      messages: ['Sum must equal 24', '', ''],
+      credited: [15, 15, 14, 14, 10, 10, 9, 9, 0, 0, 0, 0],
+    },
+  ];
+  for (const { description, results, total, messages, credited } of MIXED_LEGACY) {
+    test(`R-STATE-PERSIST, R-POINT-POOLS: a legacy state with mixed sums, ${description}, restores at ${total} keeping every result across reloads`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a legacy state (no stored total) with results summing to different pools.
+      const state = await captureARealTournamentState(context);
+      delete state.totalPoints;
+      plantResults(state.schedule, results);
+      await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+
+      // When the app loads, and is reloaded twice (saving on the way out each time),
+      await page.goto('/');
+      for (let pass = 0; pass < 3; pass++) {
+        if (pass > 0) await page.reload();
+        // Then it plays to the most common pool and shows every result as stored,
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+        await expect(page.locator('#globalTotalPoints')).toHaveValue(String(total));
+        await expectScoresOnScreen(page, results.map((r) => [r.left, r.right]));
+        await expectErrorsOnScreen(page, messages);
+        // crediting only the results valid at that total.
+        expect(await scoreboardPointsSorted(page)).toEqual(credited);
+      }
+      // And what the app stored keeps every result byte-for-byte, with the total.
+      const stored = await storedJson(page, 'tournamentState');
+      expect(stored.totalPoints).toBe(total);
+      expect(stored.schedule.rounds[0].matches.map((m) => m.result)).toEqual(results);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  // The reviewer's case: re-saved by AB#62 with totalPoints 24, so not legacy,
+  // yet holding results played to 32. All of them are kept.
+  const STORED_24_WITH_32_RESULTS = [{ left: '20', right: '12' }, { left: '18', right: '14' }, { left: '15', right: '9' }];
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a state stored at 24 that holds results played to 32 keeps them all, crediting only the 24 one', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const state = await captureARealTournamentState(context);
+    state.totalPoints = 24;
+    plantResults(state.schedule, STORED_24_WITH_32_RESULTS);
+    await plantStorageOnce(page, { tournamentState: JSON.stringify(state) });
+
+    await page.goto('/');
+    for (let pass = 0; pass < 3; pass++) {
+      if (pass > 0) await page.reload();
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+      await expectScoresOnScreen(page, [['20', '12'], ['18', '14'], ['15', '9']]);
+      await expectErrorsOnScreen(page, ['Sum must equal 24', 'Sum must equal 24', '']);
+      expect(await scoreboardPointsSorted(page)).toEqual([15, 15, 9, 9].concat(Array(8).fill(0)));
+    }
+    expect(await storedResults(page)).toEqual(STORED_24_WITH_32_RESULTS);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: saved tournaments with off-total results keep them through load, save and delete', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given two saved tournaments: a legacy one mostly played to 32, and one
+    // stored at 24 that holds results played to 32.
+    const legacy = await captureARealTournamentState(context);
+    const other = JSON.parse(JSON.stringify(legacy));
+    plantResults(legacy.schedule, MIXED_LEGACY[0].results);
+    plantResults(other.schedule, STORED_24_WITH_32_RESULTS);
+    const saved = [
+      { tournamentName: 'Legacy Mixed Cup', schedule: legacy.schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' },
+      { tournamentName: 'Other Cup', schedule: other.schedule, currentRoundIndex: 0, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z' },
+    ];
+    await plantStorageOnce(page, { tournamentState: null, savedTournaments: JSON.stringify(saved) });
+    await page.goto('/');
+    const optionValue = async (name) =>
+      page.locator('#savedTournamentSelect option', { hasText: name }).getAttribute('value');
+    const savedEntry = async (name) =>
+      (await storedJson(page, 'savedTournaments')).find((t) => t.tournamentName === name);
+
+    // When the Organizer loads the legacy one, then it plays to 32 with every result,
+    await page.selectOption('#savedTournamentSelect', await optionValue('Legacy Mixed Cup'));
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Legacy Mixed Cup');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('32');
+    await expectScoresOnScreen(page, [['20', '12'], ['18', '14'], ['15', '9']]);
+    await expectErrorsOnScreen(page, MIXED_LEGACY[0].messages);
+    expect(await scoreboardPointsSorted(page)).toEqual(MIXED_LEGACY[0].credited);
+
+    // and saving it (which rewrites the whole list) keeps both entries intact.
+    await page.click('#saveTournamentBtn');
+    expect((await savedEntry('Legacy Mixed Cup')).totalPoints).toBe(32);
+    expect((await savedEntry('Legacy Mixed Cup')).schedule.rounds[0].matches.map((m) => m.result)).toEqual(MIXED_LEGACY[0].results);
+    expect((await savedEntry('Other Cup')).totalPoints).toBe(24);
+    expect((await savedEntry('Other Cup')).schedule.rounds[0].matches.map((m) => m.result)).toEqual(STORED_24_WITH_32_RESULTS);
+
+    // When it is deleted (the list is rewritten again), the other entry is still intact,
+    await page.click('#deleteTournamentBtn');
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    expect((await savedEntry('Other Cup')).schedule.rounds[0].matches.map((m) => m.result)).toEqual(STORED_24_WITH_32_RESULTS);
+
+    // and loads at 24 with all three results, crediting only the 24 one.
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Other Cup');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+    await expectScoresOnScreen(page, [['20', '12'], ['18', '14'], ['15', '9']]);
+    expect(await scoreboardPointsSorted(page)).toEqual([15, 15, 9, 9].concat(Array(8).fill(0)));
+    expect(errors).toEqual([]);
+  });
+
+  // Equally common pool sums: the pool of the earliest such result (round order) wins.
+  const TIES = [
+    ['16 first', [[{ left: '10', right: '6' }, { left: '20', right: '12' }], [{ left: '18', right: '14' }, { left: '9', right: '7' }]], '16'],
+    ['32 first', [[{ left: '20', right: '12' }, { left: '10', right: '6' }], [{ left: '9', right: '7' }, { left: '18', right: '14' }]], '32'],
+  ];
+  for (const [description, [round1, round2], total] of TIES) {
+    test(`R-STATE-PERSIST, R-POINT-POOLS: a legacy state tied between 16 and 32 (${description}) restores at the earliest pool`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      const state = await captureARealTournamentState(context);
+      delete state.totalPoints;
+      plantResults(state.schedule, round1);
+      round2.forEach((result, i) => { state.schedule.rounds[1].matches[i].result = result; });
+      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+      await page.goto('/');
+
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('#globalTotalPoints')).toHaveValue(total);
+      // Nothing is blanked; the result off the chosen pool shows its error.
+      await expectScoresOnScreen(page, round1.map((r) => [r.left, r.right]));
+      const matches = page.locator('.result-overlay-container');
+      await expect(matches.nth(0).locator('.error-message')).toHaveText('');
+      await expect(matches.nth(1).locator('.error-message')).not.toHaveText('');
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a legacy state with no result summing to a pool restores at 24 with nothing blanked', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const state = await captureARealTournamentState(context);
+    delete state.totalPoints;
+    const results = [{ left: '13', right: '12' }, { left: '20', right: '5' }, { left: '15', right: '' }];
+    plantResults(state.schedule, results);
+    await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+    await page.goto('/');
+
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+    await expectScoresOnScreen(page, [['13', '12'], ['20', '5'], ['15', '']]);
+    // None of them is valid at 24: each says why, and nobody is credited.
+    await expectErrorsOnScreen(page, ['Sum must equal 24', 'Sum must equal 24', 'Please fill in both scores']);
+    expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    expect(errors).toEqual([]);
+  });
+
+  for (const [description, totalPoints] of [['a numeric string', '32'], ['a value outside the pools', 25], ['null', null]]) {
+    test(`R-STATE-PERSIST, R-POINT-POOLS: a stored total that is ${description} is not inferred over, even with results summing to 32`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a stored, hostile total and results that all sum to 32,
+      const state = await captureARealTournamentState(context);
+      state.totalPoints = totalPoints;
+      plantResults(state.schedule, LEGACY_32_RESULTS);
+      await plantStorage(page, { tournamentState: JSON.stringify(state) });
+
+      await page.goto('/');
+
+      // Then the total is 24 (AB#62); the results are kept, but do not fit it.
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+      await expectScoresOnScreen(page, [['20', '12'], ['18', '14']]);
+      await expectErrorsOnScreen(page, ['Sum must equal 24', 'Sum must equal 24']);
+      expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-STATE-PERSIST: a stale legacyResults key from an earlier build is ignored and not written back', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given a stored state and a saved tournament that both carry legacyResults.
+    const state = await captureARealTournamentState(context);
+    state.legacyResults = true;
+    plantResults(state.schedule, [{ left: '15', right: '9' }]);
+    const entry = { tournamentName: 'Stale Cup', schedule: state.schedule, currentRoundIndex: 0, totalPoints: 24, legacyResults: true, savedAt: '2026-01-01T00:00:00.000Z' };
+    await plantStorageOnce(page, { tournamentState: JSON.stringify(state), savedTournaments: JSON.stringify([entry]) });
+
+    // When the app loads, reloads (saving the state) and saves the tournament (rewriting the list),
+    await page.goto('/');
+    await expectScoresOnScreen(page, [['15', '9']]);
+    await page.reload();
+    await expectScoresOnScreen(page, [['15', '9']]);
+    await page.click('#saveTournamentBtn');
+
+    // Then neither the state nor any saved tournament carries the key any more.
+    expect(await storedJson(page, 'tournamentState')).not.toHaveProperty('legacyResults');
+    const savedList = await storedJson(page, 'savedTournaments');
+    expect(savedList.length).toBe(2);
+    for (const saved of savedList) expect(saved).not.toHaveProperty('legacyResults');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST, R-POINT-POOLS: a legacy saved tournament played to 32 (no stored total) loads at 32 with its results kept', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a saved tournament from before the total was stored, played to 32.
+    const { schedule } = await captureARealTournamentState(context);
+    plantResults(schedule, LEGACY_32_RESULTS);
+    const entry = { tournamentName: 'Legacy 32 Cup', schedule, currentRoundIndex: 0, savedAt: '2026-01-01T00:00:00.000Z' };
+    await plantStorage(page, { tournamentState: null, savedTournaments: JSON.stringify([entry]) });
+
+    // When the Organizer loads it.
+    await page.goto('/');
+    await page.click('#loadTournamentBtn');
+
+    // Then it plays to 32 with both results kept and credited, and the running
+    // tournament now stores its total.
+    await expect(page.locator('#tournamentTitle')).toHaveText('Legacy 32 Cup');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('32');
+    await expectScoresOnScreen(page, [['20', '12'], ['18', '14']]);
+    expect(await scoreboardPointsSorted(page)).toEqual([20, 20, 18, 18, 14, 14, 12, 12, 0, 0, 0, 0]);
+    const stored = await storedJson(page, 'tournamentState');
+    expect(stored.totalPoints).toBe(32);
+    expect(stored.schedule.rounds[0].matches.slice(0, 2).map((m) => m.result)).toEqual(LEGACY_32_RESULTS);
     expect(errors).toEqual([]);
   });
 });
