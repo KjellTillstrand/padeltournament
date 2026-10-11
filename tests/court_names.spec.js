@@ -1,5 +1,6 @@
 // tests/court_names.spec.js
 const { test, expect } = require('@playwright/test');
+const { STATE_KEY } = require('./storage-keys');
 
 // --- Screenplay kernel (Actor / Task / Question) ---
 class Actor {
@@ -39,12 +40,12 @@ const SaveTheTournament = async (actor) => {
 };
 
 // Drop the live (auto-saved) tournament state but keep the saved tournaments,
-// then reopen the app. The app re-saves tournamentState from memory on
+// then reopen the app. The app re-saves its live state from memory on
 // beforeunload, so the key is removed from a same-origin page that is not the
 // app (after the app has already unloaded), not from the app page itself.
 const DiscardTheLiveTournamentState = async (actor) => {
   await actor.page.goto('/favicon.ico');
-  await actor.page.evaluate(() => localStorage.removeItem('tournamentState'));
+  await actor.page.evaluate((key) => localStorage.removeItem(key), STATE_KEY);
   await actor.page.goto('/');
 };
 
@@ -132,7 +133,7 @@ test.describe('R-COURT-NAMES: Custom court names', () => {
     await organizer.attemptsTo(SaveTheTournament);
     await organizer.attemptsTo(DiscardTheLiveTournamentState);
     // (The custom name is really gone: only the saved tournament can restore it.)
-    expect(await page.evaluate(() => localStorage.getItem('tournamentState'))).toBeNull();
+    expect(await page.evaluate((key) => localStorage.getItem(key), STATE_KEY)).toBeNull();
     await expect(page.locator('#courtNameInput_1')).toHaveValue('');
     await expect(page.locator('.round')).toHaveCount(0);
     await organizer.attemptsTo(LoadTheSavedTournament('Round Trip Tournament'));

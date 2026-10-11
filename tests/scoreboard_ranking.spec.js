@@ -1,5 +1,6 @@
 // tests/scoreboard_ranking.spec.js
 const { test, expect } = require('@playwright/test');
+const { STATE_KEY } = require('./storage-keys');
 
 // --- Screenplay kernel (Actor / Task / Question) ---
 class Actor {
@@ -27,14 +28,14 @@ const NameAPlayer = (index, name) => async (actor) => {
 };
 
 // Simulates tampered storage: the 20-character name limit only guards the
-// start button, so a restored tournamentState can carry any player name.
+// start button, so a restored tournament state can carry any player name.
 // The seed is derived from the app's own live state (so it tracks the state
 // shape) and installed by an init script, which runs before the app on the
 // next load. Writing localStorage from the live page would not stick: the
 // app re-saves its in-memory state on beforeunload.
 const TamperWithAStoredPlayerName = (hostileName) => async (actor) => {
   const state = JSON.parse(
-    await actor.page.evaluate(() => localStorage.getItem('tournamentState'))
+    await actor.page.evaluate((key) => localStorage.getItem(key), STATE_KEY)
   );
   const originalName = state.schedule.players[0];
   const rename = (name) => (name === originalName ? hostileName : name);
@@ -44,9 +45,9 @@ const TamperWithAStoredPlayerName = (hostileName) => async (actor) => {
       match.teams = match.teams.map((team) => team.map(rename));
     });
   });
-  await actor.page.addInitScript((seed) => {
-    localStorage.setItem('tournamentState', seed);
-  }, JSON.stringify(state));
+  await actor.page.addInitScript(({ key, seed }) => {
+    localStorage.setItem(key, seed);
+  }, { key: STATE_KEY, seed: JSON.stringify(state) });
   await actor.page.reload();
 };
 
@@ -112,9 +113,9 @@ const ResumeACompletedTournament = (rounds) => async (actor) => {
     courtNames: [],
     format: 'americano',
   };
-  await actor.page.addInitScript((seed) => {
-    localStorage.setItem('tournamentState', seed);
-  }, JSON.stringify(state));
+  await actor.page.addInitScript(({ key, seed }) => {
+    localStorage.setItem(key, seed);
+  }, { key: STATE_KEY, seed: JSON.stringify(state) });
   await actor.page.goto('/');
   await expect(actor.page.locator('.scoreboard-container table tr')).toHaveCount(1 + PLAYERS.length);
 };

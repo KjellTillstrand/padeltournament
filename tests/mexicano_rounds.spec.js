@@ -5,6 +5,7 @@
 // generating it locks the current round's scores, and earlier rounds stay
 // viewable. Americano is unaffected.
 const { test, expect } = require('@playwright/test');
+const { STATE_KEY } = require('./storage-keys');
 
 // --- Screenplay kernel (Actor / Task / Question) ---
 class Actor {
@@ -73,7 +74,7 @@ const TheScoresOnScreen = async (actor) =>
       m.querySelector('.result-overlay-right input').value,
     ]));
 const TheStoredState = async (actor) =>
-  actor.page.evaluate(() => JSON.parse(localStorage.getItem('tournamentState')));
+  actor.page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
 
 // Uncaught exceptions and console errors: none may occur on any Mexicano path.
 function collectErrors(page) {
@@ -399,8 +400,8 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     // too slow, so the state a real run persists is rewritten: round 1's draw
     // repeated and renumbered, which is a sound Mexicano schedule to the app.)
     await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Cap Cup'));
-    const planted = await page.evaluate((cap) => {
-      const state = JSON.parse(localStorage.getItem('tournamentState'));
+    const planted = await page.evaluate(({ key, cap }) => {
+      const state = JSON.parse(localStorage.getItem(key));
       const first = state.schedule.rounds[0];
       state.schedule.rounds = Array.from({ length: cap }, (_, i) => {
         const round = JSON.parse(JSON.stringify(first));
@@ -410,15 +411,15 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
       });
       state.currentRoundIndex = cap - 1;
       return JSON.stringify(state);
-    }, CAP);
+    }, { key: STATE_KEY, cap: CAP });
     // The app saves its own state on unload, so the plant goes in before the app
     // loads (once: later reloads must keep what the app itself persisted).
-    await page.addInitScript((json) => {
+    await page.addInitScript(({ key, json }) => {
       if (!sessionStorage.getItem('planted')) {
         sessionStorage.setItem('planted', '1');
-        localStorage.setItem('tournamentState', json);
+        localStorage.setItem(key, json);
       }
-    }, planted);
+    }, { key: STATE_KEY, json: planted });
     await page.reload();
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round ' + CAP);
     const generate = page.locator('#generateNextRoundBtn');
@@ -492,18 +493,18 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
       // summing to 24 instead (the input auto-completes to the pool, so both are
       // planted in the stored state before the page loads),
       const valid = { left: String(pool / 2 + 2), right: String(pool / 2 - 2) };
-      const planted = await page.evaluate((first) => {
-        const state = JSON.parse(localStorage.getItem('tournamentState'));
+      const planted = await page.evaluate(({ key, first }) => {
+        const state = JSON.parse(localStorage.getItem(key));
         state.schedule.rounds[0].matches[0].result = first;
         state.schedule.rounds[0].matches[1].result = { left: '12', right: '12' };
         return JSON.stringify(state);
-      }, valid);
-      await page.addInitScript((json) => {
+      }, { key: STATE_KEY, first: valid });
+      await page.addInitScript(({ key, json }) => {
         if (!sessionStorage.getItem('planted')) {
           sessionStorage.setItem('planted', '1');
-          localStorage.setItem('tournamentState', json);
+          localStorage.setItem(key, json);
         }
-      }, planted);
+      }, { key: STATE_KEY, json: planted });
       await page.reload();
       // Then the plant loaded: both scores are kept as stored (AB#69: restore
       // never blanks a result). The valid one is credited; 12/12 shows its

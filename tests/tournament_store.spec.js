@@ -1,5 +1,6 @@
 // tests/tournament_store.spec.js
 const { test, expect } = require('@playwright/test');
+const { SAVED_TOURNAMENTS_KEY } = require('./storage-keys');
 
 // --- Screenplay kernel (Actor / Task / Question) ---
 class Actor {
@@ -71,8 +72,8 @@ const LoadTheTournamentNamed = (tournamentName) => async (actor) => {
 
 // --- Questions ---
 const SavedTournamentNames = async (actor) => {
-  const saved = await actor.page.evaluate(() =>
-    JSON.parse(localStorage.getItem('savedTournaments') || '[]')
+  const saved = await actor.page.evaluate((key) =>
+    JSON.parse(localStorage.getItem(key) || '[]'), SAVED_TOURNAMENTS_KEY
   );
   return saved.map((t) => t.tournamentName);
 };
@@ -140,11 +141,11 @@ test.describe('R-TOURNAMENT-STORE: Saving, loading and deleting tournaments', ()
     await organizer.attemptsTo(StartTheTournament('Spring Cup'));
     await organizer.attemptsTo(AdvanceToTheNextRound);
     await organizer.attemptsTo(SaveTheTournament);
-    await page.evaluate(() => {
-      const saved = JSON.parse(localStorage.getItem('savedTournaments') || '[]');
+    await page.evaluate((key) => {
+      const saved = JSON.parse(localStorage.getItem(key) || '[]');
       delete saved[0].currentRoundIndex;
-      localStorage.setItem('savedTournaments', JSON.stringify(saved));
-    });
+      localStorage.setItem(key, JSON.stringify(saved));
+    }, SAVED_TOURNAMENTS_KEY);
     await organizer.attemptsTo(StartANewTournament);
 
     // When the Organizer loads "Spring Cup".

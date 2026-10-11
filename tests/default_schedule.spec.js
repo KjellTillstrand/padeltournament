@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { STATE_KEY } = require('./storage-keys');
 
 test.describe('Default Schedule Loading', () => {
   test.beforeEach(async ({ page }) => {
@@ -70,7 +71,8 @@ test.describe('Default Schedule Loading', () => {
     await expect(page.locator('.result-overlay-left input').first()).toHaveValue('10');
     await expect(page.locator('.result-overlay-right input').first()).toHaveValue('14');
     const players = await page.evaluate(
-      () => JSON.parse(localStorage.getItem('tournamentState')).schedule.players.length
+      (key) => JSON.parse(localStorage.getItem(key)).schedule.players.length,
+      STATE_KEY
     );
     expect(players).toBe(8);
 
