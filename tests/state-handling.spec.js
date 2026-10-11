@@ -1,7 +1,7 @@
 // general-functionality.spec.js
 const { test, expect } = require('@playwright/test');
 const {
-  STATE_KEY, SAVED_TOURNAMENTS_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
+  STATE_KEY, SAVED_TOURNAMENTS_KEY, STATE_BACKUP_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
   STATE_MIGRATED_KEY, SAVED_TOURNAMENTS_MIGRATED_KEY,
 } = require('./storage-keys');
 
@@ -1075,8 +1075,8 @@ test.describe('Malformed or hostile persisted state', () => {
   // A score is a whole number from 0 to the tournament's points total, and a
   // complete result sums to it. Restore type-checks results but never repairs
   // them: a stored pair of strings that breaks the rule (it may have been played
-  // under another total) is kept byte-for-byte, shows its error, is not
-  // credited, and can be scored again.
+  // under another total) is kept byte-for-byte (unless overlong: see AB#41
+  // below), shows its error, is not credited, and can be scored again.
   const scoreboardPointsSorted = async (page) =>
     (await page.locator('.scoreboard-container tr td:nth-child(2)').allTextContents()).map(Number).sort((a, b) => b - a);
   const plantResults = (schedule, results) => {
@@ -1509,11 +1509,11 @@ test.describe('Malformed or hostile persisted state', () => {
   test('R-STATE-PERSIST: the specs use the same localStorage keys as the app', async ({ page }) => {
     await page.goto('/');
     const appKeys = await page.evaluate(() => ({
-      STATE_KEY, SAVED_TOURNAMENTS_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
+      STATE_KEY, SAVED_TOURNAMENTS_KEY, STATE_BACKUP_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
       STATE_MIGRATED_KEY, SAVED_TOURNAMENTS_MIGRATED_KEY,
     }));
     expect(appKeys).toEqual({
-      STATE_KEY, SAVED_TOURNAMENTS_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
+      STATE_KEY, SAVED_TOURNAMENTS_KEY, STATE_BACKUP_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
       STATE_MIGRATED_KEY, SAVED_TOURNAMENTS_MIGRATED_KEY,
     });
   });
@@ -2033,6 +2033,221 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('console.error: Could not migrate a legacy localStorage value');
     expect(errors[0]).toContain(LEGACY_STATE_KEY);
+  });
+
+  // --- AB#41: reading stored state is bounded and recoverable ---
+  // Every stored string the copy layer keeps without a tighter limit of its own
+  // (tournament names, scores, savedAt) is cut to 1000 characters: repaired,
+  // not dropped. 10,000 characters whose first 1000 are recognizable.
+  const MAX_STORED_STRING_LENGTH = 1000;
+  const OVERLONG = '0123456789'.repeat(1000);
+  const CUT = OVERLONG.slice(0, MAX_STORED_STRING_LENGTH);
+
+  test('R-STATE-PERSIST: a tournament in progress with a 10,000-character name resumes at round 3, the name cut to 1000', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a tournament in progress at round 3 whose stored name is 10,000 characters.
+    const state = await captureALegacyTournamentInProgress(context);
+    state.tournamentName = OVERLONG;
+    await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state) });
+
+    // When the returning Organizer reopens the app (and once more).
+    await page.goto('/');
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 1) await page.reload();
+      // Then the tournament resumes at round 3 with its scores and names,
+      await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+      await expect(page.locator('.result-overlay-left input').first()).toHaveValue('15');
+      await expect(page.locator('.result-overlay-right input').first()).toHaveValue('9');
+      await expect(page.locator('#courtNameInput_1')).toHaveValue('Centre');
+      await expect(page.locator('.scoreboard-container')).toContainText('Ada');
+      // its name cut to exactly the first 1000 characters, on screen and stored.
+      expect(await page.locator('#tournamentTitle').textContent()).toBe(CUT);
+      await expect(page.locator('#tournamentName')).toHaveValue(CUT);
+      expect((await storedJson(page, STATE_KEY)).tournamentName).toBe(CUT);
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST: 10,000-character stored scores are cut to 1000, the other scores intact', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a tournament in progress at round 3 whose second match there holds
+    // a stored result of two 10,000-character strings.
+    const state = await captureALegacyTournamentInProgress(context);
+    state.schedule.rounds[2].matches[1].result = { left: OVERLONG, right: 'R'.repeat(10000) };
+    await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state) });
+
+    // When the app loads (and reloads).
+    await page.goto('/');
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 1) await page.reload();
+      // Then the tournament resumes at round 3 with its recorded scores intact,
+      await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+      await expectScoresOnScreen(page, [['15', '9']]);
+      const results = (await storedJson(page, STATE_KEY)).schedule.rounds.map((r) => r.matches.map((m) => m.result));
+      expect(results[0]).toEqual(Array(3).fill({ left: '14', right: '10' }));
+      expect(results[2][0]).toEqual({ left: '15', right: '9' });
+      // and the overlong result is kept, each side cut to exactly 1000 characters.
+      expect(results[2][1]).toEqual({ left: CUT, right: 'R'.repeat(MAX_STORED_STRING_LENGTH) });
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST: a saved tournament with a 10,000-character name and timestamp is listed and loads, both cut to 1000', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given a saved tournament whose name and savedAt are 10,000 characters,
+    // next to a sound one.
+    const { schedule } = await captureALegacyTournamentInProgress(context);
+    const fields = { schedule, currentRoundIndex: 2, courtNames: ['Centre'], format: 'americano', mexicanoSeed: null, totalPoints: 24 };
+    const saved = [
+      { tournamentName: OVERLONG, ...fields, savedAt: 'S'.repeat(10000) },
+      { tournamentName: 'Other Cup', ...fields, savedAt: '2026-01-01T00:00:00.000Z' },
+    ];
+    await plantStorage(page, { [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: JSON.stringify(saved) });
+
+    // When the app loads, it is listed under its cut name,
+    await page.goto('/');
+    const options = page.locator('#savedTournamentSelect option');
+    await expect(options).toHaveCount(2);
+    expect(await options.first().textContent()).toBe(`${CUT} (Saved: unknown)`);
+
+    // and the Organizer loads it at round 3 with its scores, under that name.
+    await page.selectOption('#savedTournamentSelect', '0');
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+    expect(await page.locator('#tournamentTitle').textContent()).toBe(CUT);
+    await expectScoresOnScreen(page, [['15', '9']]);
+
+    // When the other save is deleted, the list is rewritten holding the cut
+    // name and timestamp, exactly 1000 characters each.
+    await page.selectOption('#savedTournamentSelect', '1');
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Other Cup');
+    await page.click('#deleteTournamentBtn');
+    await expect(options).toHaveCount(1);
+    const stored = await storedJson(page, SAVED_TOURNAMENTS_KEY);
+    expect(stored.map((t) => [t.tournamentName, t.savedAt])).toEqual([[CUT, 'S'.repeat(MAX_STORED_STRING_LENGTH)]]);
+    expect(errors).toEqual([]);
+  });
+
+  // The stored state the app drops because it is unusable, or fails to restore,
+  // is first copied, raw, to STATE_BACKUP_KEY (one generation). Planted as
+  // indented JSON, which the app itself never writes, so a raw copy is told
+  // apart from a re-serialized one.
+  const PREVIOUS_BACKUP = 'an older backup';
+
+  test('R-STATE-PERSIST: an unusable stored state falls back to a fresh setup, its raw value kept as the one backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given an unusable stored state, and a backup from earlier.
+    const raw = '{\n  "schedule": "P1",\n  "tournamentStarted": true\n}';
+    await plantStorageOnce(page, { [STATE_KEY]: raw, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented,
+    await expectAFreshSetup(page);
+    // the unusable value is dropped,
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    // and the backup holds it byte-for-byte, in place of the older one.
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(raw);
+    await expectATournamentCanStart(page, 'Recovered Cup');
+    expect(errors).toEqual([]);
+  });
+
+  // A fault the validation cannot catch: showing this name throws, as a bug in
+  // restoring would. Only the restore ever shows it, so the fresh setup works.
+  async function failToShowName(page, name) {
+    await page.addInitScript((poison) => {
+      const textContent = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+      Object.defineProperty(Node.prototype, 'textContent', {
+        ...textContent,
+        set(value) {
+          if (value === poison) throw new Error('could not show the name');
+          textContent.set.call(this, value);
+        },
+      });
+    }, name);
+  }
+
+  test('R-STATE-PERSIST: a stored tournament whose restore throws falls back to a fresh setup, its raw value kept as the backup', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a sound tournament in progress whose restore throws.
+    const state = await captureALegacyTournamentInProgress(context);
+    state.tournamentName = 'Crash Cup';
+    const raw = JSON.stringify(state, null, 2);
+    await failToShowName(page, 'Crash Cup');
+    await plantStorageOnce(page, { [STATE_KEY]: raw, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented,
+    await expectAFreshSetup(page);
+    expect((await storedJson(page, STATE_KEY)).tournamentStarted).toBe(false);
+    // the tournament is not lost: the backup holds its stored value byte-for-byte,
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(raw);
+    // and the rescue is logged as the one error.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not restore the saved tournament');
+  });
+
+  for (const [description, crash] of [['is unusable', false], ['cannot be restored', true]]) {
+    test(`R-STATE-PERSIST: when a stored state that ${description} cannot be backed up, the fresh setup still follows`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      const warnings = [];
+      page.on('console', (message) => { if (message.type() === 'warning') warnings.push(message.text()); });
+      // Given a stored state to fall back from, and storage that refuses the backup.
+      let raw = '{"schedule": ';
+      if (crash) {
+        const state = await captureALegacyTournamentInProgress(context);
+        state.tournamentName = 'Crash Cup';
+        raw = JSON.stringify(state);
+        await failToShowName(page, 'Crash Cup');
+      }
+      await plantStorageOnce(page, { [STATE_KEY]: raw });
+      await page.addInitScript((backupKey) => {
+        const setItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (key, value) {
+          if (key === backupKey) throw new Error('setItem refused');
+          return setItem.call(this, key, value);
+        };
+      }, STATE_BACKUP_KEY);
+
+      // When the app loads.
+      await page.goto('/');
+
+      // Then the tournament setup is presented and works,
+      await expectAFreshSetup(page);
+      await expectATournamentCanStart(page, 'Recovered Cup');
+      // with no backup, the failed write logged as a warning,
+      expect(await storedRaw(page, STATE_BACKUP_KEY)).toBeNull();
+      expect(warnings.some((w) => w.includes('Could not back up the stored tournament state'))).toBe(true);
+      // and nothing logged as an error but a restore that threw.
+      expect(errors.map((e) => e.includes('Could not restore the saved tournament'))).toEqual(crash ? [true] : []);
+    });
+  }
+
+  test('R-STATE-PERSIST: a fresh visit, New Tournament and choosing another schedule back nothing up', async ({ page }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given no tournament state exists in the browser.
+    await plantStorageOnce(page, { [STATE_KEY]: null, [STATE_BACKUP_KEY]: null });
+
+    // When the Organizer opens the app, the tournament setup is presented and nothing is backed up.
+    await page.goto('/');
+    await expectAFreshSetup(page);
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBeNull();
+
+    // Nor when the Organizer resets on purpose: New Tournament on a running one,
+    await expectATournamentCanStart(page, 'Reset Cup');
+    await page.click('#newTournamentBtn');
+    await expectAFreshSetup(page);
+    // or choosing another schedule.
+    await page.selectOption('#scheduleSelect', '16p15r.js');
+    await expect(page.locator('[id^="playerInput_"]')).toHaveCount(16);
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBeNull();
+    expect(errors).toEqual([]);
   });
 });
 
