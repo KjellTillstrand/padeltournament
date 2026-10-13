@@ -905,12 +905,21 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
     await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
     // with a score recorded on one match and an absurdly long one typed into
-    // another's score box (shown with its error, but never recorded), then saved.
+    // another's score box (shown with its error, but never recorded),
     const matches = page.locator('.result-overlay-container');
     await matches.first().locator('.result-overlay-left input').fill('15');
     await matches.last().locator('.result-overlay-left input').fill('1'.repeat(33));
     await expect(matches.last().locator('.error-message')).toContainText('whole number from 0 to 24');
     expect((await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[2].result).toEqual({ left: '', right: '' });
+    // and 15 zero-padded to 1001 characters typed into the third: a stored
+    // string that long would be cut on reading, so it is no score either (shown
+    // with its error, never recorded, never credited), then saved.
+    const padded = '0'.repeat(999) + '15';
+    await matches.nth(1).locator('.result-overlay-left input').fill(padded);
+    await expect(matches.nth(1).locator('.error-message')).toContainText('whole number from 0 to 24');
+    await expect(matches.nth(1).locator('.result-overlay-right input')).toHaveValue('');
+    expect((await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[1].result).toEqual({ left: '', right: '' });
+    expect(await scoreboardPointsSorted(page)).toEqual([15, 15, 9, 9].concat(Array(8).fill(0)));
     await page.click('#saveTournamentBtn');
 
     // When the app is reloaded.
@@ -922,6 +931,11 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(matches.first().locator('.result-overlay-left input')).toHaveValue('15');
     await expect(matches.first().locator('.result-overlay-right input')).toHaveValue('9');
     await expect(matches.last().locator('.result-overlay-left input')).toHaveValue('');
+    await expect(matches.nth(1).locator('.result-overlay-left input')).toHaveValue('');
+    const stored = await storedJson(page, STATE_KEY);
+    expect(stored.schedule.rounds[0].matches.map((m) => m.result)).toEqual(
+      [{ left: '15', right: '9' }, { left: '', right: '' }, { left: '', right: '' }]);
+    expect(await scoreboardPointsSorted(page)).toEqual([15, 15, 9, 9].concat(Array(8).fill(0)));
     expect(await page.locator('.court-1 .court-label').textContent()).toBe('Centre\u0085');
     await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
     expect(await scoreboardCells(page)).toEqual(expect.arrayContaining(['Ada\u0085', '__proto__']));
@@ -1895,6 +1909,37 @@ test.describe('Malformed or hostile persisted state', () => {
     });
   }
 
+  // AB#41: every stored string the copy layer keeps without a tighter limit of
+  // its own (tournament names, scores, savedAt) is cut to 1000 characters:
+  // repaired, not dropped. 10,000 characters whose first 1000 are recognizable.
+  const MAX_STORED_STRING_LENGTH = 1000;
+  const OVERLONG = '0123456789'.repeat(1000);
+  const CUT = OVERLONG.slice(0, MAX_STORED_STRING_LENGTH);
+
+  test('R-STATE-PERSIST: a legacy state with a 10,000-character name is migrated as repaired, the name cut to 1000, and the legacy value is kept', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a legacy tournament state whose name is 10,000 characters.
+    const state = await captureALegacyTournamentInProgress(context);
+    state.tournamentName = OVERLONG;
+    const rawState = JSON.stringify(state);
+    await plantStorageOnce(page, { [STATE_KEY]: null, [STATE_MIGRATED_KEY]: null, [LEGACY_STATE_KEY]: rawState });
+
+    // When the app loads (and again after a reload).
+    await page.goto('/');
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 1) await page.reload();
+      // Then the tournament resumes from the repaired copy, its name cut,
+      await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+      expect(await page.locator('#tournamentTitle').textContent()).toBe(CUT);
+      expect((await storedJson(page, STATE_KEY)).tournamentName).toBe(CUT);
+      // the migration is recorded by its marker,
+      expect(await storedRaw(page, STATE_MIGRATED_KEY)).not.toBeNull();
+      // and the legacy value is kept, byte for byte.
+      expect(await storedRaw(page, LEGACY_STATE_KEY)).toBe(rawState);
+    }
+    expect(errors).toEqual([]);
+  });
+
   const LEGACY_SAVES_NEEDING_REPAIR = [
     ['an out-of-range round index', (e) => { e.currentRoundIndex = 99; }],
     ["an extra field (another page's data)", (e) => { e.siblingSecretData = { token: 'keep-me' }; }],
@@ -2036,12 +2081,10 @@ test.describe('Malformed or hostile persisted state', () => {
   });
 
   // --- AB#41: reading stored state is bounded and recoverable ---
-  // Every stored string the copy layer keeps without a tighter limit of its own
-  // (tournament names, scores, savedAt) is cut to 1000 characters: repaired,
-  // not dropped. 10,000 characters whose first 1000 are recognizable.
-  const MAX_STORED_STRING_LENGTH = 1000;
-  const OVERLONG = '0123456789'.repeat(1000);
-  const CUT = OVERLONG.slice(0, MAX_STORED_STRING_LENGTH);
+  // Overlong stored strings are cut to MAX_STORED_STRING_LENGTH (OVERLONG and
+  // CUT: see the legacy migration above). The cut never changes what counts:
+  // a score of that length or more is never credited, and an overlong name is
+  // trimmed around the cut, so it is never blank unless it was.
 
   test('R-STATE-PERSIST: a tournament in progress with a 10,000-character name resumes at round 3, the name cut to 1000', async ({ page, context }) => {
     const errors = collectErrors(page);
@@ -2092,7 +2135,7 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
-  test('R-STATE-PERSIST: a saved tournament with a 10,000-character name and timestamp is listed and loads, both cut to 1000', async ({ page, context }) => {
+  test('R-TOURNAMENT-STORE: a saved tournament with a 10,000-character name and timestamp is listed and loads, both cut to 1000', async ({ page, context }) => {
     const errors = collectErrors(page);
     collectDialogs(page);
     // Given a saved tournament whose name and savedAt are 10,000 characters,
@@ -2130,8 +2173,143 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
+  // A stored score that is cut, or is as long as the cut, is never credited:
+  // cutting "0...0120" (1001 characters, an invalid 120) would otherwise leave
+  // "0...012", a valid 12. One character shorter, a zero-padded score is a score.
+  const ZEROS = (n) => '0'.repeat(n);
+  const PADDED_SCORES = [
+    // description, stored left side (right: '12'), credited, error, stored back
+    ['an invalid score whose cut looks valid', ZEROS(998) + '120', false, 'whole number from 0 to 24', ZEROS(998) + '12'],
+    ['a score of exactly 1000 characters', ZEROS(998) + '12', false, 'whole number from 0 to 24', ZEROS(998) + '12'],
+    // The cut lands inside the emoji's surrogate pair: a score is cut there all
+    // the same, so it keeps exactly 1000 characters (a number input shows none).
+    ['a score whose cut splits an emoji', ZEROS(997) + '12\u{1F600}x', false, 'Please fill in both scores', null],
+    ['a zero-padded score of 999 characters', ZEROS(997) + '12', true, '', ZEROS(997) + '12'],
+  ];
+  for (const [description, left, credited, message, storedBack] of PADDED_SCORES) {
+    test(`R-STATE-PERSIST, R-SCORE-ENTRY: a stored result with ${description} is ${credited ? '' : 'not '}credited`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a started tournament whose first match holds that left score and a
+      // right score of 12, and whose second match holds a sound 15 / 9.
+      const state = await captureARealTournamentState(context);
+      plantResults(state.schedule, [{ left, right: '12' }, { left: '15', right: '9' }]);
+      await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state) });
+
+      // When the app loads (and reloads, saving on the way out),
+      await page.goto('/');
+      for (let pass = 0; pass < 2; pass++) {
+        if (pass === 1) await page.reload();
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+        // Then the first match is credited only when its score is one,
+        await expectErrorsOnScreen(page, [message, '', '']);
+        expect(await scoreboardPointsSorted(page)).toEqual(credited
+          ? [15, 15, 12, 12, 12, 12, 9, 9].concat(Array(4).fill(0))
+          : [15, 15, 9, 9].concat(Array(8).fill(0)));
+        // and it is stored back cut to exactly 1000 characters, or as it was.
+        const [stored] = await storedResults(page);
+        if (storedBack === null) {
+          // A lone surrogate is compared in the page, where it is not re-encoded.
+          expect(await page.evaluate(({ key, expected }) => {
+            const side = JSON.parse(localStorage.getItem(key)).schedule.rounds[0].matches[0].result.left;
+            return side === expected;
+          }, { key: STATE_KEY, expected: left.slice(0, MAX_STORED_STRING_LENGTH) })).toBe(true);
+          expect(stored.right).toBe('12');
+        } else {
+          expect(stored).toEqual({ left: storedBack, right: '12' });
+        }
+      }
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-MEXICANO-ROUNDS, R-STATE-PERSIST: a stored score cut to look valid does not complete a Mexicano round', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given a running Mexicano tournament whose current round 2 holds, on its
+    // first court, a 1001-character invalid score that cut reads as 12 / 12, and
+    // on its second a sound 15 / 9.
+    const state = await captureARealMexicanoState(context);
+    state.schedule.rounds[1].matches[0].result = { left: ZEROS(998) + '120', right: '12' };
+    state.schedule.rounds[1].matches[1].result = { left: '15', right: '9' };
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
+
+    // When the app loads,
+    await page.goto('/');
+
+    // Then round 2 is not complete: the next round is not offered,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expectErrorsOnScreen(page, ['whole number from 0 to 24', '']);
+    await expect(page.locator('#generateNextRoundBtn')).toBeDisabled();
+    // until the Organizer enters a real score on that court.
+    await page.locator('.result-overlay-left input').first().fill('12');
+    await expect(page.locator('#generateNextRoundBtn')).toBeEnabled();
+    expect(errors).toEqual([]);
+  });
+
+  // A name is cut without splitting a character outside the Basic Multilingual
+  // Plane (an emoji is a surrogate pair): with the pair across the cut, the
+  // emoji is left out whole; with it inside, it is kept.
+  for (const [description, name, expected] of [
+    ['an emoji across the cut', 'T'.repeat(999) + '\u{1F600}' + 'x'.repeat(100), 'T'.repeat(999)],
+    ['an emoji just inside the cut', 'T'.repeat(998) + '\u{1F600}' + 'x'.repeat(100), 'T'.repeat(998) + '\u{1F600}'],
+  ]) {
+    test(`R-STATE-PERSIST: an overlong tournament name with ${description} is cut without splitting it`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      const state = await captureALegacyTournamentInProgress(context);
+      state.tournamentName = name;
+      await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state) });
+
+      await page.goto('/');
+
+      await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+      expect(await page.locator('#tournamentTitle').textContent()).toBe(expected);
+      expect((await storedJson(page, STATE_KEY)).tournamentName).toBe(expected);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-TOURNAMENT-STORE: overlong saved names padded with whitespace are kept, trimmed around the cut, and can be saved over and deleted', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    collectDialogs(page);
+    // Given two saved tournaments with overlong names: 1000 spaces then "Cup"
+    // (blank once cut, were it not trimmed first), and one whose cut ends in spaces.
+    const { schedule } = await captureALegacyTournamentInProgress(context);
+    const fields = { schedule, currentRoundIndex: 2, courtNames: [], format: 'americano', mexicanoSeed: null, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z' };
+    const spacedOut = ' '.repeat(1000) + 'Cup';
+    const endsInSpaces = 'Y'.repeat(997) + ' '.repeat(5) + 'Z'.repeat(10);
+    await plantStorage(page, {
+      [STATE_KEY]: null,
+      [SAVED_TOURNAMENTS_KEY]: JSON.stringify([{ tournamentName: spacedOut, ...fields }, { tournamentName: endsInSpaces, ...fields }]),
+    });
+
+    // When the app loads, both are listed under their trimmed, cut names.
+    await page.goto('/');
+    const options = page.locator('#savedTournamentSelect option');
+    await expect(options).toHaveCount(2);
+    // (The saved date that follows is locale-formatted.)
+    const listed = await options.allTextContents();
+    expect(listed[0].startsWith('Cup (Saved: ')).toBe(true);
+    expect(listed[1].startsWith(`${'Y'.repeat(997)} (Saved: `)).toBe(true);
+
+    // The second loads under its name, and saving it replaces it in place,
+    await page.selectOption('#savedTournamentSelect', '1');
+    await page.click('#loadTournamentBtn');
+    expect(await page.locator('#tournamentTitle').textContent()).toBe('Y'.repeat(997));
+    await page.click('#saveTournamentBtn');
+    await expect(options).toHaveCount(2);
+    // and the first can be loaded and deleted.
+    await page.selectOption('#savedTournamentSelect', '0');
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Cup');
+    await page.click('#deleteTournamentBtn');
+    await expect(options).toHaveCount(1);
+    expect((await storedJson(page, SAVED_TOURNAMENTS_KEY)).map((t) => t.tournamentName)).toEqual(['Y'.repeat(997)]);
+    expect(errors).toEqual([]);
+  });
+
   // The stored state the app drops because it is unusable, or fails to restore,
-  // is first copied, raw, to STATE_BACKUP_KEY (one generation). Planted as
+  // is first copied, raw, to STATE_BACKUP_KEY (one generation; nothing over the
+  // backup limit, see below). Planted as
   // indented JSON, which the app itself never writes, so a raw copy is told
   // apart from a re-serialized one.
   const PREVIOUS_BACKUP = 'an older backup';
@@ -2248,6 +2426,122 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('[id^="playerInput_"]')).toHaveCount(16);
     expect(await storedRaw(page, STATE_BACKUP_KEY)).toBeNull();
     expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST: a fresh visit whose initial view throws falls back to a fresh setup and keeps the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given no tournament state, a backup from earlier, and a fault that makes
+    // the first page lookup after load throw, once: the initial view fails.
+    await plantStorageOnce(page, { [STATE_KEY]: null, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+    await page.addInitScript(() => {
+      let armed = false;
+      window.addEventListener('load', () => { armed = true; }); // before the app's own handler
+      const getElementById = Document.prototype.getElementById;
+      Document.prototype.getElementById = function (id) {
+        if (armed) {
+          armed = false;
+          throw new Error('the initial view failed');
+        }
+        return getElementById.call(this, id);
+      };
+    });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented,
+    await expectAFreshSetup(page);
+    // nothing stored is no backup: the earlier one is kept,
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(PREVIOUS_BACKUP);
+    // and the rescue is logged as the one error.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not restore the saved tournament');
+  });
+
+  // A stored state longer than the backup limit is dropped without a backup;
+  // one of exactly that length is still backed up. MAX_BACKUP_LENGTH in the app.
+  const MAX_BACKUP_LENGTH = 1000000;
+  for (const [description, length, backedUp] of [
+    ['exactly at the backup limit is backed up', MAX_BACKUP_LENGTH, true],
+    ['over the backup limit is dropped without a backup', MAX_BACKUP_LENGTH + 1, false],
+  ]) {
+    test(`R-STATE-PERSIST: an unusable stored state ${description}`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const warnings = [];
+      page.on('console', (message) => { if (message.type() === 'warning') warnings.push(message.text()); });
+      // Given an unusable stored state of that length (unparsable), built in
+      // the page, and a backup from earlier.
+      await page.addInitScript(({ stateKey, backupKey, size, previous }) => {
+        if (sessionStorage.getItem('planted')) return;
+        sessionStorage.setItem('planted', '1');
+        localStorage.setItem(stateKey, '[' + 'x'.repeat(size - 1));
+        localStorage.setItem(backupKey, previous);
+      }, { stateKey: STATE_KEY, backupKey: STATE_BACKUP_KEY, size: length, previous: PREVIOUS_BACKUP });
+
+      // When the app loads.
+      await page.goto('/');
+
+      // Then the tournament setup is presented and the unusable value is dropped,
+      await expectAFreshSetup(page);
+      expect(await storedRaw(page, STATE_KEY)).toBeNull();
+      const backup = await page.evaluate(({ backupKey, size }) => {
+        const value = localStorage.getItem(backupKey);
+        return value === '[' + 'x'.repeat(size - 1) ? 'the dropped value' : value;
+      }, { backupKey: STATE_BACKUP_KEY, size: length });
+      const capWarnings = warnings.filter((w) => w.includes('Not backing up a stored tournament state longer than 1000000 characters'));
+      if (backedUp) {
+        // backed up in place of the older one,
+        expect(backup).toBe('the dropped value');
+        expect(capWarnings).toEqual([]);
+      } else {
+        // or, over the limit, not backed up (the older backup is kept), with a warning.
+        expect(backup).toBe(PREVIOUS_BACKUP);
+        expect(capWarnings).toHaveLength(1);
+      }
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-STATE-PERSIST: storage that cannot read or remove the stored state still opens a fresh setup and lists the saved tournaments', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const warnings = [];
+    page.on('console', (message) => { if (message.type() === 'warning') warnings.push(message.text()); });
+    collectDialogs(page);
+    // Given a stored tournament and a saved one, in storage that refuses to
+    // read or remove the stored state (as blocked site data does).
+    const state = await captureALegacyTournamentInProgress(context);
+    const entry = { tournamentName: 'Kept Cup', schedule: state.schedule, currentRoundIndex: 2, courtNames: [], format: 'americano', mexicanoSeed: null, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z' };
+    await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state), [SAVED_TOURNAMENTS_KEY]: JSON.stringify([entry]) });
+    await page.addInitScript((stateKey) => {
+      for (const method of ['getItem', 'removeItem']) {
+        const original = Storage.prototype[method];
+        Storage.prototype[method] = function (key, ...rest) {
+          if (key === stateKey) throw new DOMException(`${method} refused`, 'SecurityError');
+          return original.call(this, key, ...rest);
+        };
+      }
+    }, STATE_KEY);
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented,
+    await expectAFreshSetup(page);
+    // the saved tournament is listed and loads,
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    await expect(page.locator('#savedTournamentSelect option')).toContainText('Kept Cup');
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Kept Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 3');
+    // and exactly this is logged: the failed read and removal as warnings, and as
+    // the one error the legacy migration, which cannot check the stored state's key.
+    expect(warnings).toEqual([
+      expect.stringContaining('Could not read the stored tournament state:'),
+      expect.stringContaining('Could not remove localStorage value:'),
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not migrate a legacy localStorage value');
+    expect(errors[0]).toContain(LEGACY_STATE_KEY);
   });
 });
 
