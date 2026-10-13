@@ -189,10 +189,12 @@
     const MAX_ROUNDS = 128; // shipped schedules have 7-23
     // Every other stored string the copy layer keeps (tournament names, scores,
     // savedAt) is cut to this length: repaired, never dropped. Nothing the app
-    // itself writes is ever cut: tournament names are at most 200 characters (the
-    // name input's maxlength) plus a unique-name suffix, savedAt is an ISO date,
-    // and score entry records only scores the score rule accepts, which are
-    // always shorter than this (see parseScore).
+    // writes from typed input is ever cut: a typed tournament name is at most 200
+    // characters (the name input's maxlength) plus a unique-name suffix, savedAt
+    // is an ISO date, and score entry records only scores the score rule accepts,
+    // which are always shorter than this (see parseScore). A name restored or
+    // loaded from crafted data can already be up to this long; Start may then add
+    // a suffix that the next load cuts off again (the documented collision case).
     const MAX_STORED_STRING_LENGTH = 1000;
     // The longest stored state that is backed up before a fallback drops it (see
     // backupStoredState). The largest state the copy layer accepts with ordinary
@@ -318,6 +320,7 @@
     // and dropped from storage, with no backup, the next time the saved list is
     // written. A reset the Organizer chose (New Tournament, another schedule) is no
     // fallback and backs nothing up.
+    // DEFERRED: AB#90 (an empty stored string still overwrites an earlier backup)
     function backupStoredState(raw) {
       if (raw === null) return;
       if (raw.length > MAX_BACKUP_LENGTH) {
