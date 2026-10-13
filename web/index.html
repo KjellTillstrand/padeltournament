@@ -296,6 +296,7 @@
     // outcome does, so a save that keeps failing is announced once, not per save.
     // It reads only bindings declared above the early migrateLegacyStorage() call
     // (autoSaveFailing, AUTO_SAVE_WARNING) and an element that precedes this script.
+    // DEFERRED: AB#91 (retry a failed save without a change; warn before leaving)
     function reportAutoSave(saved) {
       if (autoSaveFailing === !saved) return; // no change of outcome
       autoSaveFailing = !saved;
