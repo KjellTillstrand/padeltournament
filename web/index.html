@@ -187,6 +187,24 @@
     const MAX_COURT_NAME_LENGTH = 30; // the court name inputs' maxLength
     const MAX_PLAYERS = 64; // shipped schedules have 8-24 (any count)
     const MAX_ROUNDS = 128; // shipped schedules have 7-23
+    // Every other stored string the copy layer keeps (tournament names, scores,
+    // savedAt) is cut to this length: repaired, never dropped. Nothing the app
+    // writes from typed input is ever cut: a typed tournament name is at most 200
+    // characters (the name input's maxlength) plus a unique-name suffix, savedAt
+    // is an ISO date, and score entry records only scores the score rule accepts,
+    // which are always shorter than this (see parseScore). A name restored or
+    // loaded from crafted data can already be up to this long; Start may then add
+    // a suffix that the next load cuts off again (the documented collision case).
+    const MAX_STORED_STRING_LENGTH = 1000;
+    // The longest stored state that is backed up before a fallback drops it (see
+    // backupStoredState). The largest state the copy layer accepts with ordinary
+    // scores (64 players with 30-character names, 128 rounds of 16 courts)
+    // serializes to about 0.47 million characters, and the shipped schedules and
+    // Mexicano (at most 24 players) to far less, so this leaves twice that
+    // headroom while bounding what one fallback can make the app keep in storage.
+    // Only a state padded far beyond that (such as scores zero-padded to hundreds
+    // of digits) exceeds it, and is then dropped without a backup (logged).
+    const MAX_BACKUP_LENGTH = 1000000;
 
     // localStorage keys. The origin's storage is shared with every other page served
     // from it (see "Persisted-state validation"), so the app's keys carry its own
@@ -194,6 +212,10 @@
     // migrated key's marker stops it being migrated again (see migrateLegacyStorage).
     const STATE_KEY = "padeltournament:tournamentState";
     const SAVED_TOURNAMENTS_KEY = "padeltournament:savedTournaments";
+    // A copy of the raw stored state a fallback on load last dropped, as unusable
+    // or because restoring it threw (one generation, overwritten each time; see
+    // backupStoredState for what is and is not backed up).
+    const STATE_BACKUP_KEY = "padeltournament:tournamentState.backup";
     const LEGACY_STATE_KEY = "tournamentState";
     const LEGACY_SAVED_TOURNAMENTS_KEY = "savedTournaments";
     const STATE_MIGRATED_KEY = "padeltournament:migrated:tournamentState";
@@ -241,15 +263,18 @@
       }
     }
 
-    // Restore the saved tournament state into memory. Returns false (and drops the
-    // stored value) when there is none or it is unusable; the caller then starts
-    // from the default schedule. Rendering is left to the caller.
-    function restoreTournamentState() {
-      const state = readTournamentState();
+    // Restore the tournament state from raw, the stored value as read once on load
+    // (readRawStoredState; null for none), into memory. Returns false when there is
+    // none or it is unusable: an unusable one is backed up (backupStoredState) and
+    // dropped from storage. The caller then starts from the default schedule.
+    // Rendering is left to the caller.
+    function restoreTournamentState(raw) {
+      const state = copyTournamentState(parseStoredJson(raw, STATE_KEY));
       if (!state) {
-        if (localStorage.getItem(STATE_KEY) !== null) {
+        if (raw !== null) {
           console.warn("Ignoring an unusable saved tournament state; starting a fresh setup.");
-          localStorage.removeItem(STATE_KEY);
+          backupStoredState(raw);
+          removeStoredValue(STATE_KEY);
         }
         return false;
       }
@@ -284,24 +309,82 @@
     }
 
 
+    // Copy a raw stored state (the string as stored, unparsed) to STATE_BACKUP_KEY
+    // before a fallback on load drops it: when it is unusable, or when restoring it
+    // threw. So such a state can still be recovered by hand from the backup, unless
+    // it is longer than MAX_BACKUP_LENGTH (logged, not backed up) or the backup
+    // write fails (logged); neither blocks the fallback. One generation only: each
+    // backup overwrites the last, except that with nothing stored (null) the last
+    // backup is kept.
+    // Only the stored state is backed up: an unusable saved tournament is skipped
+    // and dropped from storage, with no backup, the next time the saved list is
+    // written. A reset the Organizer chose (New Tournament, another schedule) is no
+    // fallback and backs nothing up.
+    // DEFERRED: AB#90 (an empty stored string still overwrites an earlier backup)
+    function backupStoredState(raw) {
+      if (raw === null) return;
+      if (raw.length > MAX_BACKUP_LENGTH) {
+        console.warn("Not backing up a stored tournament state longer than " + MAX_BACKUP_LENGTH +
+          " characters:", STATE_BACKUP_KEY, raw.length);
+        return;
+      }
+      try {
+        localStorage.setItem(STATE_BACKUP_KEY, raw);
+      } catch (err) {
+        console.warn("Could not back up the stored tournament state:", STATE_BACKUP_KEY, err);
+      }
+    }
+
+    // The raw stored state, or null when there is none or storage cannot be read
+    // (logged; the app then starts as if nothing were stored).
+    function readRawStoredState() {
+      try {
+        return localStorage.getItem(STATE_KEY);
+      } catch (err) {
+        console.warn("Could not read the stored tournament state:", STATE_KEY, err);
+        return null;
+      }
+    }
+
+    // Remove a localStorage value. A failed removal (storage unavailable) is logged
+    // and never aborts the action that triggered it.
+    function removeStoredValue(key) {
+      try {
+        localStorage.removeItem(key);
+      } catch (err) {
+        console.warn("Could not remove localStorage value:", key, err);
+      }
+    }
+
     // Restore tournament state from localStorage.
     window.addEventListener("load", function () {
+      // The stored state is read once, here: restoring uses this value, and it is
+      // the one backed up if restoring throws (restoring may rewrite the key).
+      const storedState = readRawStoredState();
       try {
-        showInitialView();
+        showInitialView(storedState);
       } catch (err) {
         // Last line of defence: stored state is validated before use, but whatever
-        // slips through must never leave a broken page.
+        // slips through must never leave a broken page. The fresh setup drops the
+        // stored state, so it is backed up first.
         console.error("Could not restore the saved tournament; starting a fresh setup.", err);
+        backupStoredState(storedState);
         startFreshSetup();
       }
 
-      // Populate the saved tournament dropdown.
-      populateSavedTournamentDropdown();
+      // Populate the saved tournament dropdown. Storage that cannot be read must
+      // not break the page: the list then stays empty.
+      try {
+        populateSavedTournamentDropdown();
+      } catch (err) {
+        console.error("Could not list the saved tournaments.", err);
+      }
     });
 
-    function showInitialView() {
+    // storedState: the raw stored tournament state (see restoreTournamentState).
+    function showInitialView(storedState) {
       // 1. Restore a saved state; 2. without a usable one, load the default schedule.
-      if (!restoreTournamentState()) {
+      if (!restoreTournamentState(storedState)) {
         const defaultModule = document.getElementById("scheduleSelect").value;
         loadScheduleFromModule(defaultModule);
       }
@@ -503,7 +586,7 @@
       inputs.forEach(input => input.disabled = false);
       document.getElementById("startTournamentBtn").disabled = false;
       document.getElementById("toggleSettingsBtn").style.display = "none";
-      localStorage.removeItem(STATE_KEY);
+      removeStoredValue(STATE_KEY);
       loadScheduleFromModule(document.getElementById("scheduleSelect").value);
       clearPlayerNameDrafts(); // a new setup starts from the default names
       renderSetupInputs(); // the chosen format is kept, with its player count
@@ -563,21 +646,33 @@
     // app or is written back by it. A schedule whose structure is unusable is
     // rejected whole (a stored tournament state then falls back to a fresh setup; a
     // saved tournament is skipped); fields that can be repaired (round index,
-    // names) are reset to their defaults. Scores are the exception: they are
-    // type-checked, not repaired. A stored pair of strings is kept byte-for-byte,
-    // even one that breaks the score rule (see parseScore), which then only shows
-    // its error and is not credited; if either side is not a string, the whole
-    // result is no result.
-    // The checks are never stricter than what the app itself writes, so the app's
-    // own data always survives a reload.
+    // names) are reset to their defaults, and an overlong string is cut to its
+    // limit (clampStoredString, clampTournamentName). Scores are the exception:
+    // they are type-checked, not repaired. A stored pair of strings is kept as
+    // stored (an overlong side only cut to the limit, which the score rule then
+    // never credits), even one that breaks the score rule (see parseScore), which
+    // then only shows its error and is not credited; if either side is not a
+    // string, the whole result is no result.
+    // The checks are never stricter than what the app itself writes, and no cut
+    // ever applies to what it writes (see MAX_STORED_STRING_LENGTH), so the app's
+    // own data always survives a reload unchanged.
 
     function isPlainObject(value) {
       return value !== null && typeof value === "object" && !Array.isArray(value);
     }
 
     // The parsed value of a localStorage key, or null when missing or unparsable.
+    // Reading storage that throws (unavailable) throws: only the load path, which
+    // reads the stored state once (readRawStoredState), turns that into "nothing
+    // stored". Elsewhere a saved list that could not be read must not be taken for
+    // an empty one, which Save would then overwrite.
     function readStoredJson(key) {
-      const raw = localStorage.getItem(key);
+      return parseStoredJson(localStorage.getItem(key), key);
+    }
+
+    // The parsed value of a raw stored string read from key, or null when it is
+    // null (nothing stored) or unparsable.
+    function parseStoredJson(raw, key) {
       if (raw === null) return null;
       try {
         return JSON.parse(raw);
@@ -593,9 +688,31 @@
       return typeof name === "string" && name.length <= MAX_PLAYER_NAME_LENGTH && name.trim() !== "";
     }
 
+    // A stored string cut to MAX_STORED_STRING_LENGTH: an overlong one is repaired,
+    // not dropped. The cut never splits a surrogate pair (a character outside the
+    // Basic Multilingual Plane, such as an emoji): it then keeps one character
+    // fewer. Not for scores: see clampStoredScore.
+    function clampStoredString(value) {
+      if (value.length <= MAX_STORED_STRING_LENGTH) return value;
+      const last = value.charCodeAt(MAX_STORED_STRING_LENGTH - 1);
+      const isHighSurrogate = last >= 0xD800 && last <= 0xDBFF;
+      return value.slice(0, isHighSurrogate ? MAX_STORED_STRING_LENGTH - 1 : MAX_STORED_STRING_LENGTH);
+    }
+
+    // A stored tournament name: one within the limit is kept as stored; an overlong
+    // one (only crafted data: the app writes at most about 200 characters) is
+    // trimmed, cut to the limit and trimmed again at the cut. So the repaired name
+    // is blank only when the stored one is, and it has no leading or trailing
+    // whitespace, which Save, Delete and the saved-list selection trim from the
+    // name input before matching it against saved names.
+    function clampTournamentName(name) {
+      if (name.length <= MAX_STORED_STRING_LENGTH) return name;
+      return clampStoredString(name.trim()).trimEnd();
+    }
+
     // Tournament names are rendered as text only; anything but a string means "no name".
     function normalizeTournamentName(name) {
-      return typeof name === "string" ? name : "";
+      return typeof name === "string" ? clampTournamentName(name) : "";
     }
 
     // Only a known format is kept; anything else (state saved before formats existed,
@@ -621,16 +738,17 @@
     // total (even an invalid one) is normalized, never inferred over. A legacy
     // record, saved before the total was stored (no totalPoints key at all), has
     // it inferred from its results (inferLegacyTotal). Either way the results
-    // themselves are kept as stored (copyResult): the total only decides which
-    // of them the score rule credits.
+    // themselves are kept as stored, an overlong side only cut (copyResult): the
+    // total only decides which of them the score rule credits.
     function storedTotalPoints(record) {
       if (Object.prototype.hasOwnProperty.call(record, "totalPoints")) return normalizeTotalPoints(record.totalPoints);
       return inferLegacyTotal(record.schedule);
     }
 
     // A legacy record's total: among its complete stored pairs (both sides plain
-    // digits), the most common sum that is a pool; on a tie, the pool of the
-    // earliest such pair in round order; with none, 24.
+    // digits the score rule can read, see isScoreDigits), the most common sum that
+    // is a pool; on a tie, the pool of the earliest such pair in round order; with
+    // none, 24.
     function inferLegacyTotal(schedule) {
       const counts = new Map(); // insertion order: first appearance in round order
       const rounds = isPlainObject(schedule) && Array.isArray(schedule.rounds) ? schedule.rounds : [];
@@ -639,7 +757,7 @@
         round.matches.forEach(match => {
           const result = isPlainObject(match) ? match.result : null;
           if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return;
-          if (!/^\d+$/.test(result.left) || !/^\d+$/.test(result.right)) return;
+          if (!isScoreDigits(result.left) || !isScoreDigits(result.right)) return;
           const sum = Number(result.left) + Number(result.right);
           if (POINT_POOLS.includes(sum)) counts.set(sum, (counts.get(sum) || 0) + 1);
         });
@@ -661,14 +779,25 @@
       return valid ? teamIndices.map(team => team.slice()) : null;
     }
 
+    // A score's form: plain digits (no sign, fraction, exponent or spaces),
+    // shorter than MAX_STORED_STRING_LENGTH. So a score never reaches the length at
+    // which a stored score is cut (clampStoredScore): a cut one is never a score,
+    // and cutting can neither turn an invalid score into a credited one ("0...0120"
+    // into "0...012") nor change a valid one. Zero-padding below the limit is
+    // accepted, as a number input takes it.
+    function isScoreDigits(value) {
+      return typeof value === "string" && value.length < MAX_STORED_STRING_LENGTH && /^\d+$/.test(value);
+    }
+
     // The one score rule: a score is a whole number from 0 to the points total,
-    // written as plain digits (no sign, fraction, exponent or spaces). Returns
-    // it, or null for anything else, including no entry (""). Shared by score
-    // entry, its validation, the "round complete" check, the scoreboard and the
-    // error a stored result shows: it decides credit, display and gating.
-    // Restore never rewrites a result by it (see copyResult).
+    // written as plain digits (isScoreDigits). Returns it, or null for anything
+    // else, including no entry (""). Shared by score entry, its validation, the
+    // "round complete" check, the scoreboard and the error a stored result shows:
+    // it decides credit, display and gating. An entry it rejects is shown with
+    // its error and recorded as no score (recordedResult). Restore never rewrites
+    // a result by it (see copyResult).
     function parseScore(value, total) {
-      if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+      if (!isScoreDigits(value)) return null;
       const score = Number(value);
       return score <= total ? score : null;
     }
@@ -690,14 +819,24 @@
     }
 
     // Scores are the raw values of the score inputs: strings ("" when not entered).
-    // They are type-checked, not repaired: a pair of strings is kept byte-for-byte,
-    // even one that breaks the score rule (it may be a result played under another
-    // total). Such a pair shows its error, is not credited and counts as missing
-    // until the Organizer edits it. A result of another type means "no result
-    // recorded".
+    // They are type-checked, not repaired: a pair of strings is kept as stored
+    // (an overlong side only cut, see clampStoredScore), even one that breaks the
+    // score rule (it may be a result played under another total). Such a pair
+    // shows its error, is not credited and counts as missing until the Organizer
+    // edits it. A result of another type means "no result recorded".
     function copyResult(result) {
       if (!isPlainObject(result) || typeof result.left !== "string" || typeof result.right !== "string") return null;
-      return { left: result.left, right: result.right };
+      return { left: clampStoredScore(result.left), right: clampStoredScore(result.right) };
+    }
+
+    // A stored score cut to exactly MAX_STORED_STRING_LENGTH, which keeps storage
+    // bounded. A cut score is by construction never creditable: the score rule
+    // rejects that length (isScoreDigits). Unlike clampStoredString it cuts even
+    // inside a surrogate pair, so a cut score always has exactly that length: one
+    // character fewer could leave plain digits behind ("0...012" then an emoji),
+    // which the rule would credit. A score holding a surrogate is never digits.
+    function clampStoredScore(value) {
+      return value.slice(0, MAX_STORED_STRING_LENGTH);
     }
 
     // A rebuilt match, or null when its structure is unusable.
@@ -728,7 +867,8 @@
     // flow read, each of the right type and in range; null when it is unusable.
     // Byes (who rests) are never read from storage: they are rebuilt from the
     // checked matches (setByes), so they always name exactly the unseated players.
-    // Results are type-checked only and kept as stored (copyResult).
+    // Results are type-checked only and kept as stored, an overlong side only cut
+    // (copyResult).
     function copySchedule(schedule, requireTeamIndices) {
       if (!isPlainObject(schedule)) return null;
       const playerList = schedule.players;
@@ -814,12 +954,6 @@
       return copy ? { schedule: copy, mexicanoSeed: seed } : null;
     }
 
-    // A rebuilt copy of the stored tournament state, or null when it is missing or
-    // unusable.
-    function readTournamentState() {
-      return copyTournamentState(readStoredJson(STATE_KEY));
-    }
-
     // A rebuilt copy of a parsed tournament state, or null when it is unusable.
     function copyTournamentState(state) {
       if (!isPlainObject(state)) return null;
@@ -848,16 +982,22 @@
     }
 
     // A rebuilt saved tournament, or null when it has no usable name (the save's
-    // key) or schedule. Loaded tournaments are always started, so teamIndices is
-    // not required.
+    // key: a blank one is unusable) or schedule. An overlong name is repaired
+    // (clampTournamentName), and is never blank when the stored one is not. Two
+    // overlong names that agree in their first 1000 characters (after trimming)
+    // become the same name: both are listed and load, but Save replaces the first
+    // of them and Delete removes both. Accepted, as only crafted data holds such
+    // a name (the name input takes 200 characters).
+    // Loaded tournaments are always started, so teamIndices is not required.
     function copySavedTournament(entry) {
       if (!isPlainObject(entry) || typeof entry.tournamentName !== "string" || entry.tournamentName.trim() === "") return null;
+      const tournamentName = clampTournamentName(entry.tournamentName);
       const format = normalizeFormat(entry.format); // saved tournaments are always started
       const play = copyStartedPlay(format, entry.schedule, entry.mexicanoSeed);
       if (!play) return null;
       const schedule = play.schedule;
       const copy = {
-        tournamentName: entry.tournamentName,
+        tournamentName: tournamentName,
         schedule: schedule,
         currentRoundIndex: normalizeRoundIndex(entry.currentRoundIndex, schedule),
         courtNames: normalizeCourtNames(entry.courtNames),
@@ -867,7 +1007,7 @@
         // entry keeps its inferred total (and, like every entry, its results).
         totalPoints: storedTotalPoints(entry)
       };
-      if (typeof entry.savedAt === "string") copy.savedAt = entry.savedAt;
+      if (typeof entry.savedAt === "string") copy.savedAt = clampStoredString(entry.savedAt);
       return copy;
     }
 
@@ -1718,7 +1858,7 @@
       generatePlayerInputs(currentSchedule.players);
       generateCourtNameInputs();
       document.getElementById("tournamentContainer").innerHTML = "";
-      localStorage.removeItem(STATE_KEY);
+      removeStoredValue(STATE_KEY);
     }
 
     // --- Tournament format ---
