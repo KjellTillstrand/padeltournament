@@ -38,12 +38,27 @@
       background-color: #8a9a8a;
       cursor: not-allowed;
     }
-    /* The auto-save warning takes no space while empty (no failing save). */
+    /* The auto-save warning (#autoSaveWarning, the first element of the body).
+       Empty, while saving works, it is a zero-height box: it takes no space and
+       covers nothing. Filled, it is an opaque, high-contrast banner in the page
+       flow above the header, so at the top of the page it covers nothing, and it
+       sticks to the top of the viewport once the page scrolls, above the round
+       view (whose courts are positioned elements), so it stays in sight in every
+       view. Scrolled content passes beneath it and can always be scrolled clear. */
     .auto-save-warning {
-      margin: 0 0 10px 0;
+      position: sticky;
+      top: 0;
+      z-index: 1000;
     }
-    .auto-save-warning:empty {
-      margin: 0;
+    .auto-save-warning:not(:empty) {
+      margin: 0 0 10px 0;
+      padding: 10px 14px;
+      background-color: #a40000; /* white text on it: contrast about 8.6:1 */
+      color: #fff;
+      font-weight: bold;
+      text-align: center;
+      border-radius: 5px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
     }
   </style>
   <!-- Multiples of 4: perfect-whist tables (scheduler/whist-generate.js).
@@ -70,6 +85,14 @@
 </head>
 
 <body>
+  <!-- Shown while the tournament state cannot be auto-saved (see reportAutoSave).
+       In the markup from the start and only ever empty or filled, so the alert is
+       a live region before its text arrives: an empty one announces nothing.
+       First in the body, so that while filled it sits above the header at the top
+       of the page and sticks to the top of the viewport in every view (setup and
+       play alike; the scoreboard is part of the round view). -->
+  <div id="autoSaveWarning" class="auto-save-warning" role="alert"></div>
+
   <!-- Header: Tournament Title and Site Name -->
   <div id="header" class="header-with-logo">
     <img id="siteLogo" src="" alt="Site Logo" />
@@ -156,11 +179,6 @@
   </div>
   <button id="toggleSettingsBtn" style="display:none;">Tournament Settings</button>
 
-  <!-- Shown while the tournament state cannot be auto-saved (see reportAutoSave).
-       In the markup from the start and only ever empty or filled, so the alert is
-       a live region before its text arrives: an empty one announces nothing. -->
-  <div id="autoSaveWarning" class="error-message auto-save-warning" role="alert"></div>
-
   <!-- Tournament container: displays one round at a time -->
   <div id="tournamentContainer" class="schedule-container"></div>
 
@@ -171,6 +189,14 @@
     let currentRoundIndex = 0; // 0-indexed
     let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
     let autoSaveFailing = false; // whether the last auto-save of the state failed (see reportAutoSave)
+    // The text of the auto-save warning (see reportAutoSave). It states only what
+    // is known: the changes are not being saved now, and the next auto-save that
+    // works saves the whole state, the changes made meanwhile included. It names
+    // no cause (a failed write may be full or blocked storage, or a state that
+    // cannot be serialized) and points at no in-app action: the only way the app
+    // frees storage, Delete Tournament, also resets the running tournament.
+    const AUTO_SAVE_WARNING = "Scores and other changes are not being saved in this browser right now. " +
+      "Keep this page open: everything will be saved automatically once saving works again.";
 
     // Tournament format. Americano plays a precomputed schedule. Mexicano is set up by
     // player count and played one round at a time: round 1 is a seeded random draw,
@@ -268,10 +294,8 @@
     // button reports its own outcome (an alert), and a failed migration or backup
     // write on load is no auto-save (it is logged). The text changes only when the
     // outcome does, so a save that keeps failing is announced once, not per save.
-    // The warning says only what is known: this browser is not keeping the
-    // tournament, and keeping the page open keeps it in memory.
-    const AUTO_SAVE_WARNING = "Scores and other changes are not being saved in this browser: its " +
-      "storage is full or unavailable. Keep this page open, and free up storage space to resume saving.";
+    // It reads only bindings declared above the early migrateLegacyStorage() call
+    // (autoSaveFailing, AUTO_SAVE_WARNING) and an element that precedes this script.
     function reportAutoSave(saved) {
       if (autoSaveFailing === !saved) return; // no change of outcome
       autoSaveFailing = !saved;
@@ -1955,15 +1979,9 @@
     document.getElementById("loadTournamentBtn").addEventListener("click", loadTournament);
     document.getElementById("deleteTournamentBtn").addEventListener("click", deleteTournament);
 
-    // Auto-save state before unload (to handle crashes/reloads). A failed save
-    // here only updates the warning (in case the page stays, or comes back from
-    // the back/forward cache); nothing may throw while the page is leaving.
+    // Auto-save state before unload (to handle crashes/reloads).
     window.addEventListener("beforeunload", function () {
-      try {
-        saveTournamentState();
-      } catch (err) {
-        console.warn("Could not save the tournament state on leaving the page:", err);
-      }
+      saveTournamentState();
     });
 
     // Randomize players on tournament start.
