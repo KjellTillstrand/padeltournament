@@ -2938,7 +2938,7 @@ test.describe('A visible warning when the auto-save fails', () => {
   // Factual, and pointing at no in-app action: the app's only way to free storage
   // (Delete Tournament) also resets the running tournament.
   const WARNING = 'Scores and other changes are not being saved in this browser right now. ' +
-    'Keep this page open: everything will be saved automatically once saving works again.';
+    'Keep this page open: the next change you make saves everything, as soon as saving works again.';
 
   function collectErrors(page) {
     const errors = [];
