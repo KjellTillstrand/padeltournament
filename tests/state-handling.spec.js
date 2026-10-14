@@ -2927,3 +2927,429 @@ test.describe('Schedule select after a restore or a load', () => {
     expect(new Set(options.map((option) => option.claimed.join('/'))).size).toBe(options.length);
   });
 });
+
+// The tournament state is auto-saved on every change. When that save fails (the
+// origin's shared storage is full, or storage is unavailable), the Organizer is
+// warned instead of scores silently no longer persisting, and the warning clears
+// on the next save that succeeds. Only that auto-save warns: the Save button
+// reports its own outcome, and failed writes on load (migration, backup) are logged.
+// The warning is pinned in sight on an opaque banner, in setup and in play.
+test.describe('A visible warning when the auto-save fails', () => {
+  // Factual, and pointing at no in-app action: the app's only way to free storage
+  // (Delete Tournament) also resets the running tournament.
+  const WARNING = 'Scores and other changes are not being saved in this browser right now. ' +
+    'Keep this page open: the next change you make saves everything, as soon as saving works again.';
+
+  function collectErrors(page) {
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+    });
+    return errors;
+  }
+
+  function collectDialogs(page) {
+    const messages = [];
+    page.on('dialog', (dialog) => {
+      messages.push(dialog.message());
+      dialog.accept();
+    });
+    return messages;
+  }
+
+  async function storedJson(page, key) {
+    return page.evaluate((k) => JSON.parse(localStorage.getItem(k)), key);
+  }
+
+  async function storedRaw(page, key) {
+    return page.evaluate((k) => localStorage.getItem(k), key);
+  }
+
+  // Storage that refuses the tournament state, as when it is full, while the
+  // test sets window.failStateWrites (cleared again by every page load). Each
+  // refused write is counted, so a test can wait for the save it caused.
+  async function refuseStateWritesOnDemand(page) {
+    await page.addInitScript((stateKey) => {
+      window.failStateWrites = false;
+      window.refusedStateWrites = 0;
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === stateKey && window.failStateWrites) {
+          window.refusedStateWrites++;
+          throw new DOMException('Storage is full', 'QuotaExceededError');
+        }
+        return setItem.call(this, key, value);
+      };
+    }, STATE_KEY);
+  }
+
+  const setStateWritesFailing = (page, failing) =>
+    page.evaluate((f) => { window.failStateWrites = f; }, failing);
+  const refusedStateWrites = (page) => page.evaluate(() => window.refusedStateWrites);
+
+  // Run action and wait until it has caused at least one more refused state save.
+  async function expectARefusedSave(page, action) {
+    const before = await refusedStateWrites(page);
+    await action();
+    await expect.poll(() => refusedStateWrites(page)).toBeGreaterThan(before);
+  }
+
+  async function startTournament(page, name) {
+    await page.fill('#tournamentName', name);
+    await page.click('#startTournamentBtn');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+  }
+
+  const leftScore = (page, i) => page.locator('.result-overlay-left input').nth(i);
+  const rightScore = (page, i) => page.locator('.result-overlay-right input').nth(i);
+
+  async function expectNoWarning(page) {
+    await expect(page.locator('#autoSaveWarning')).toHaveText('');
+    await expect(page.locator('#autoSaveWarning')).toBeHidden();
+  }
+
+  async function expectTheWarning(page) {
+    const warning = page.getByRole('alert');
+    await expect(warning).toHaveCount(1);
+    await expect(warning).toHaveId('autoSaveWarning');
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveText(WARNING);
+  }
+
+  // The alpha of a computed CSS color ("rgb(...)" is opaque).
+  function alphaOf(color) {
+    const rgba = /^rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)$/.exec(color);
+    if (rgba) return Number(rgba[1]);
+    if (/^rgb\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*\)$/.test(color)) return 1;
+    throw new Error(`Unexpected computed color: ${color}`);
+  }
+
+  // The warning is in sight wherever the page is scrolled: entirely inside the
+  // viewport, on top of whatever is beneath it there (the round view's courts are
+  // positioned), on an opaque panel rather than as text over the background photo.
+  async function expectTheWarningInSight(page) {
+    await expectTheWarning(page);
+    const warning = page.locator('#autoSaveWarning');
+    await expect(warning).toBeInViewport({ ratio: 1 });
+    expect(await warning.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      return [[0.05, 0.5], [0.5, 0.5], [0.95, 0.5]].every(([x, y]) =>
+        el.contains(document.elementFromPoint(box.left + x * box.width, box.top + y * box.height)));
+    })).toBe(true);
+    expect(alphaOf(await warning.evaluate((el) => getComputedStyle(el).backgroundColor))).toBe(1);
+  }
+
+  // Makes a pinning check meaningful: the header's top is above the viewport, so
+  // the warning's place in the page flow (above the header) is out of sight too.
+  async function expectScrolledPastTheHeader(page) {
+    expect((await page.locator('#header').boundingBox()).y).toBeLessThan(0);
+  }
+
+  async function chooseSchedule(page, module, courts) {
+    await page.selectOption('#scheduleSelect', module);
+    await expect(page.locator('#courtNamesContainer input')).toHaveCount(courts);
+  }
+
+  test('A failing auto-save shows a warning, and the tournament stays playable', async ({ page }) => {
+    const errors = collectErrors(page);
+    await refuseStateWritesOnDemand(page);
+    await page.goto('/');
+    // No warning while nothing has failed: not on load, not after a save that works.
+    await expectNoWarning(page);
+    await startTournament(page, 'Full Cup');
+    await expectNoWarning(page);
+
+    // Given storage that refuses the tournament state, when a score is entered,
+    const storedBefore = await storedRaw(page, STATE_KEY);
+    const resultBefore = JSON.parse(storedBefore).schedule.rounds[0].matches[0].result;
+    expect(resultBefore).not.toEqual({ left: '10', right: '14' });
+    await setStateWritesFailing(page, true);
+    await expectARefusedSave(page, () => leftScore(page, 0).fill('10'));
+
+    // then the Organizer is warned that it is not being saved (it was not: the
+    // stored state is exactly the one saved before, without the score),
+    await expectTheWarning(page);
+    expect(await storedRaw(page, STATE_KEY)).toBe(storedBefore);
+    expect((await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[0].result).toEqual(resultBefore);
+
+    // and the tournament plays on: scores are completed and counted,
+    await expect(rightScore(page, 0)).toHaveValue('14');
+    await leftScore(page, 1).fill('20');
+    await expect(rightScore(page, 1)).toHaveValue('4');
+    await expect(page.locator('.scoreboard-container td', { hasText: /^20$/ })).toHaveCount(2);
+    // and the rounds can be browsed, the scores kept on screen.
+    await page.getByRole('button', { name: 'NEXT ROUND' }).click();
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await page.getByRole('button', { name: 'PREVIOUS ROUND' }).click();
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(leftScore(page, 0)).toHaveValue('10');
+    await expect(leftScore(page, 1)).toHaveValue('20');
+    await expectTheWarning(page);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST: scores entered while the auto-save failed are saved by the next save that works, which clears the warning', async ({ page }) => {
+    const errors = collectErrors(page);
+    await refuseStateWritesOnDemand(page);
+    await page.goto('/');
+    await startTournament(page, 'Recovered Cup');
+
+    // Given scores entered and a round advanced while the state could not be saved,
+    await setStateWritesFailing(page, true);
+    await expectARefusedSave(page, () => leftScore(page, 0).fill('10'));
+    await page.getByRole('button', { name: 'NEXT ROUND' }).click();
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expectARefusedSave(page, () => leftScore(page, 0).fill('15'));
+    await expectTheWarning(page);
+
+    // when storage works again and the next change is saved,
+    await setStateWritesFailing(page, false);
+    await leftScore(page, 1).fill('7');
+
+    // then the warning clears,
+    await expectNoWarning(page);
+
+    // and when the Organizer reopens the app, the tournament resumes at round 2
+    // with every score intact, those entered while saving failed included.
+    await page.reload();
+    await expectNoWarning(page);
+    await expect(page.locator('#tournamentTitle')).toHaveText('Recovered Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expect(leftScore(page, 0)).toHaveValue('15');
+    await expect(leftScore(page, 1)).toHaveValue('7');
+    await page.getByRole('button', { name: 'PREVIOUS ROUND' }).click();
+    await expect(leftScore(page, 0)).toHaveValue('10');
+    await expect(rightScore(page, 0)).toHaveValue('14');
+    expect(errors).toEqual([]);
+  });
+
+  test('An auto-save that keeps failing announces the warning once, without re-setting or flickering it', async ({ page }) => {
+    const errors = collectErrors(page);
+    await refuseStateWritesOnDemand(page);
+    await page.goto('/');
+    await startTournament(page, 'Repeat Cup');
+    await setStateWritesFailing(page, true);
+    await expectARefusedSave(page, () => leftScore(page, 0).fill('10'));
+    await expectTheWarning(page);
+
+    // Given every change to the warning element is recorded from now on,
+    await page.evaluate(() => {
+      window.warningChanges = [];
+      new MutationObserver((records) => window.warningChanges.push(...records.map((r) => r.type)))
+        .observe(document.getElementById('autoSaveWarning'),
+          { childList: true, characterData: true, subtree: true, attributes: true });
+    });
+
+    // when more saves fail (score edits and round changes),
+    await expectARefusedSave(page, () => leftScore(page, 0).fill('11'));
+    await expectARefusedSave(page, () => leftScore(page, 1).fill('5'));
+    await expectARefusedSave(page, () => page.getByRole('button', { name: 'NEXT ROUND' }).click());
+    await expectARefusedSave(page, () => page.getByRole('button', { name: 'PREVIOUS ROUND' }).click());
+
+    // then the warning is left exactly as it was: not cleared and set again.
+    expect(await page.evaluate(() => window.warningChanges)).toEqual([]);
+    await expectTheWarning(page);
+
+    // (The record does see a real change: the save that works clears it.)
+    await setStateWritesFailing(page, false);
+    await leftScore(page, 0).fill('12');
+    await expectNoWarning(page);
+    expect((await page.evaluate(() => window.warningChanges)).length).toBeGreaterThan(0);
+    expect(errors).toEqual([]);
+  });
+
+  test('A legacy migration whose writes fail on load does not show the auto-save warning', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a tournament and a saved list under the legacy keys only,
+    const donor = await context.newPage();
+    await donor.goto('/');
+    await startTournament(donor, 'Legacy Cup');
+    const rawState = await storedRaw(donor, STATE_KEY);
+    await donor.close();
+    const rawSaved = JSON.stringify([{
+      tournamentName: 'Saved Cup', schedule: JSON.parse(rawState).schedule, currentRoundIndex: 0, courtNames: [],
+      format: 'americano', mexicanoSeed: null, totalPoints: 24, savedAt: '2026-01-01T00:00:00.000Z',
+    }]);
+    // and storage that refuses the migrated copy of the state (only that first
+    // state write) and the saved list's migrated marker.
+    await page.addInitScript((keys) => {
+      for (const key of [keys.STATE_KEY, keys.SAVED_TOURNAMENTS_KEY, keys.STATE_MIGRATED_KEY,
+        keys.SAVED_TOURNAMENTS_MIGRATED_KEY]) localStorage.removeItem(key);
+      localStorage.setItem(keys.LEGACY_STATE_KEY, keys.rawState);
+      localStorage.setItem(keys.LEGACY_SAVED_TOURNAMENTS_KEY, keys.rawSaved);
+      let stateWrites = 0;
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === keys.STATE_KEY && stateWrites++ === 0) throw new DOMException('Storage is full', 'QuotaExceededError');
+        if (key === keys.SAVED_TOURNAMENTS_MIGRATED_KEY) throw new DOMException('Storage is full', 'QuotaExceededError');
+        return setItem.call(this, key, value);
+      };
+    }, {
+      STATE_KEY, SAVED_TOURNAMENTS_KEY, STATE_MIGRATED_KEY, SAVED_TOURNAMENTS_MIGRATED_KEY,
+      LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY, rawState, rawSaved,
+    });
+
+    // When the app loads,
+    await page.goto('/');
+
+    // then both migrations ran into the refused writes: the state is left
+    // unmigrated (a fresh setup) and the saved list is migrated without its marker,
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await expect(page.locator('.round')).toHaveCount(0);
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    expect(await storedRaw(page, STATE_MIGRATED_KEY)).toBeNull();
+    await expect(page.locator('#savedTournamentSelect option')).toContainText(['Saved Cup']);
+    expect(await storedRaw(page, SAVED_TOURNAMENTS_MIGRATED_KEY)).toBeNull();
+    // but that is no auto-save failure: no warning, now or once the app auto-saves.
+    await expectNoWarning(page);
+    await startTournament(page, 'Fresh Cup');
+    await leftScore(page, 0).fill('10');
+    await expect.poll(async () => (await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[0].result)
+      .toEqual({ left: '10', right: '14' });
+    await expectNoWarning(page);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not write the migrated copy of a legacy localStorage value');
+    expect(errors[0]).toContain(LEGACY_STATE_KEY);
+  });
+
+  test('A backup write that fails on load does not show the auto-save warning', async ({ page }) => {
+    const errors = collectErrors(page);
+    const warnings = [];
+    page.on('console', (message) => { if (message.type() === 'warning') warnings.push(message.text()); });
+    // Given an unusable stored state, and storage that refuses its backup (each
+    // refused backup write counted),
+    await page.addInitScript((keys) => {
+      localStorage.setItem(keys.STATE_KEY, '{"schedule": ');
+      localStorage.removeItem(keys.STATE_BACKUP_KEY);
+      window.refusedBackupWrites = 0;
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === keys.STATE_BACKUP_KEY) {
+          window.refusedBackupWrites++;
+          throw new DOMException('Storage is full', 'QuotaExceededError');
+        }
+        return setItem.call(this, key, value);
+      };
+    }, { STATE_KEY, STATE_BACKUP_KEY });
+
+    // when the app loads and falls back to a fresh setup, its one backup write
+    // attempted and refused (so a failed write did happen on this page),
+    await page.goto('/');
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await expect(page.locator('.round')).toHaveCount(0);
+    expect(await page.evaluate(() => window.refusedBackupWrites)).toBe(1);
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBeNull();
+    expect(warnings.some((w) => w.includes('Could not back up the stored tournament state'))).toBe(true);
+
+    // then there is no warning, now or once the app auto-saves.
+    await expectNoWarning(page);
+    await startTournament(page, 'Fresh Cup');
+    await leftScore(page, 0).fill('10');
+    await expect.poll(async () => (await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[0].result)
+      .toEqual({ left: '10', right: '14' });
+    await expectNoWarning(page);
+    expect(errors).toEqual([]);
+  });
+
+  test('The Save button reports its own outcome, apart from the auto-save warning', async ({ page }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given storage that refuses the saved-tournament list until the test lifts
+    // it (the state still saves),
+    await refuseStateWritesOnDemand(page);
+    await page.addInitScript((savedKey) => {
+      window.failSavedWrites = true;
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === savedKey && window.failSavedWrites) throw new DOMException('Storage is full', 'QuotaExceededError');
+        return setItem.call(this, key, value);
+      };
+    }, SAVED_TOURNAMENTS_KEY);
+    await page.goto('/');
+    await startTournament(page, 'Button Cup');
+    await leftScore(page, 0).fill('10');
+
+    // when the Organizer saves the tournament, the failure is reported as before
+    // (one alert), and the auto-save warning is not shown: the state still saves.
+    await page.click('#saveTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(1);
+    expect(dialogs).toEqual(['The tournament could not be saved.']);
+    await expectNoWarning(page);
+    expect((await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[0].result).toEqual({ left: '10', right: '14' });
+
+    // And when the auto-save fails but Save works, Save reports success as before,
+    // and the warning stays: the live state is still not being saved.
+    await page.evaluate(() => { window.failSavedWrites = false; });
+    await setStateWritesFailing(page, true);
+    await expectARefusedSave(page, () => leftScore(page, 1).fill('20'));
+    await expectTheWarning(page);
+    await page.click('#saveTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(2);
+    expect(dialogs[1]).toBe('Tournament saved!');
+    await expectTheWarning(page);
+    expect(errors).toEqual([]);
+  });
+
+  // The warning has one element, first in the body, shown in every view: setup,
+  // and play (the scoreboard is part of the round view, the settings toggled open
+  // during play are the setup panel). It is checked where it is hardest to see:
+  // after scrolling down a long page, at a phone and a desktop viewport.
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 720 }]) {
+    test.describe(`at ${viewport.width}x${viewport.height}`, () => {
+      test.use({ viewport });
+
+      test('The warning stays in sight after a score on the last court of a 24-player round, and covers nothing at the top', async ({ page }) => {
+        const errors = collectErrors(page);
+        await refuseStateWritesOnDemand(page);
+        await page.goto('/');
+        await chooseSchedule(page, '24p23r.js', 6);
+        await startTournament(page, 'Big Cup');
+        await expect(leftScore(page, 5)).toBeAttached();
+        await expectNoWarning(page);
+
+        // Given storage that refuses the tournament state, when a score is entered
+        // on the last court, the page scrolled down to it,
+        await leftScore(page, 5).scrollIntoViewIfNeeded();
+        await expectScrolledPastTheHeader(page);
+        await setStateWritesFailing(page, true);
+        await expectARefusedSave(page, () => leftScore(page, 5).fill('10'));
+        await expectScrolledPastTheHeader(page);
+
+        // then the warning is in sight, pinned at the top of the viewport,
+        await expectTheWarningInSight(page);
+        // above the score input just used, not over it,
+        const warningBox = await page.locator('#autoSaveWarning').boundingBox();
+        expect((await leftScore(page, 5).boundingBox()).y).toBeGreaterThanOrEqual(warningBox.y + warningBox.height);
+        await expect(rightScore(page, 5)).toHaveValue('14');
+
+        // and at the top of the page it sits above the header, covering nothing.
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expectTheWarningInSight(page);
+        const topBox = await page.locator('#autoSaveWarning').boundingBox();
+        expect(topBox.y + topBox.height).toBeLessThanOrEqual((await page.locator('#header').boundingBox()).y);
+        expect(errors).toEqual([]);
+      });
+
+      test('The warning stays in sight after a setup change low on the setup page', async ({ page }) => {
+        const errors = collectErrors(page);
+        await refuseStateWritesOnDemand(page);
+        await page.goto('/');
+        await chooseSchedule(page, '24p23r.js', 6);
+        await expectNoWarning(page);
+
+        // Given storage that refuses the tournament state, when the last court is
+        // named in the setup, the page scrolled down to it,
+        await page.locator('#courtNameInput_6').scrollIntoViewIfNeeded();
+        await expectScrolledPastTheHeader(page);
+        await setStateWritesFailing(page, true);
+        await expectARefusedSave(page, () => page.fill('#courtNameInput_6', 'Centre Court'));
+        await expectScrolledPastTheHeader(page);
+
+        // then the warning is in sight.
+        await expectTheWarningInSight(page);
+        expect(errors).toEqual([]);
+      });
+    });
+  }
+});
