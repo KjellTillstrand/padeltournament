@@ -1733,6 +1733,7 @@
     // Empty when there is no such round, so no caller reads past the schedule. A
     // loaded schedule asked for a round it lacks is a bug (every restore path
     // normalises the round index), so that case is warned about, not hidden.
+    // DEFERRED: AB#93 (drop the now-redundant currentSchedule checks below)
     function computeStandings(roundIndex) {
       if (!scheduledRound(roundIndex)) {
         if (currentSchedule) console.warn("No standings: round index " + roundIndex + " is not a round of the loaded schedule.");
