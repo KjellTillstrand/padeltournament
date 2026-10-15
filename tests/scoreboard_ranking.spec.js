@@ -175,10 +175,10 @@ test.describe('R-SCOREBOARD: Standings ranking and colour coding', () => {
 
     // Then first place shall be marked gold, second silver, third bronze,
     // and the remaining rows shall be marked light grey.
-    await expect(rows.nth(1)).toHaveCSS('background-color', 'rgb(255, 215, 0)');
-    await expect(rows.nth(2)).toHaveCSS('background-color', 'rgb(192, 192, 192)');
-    await expect(rows.nth(3)).toHaveCSS('background-color', 'rgb(205, 127, 50)');
-    await expect(rows.nth(4)).toHaveCSS('background-color', 'rgb(238, 238, 238)');
+    await expect(rows.nth(1)).toHaveCSS('background-color', GOLD);
+    await expect(rows.nth(2)).toHaveCSS('background-color', SILVER);
+    await expect(rows.nth(3)).toHaveCSS('background-color', BRONZE);
+    await expect(rows.nth(4)).toHaveCSS('background-color', GREY);
   });
 
   // @verifies REQ-12

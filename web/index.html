@@ -1763,9 +1763,9 @@
       const scoreboardContainer = document.getElementById("scoreboard-round-" + currentRoundNum);
       if (scoreboardContainer) {
         // Player names are user input: build the table with DOM APIs and set
-        // cell text via textContent, never innerHTML. The shape (header row,
-        // then one <tr> per player) is what the rank colours in style.css key on.
-        // The explicit <tbody> matches the DOM the HTML parser used to produce.
+        // cell text via textContent, never innerHTML. Each player row carries its
+        // resolved placement (data-placement), which the rank colours in style.css
+        // key on, so players sharing a placement share its colour. The explicit <tbody> matches the DOM the HTML parser used to produce.
         const table = document.createElement('table');
         const body = document.createElement('tbody');
         table.appendChild(body);
@@ -1776,7 +1776,7 @@
           headerRow.appendChild(th);
         });
         body.appendChild(headerRow);
-        const rows = scoreArray.map(item => {
+        scoreArray.forEach(item => {
           const row = document.createElement('tr');
           row.dataset.placement = item.placement;
           const playerCell = document.createElement('td');
@@ -1786,10 +1786,8 @@
           row.appendChild(playerCell);
           row.appendChild(scoreCell);
           body.appendChild(row);
-          return row;
         });
         scoreboardContainer.replaceChildren(table);
-        colorRowsByPlacement(rows);
       }
     }
 
@@ -1834,22 +1832,6 @@
         }
       });
       return advantage;
-    }
-
-    // style.css colours the standings by row position (gold, silver, bronze, then
-    // grey). With shared placements a row's colour must follow its placement
-    // instead, so a row whose placement differs from its position takes the colour
-    // the stylesheet gives the row AT that placement's position (every placement
-    // is at or above its own row, so that row exists). The palette is read from
-    // the stylesheet, not repeated here, and read before any row is overridden.
-    function colorRowsByPlacement(rows) {
-      const COLOR_TIERS = 4; // gold, silver, bronze, then one colour for the rest
-      const tierOf = position => Math.min(position, COLOR_TIERS) - 1;
-      const palette = rows.slice(0, COLOR_TIERS).map(row => getComputedStyle(row).backgroundColor);
-      rows.forEach((row, index) => {
-        const tier = tierOf(Number(row.dataset.placement));
-        if (tier !== tierOf(index + 1)) row.style.backgroundColor = palette[tier];
-      });
     }
 
     function disableSettings() {

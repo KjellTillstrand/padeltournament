@@ -161,18 +161,21 @@ body {
     width: 5ch;
     text-align: right;
 }
-/* Scoreboard Row Coloring */
-.scoreboard-container table tr:nth-child(2) {
+/* Scoreboard Row Coloring: by each player row's resolved placement (set by
+   updateAllScoreboards), not its position, so players sharing a placement share
+   its colour. Gold, silver, bronze, then light grey for every other placement;
+   the header row has no placement and stays uncoloured. */
+.scoreboard-container table tr[data-placement] {
+    background-color: #eee;
+}
+.scoreboard-container table tr[data-placement="1"] {
     background-color: gold;
 }
-.scoreboard-container table tr:nth-child(3) {
+.scoreboard-container table tr[data-placement="2"] {
     background-color: silver;
 }
-.scoreboard-container table tr:nth-child(4) {
+.scoreboard-container table tr[data-placement="3"] {
     background-color: #cd7f32;
-}
-.scoreboard-container table tr:nth-child(n+5) {
-    background-color: #eee;
 }
 
 /* Round Container */
