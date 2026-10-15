@@ -158,6 +158,30 @@ test.describe('R-SCOREBOARD: Standings ranking and colour coding', () => {
   });
 
   // @verifies REQ-12
+  test('R-SCOREBOARD: a half-typed score that is not a complete result never reorders the standings', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given a started tournament with no scores yet: every player is level on 0.
+    await organizer.attemptsTo(StartTheTournament('Half-typed'));
+    const players = JSON.parse(
+      await page.evaluate((key) => localStorage.getItem(key), STATE_KEY)
+    ).schedule.players;
+    const level = players.map((player) => ({ player, points: 0, placement: 1, color: GOLD }));
+    await expect.poll(() => organizer.asksFor(Standings)).toEqual(level);
+
+    // When the Organizer types a score key by key and overshoots the points
+    // total: "2" is a complete 2-22 result, "25" is no valid score at all.
+    const leftScore = page.locator('.result-overlay-left input').first();
+    await leftScore.pressSequentially('25');
+    await expect(leftScore).toHaveValue('25');
+    await expect(page.locator('.error-message').first()).toHaveText(/whole number from 0 to 24/);
+
+    // Then only complete results are credited: the half-typed entry leaves
+    // every player level, listed in player-list order and sharing first place.
+    await expect.poll(() => organizer.asksFor(Standings)).toEqual(level);
+  });
+
+  // @verifies REQ-12
   test('R-SCOREBOARD: The top three placements are color-coded', async ({ page }) => {
     const organizer = theOrganizer(page);
 
