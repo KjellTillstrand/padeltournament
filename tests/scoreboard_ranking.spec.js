@@ -84,8 +84,17 @@ const StandingsRowCount = async (actor) => {
 // Ties are set up exactly by resuming a planted, completed tournament rather than
 // by playing one: a full round-robin makes every pair meet, so the "never opposed"
 // case only exists in partial schedules. Eight players on two courts; each game is
-// [left team, right team, left points, right points] out of 24.
+// [left team, right team, left points, right points] out of 24, or just
+// [left team, right team] for a game not scored yet.
 const PLAYERS = ['Ada', 'Bo', 'Cy', 'Di', 'Ed', 'Flo', 'Gus', 'Hal'];
+
+// Rounds 1 and 2 scored (totals: Bo 45, Gus 39, Hal 35, Di 23, Ada 21, Flo 13,
+// Ed 9, Cy 7), round 3 not scored yet.
+const TWO_ROUNDS_SCORED_THIRD_OPEN = [
+  [[['Ada', 'Bo'], ['Cy', 'Di'], 21, 3], [['Ed', 'Flo'], ['Gus', 'Hal'], 9, 15]],
+  [[['Ada', 'Ed'], ['Bo', 'Gus'], 0, 24], [['Cy', 'Flo'], ['Di', 'Hal'], 4, 20]],
+  [[['Ada', 'Flo'], ['Cy', 'Gus']], [['Bo', 'Ed'], ['Di', 'Hal']]],
+];
 
 const GOLD = 'rgb(255, 215, 0)';
 const SILVER = 'rgb(192, 192, 192)';
@@ -104,7 +113,9 @@ const ResumeACompletedTournament = (rounds, players = PLAYERS) => async (actor) 
         matches: games.map(([left, right, leftPoints, rightPoints], court) => ({
           court: court + 1,
           teams: [left, right],
-          result: { left: String(leftPoints), right: String(rightPoints) },
+          result: leftPoints === undefined
+            ? null
+            : { left: String(leftPoints), right: String(rightPoints) },
         })),
       })),
     },
@@ -158,27 +169,34 @@ test.describe('R-SCOREBOARD: Standings ranking and colour coding', () => {
   });
 
   // @verifies REQ-12
-  test('R-SCOREBOARD: a half-typed score that is not a complete result never reorders the standings', async ({ page }) => {
+  test('R-SCOREBOARD: an overshooting score is never credited and leaves the standings as they were', async ({ page }) => {
     const organizer = theOrganizer(page);
 
-    // Given a started tournament with no scores yet: every player is level on 0.
-    await organizer.attemptsTo(StartTheTournament('Half-typed'));
-    const players = JSON.parse(
-      await page.evaluate((key) => localStorage.getItem(key), STATE_KEY)
-    ).schedule.players;
-    const level = players.map((player) => ({ player, points: 0, placement: 1, color: GOLD }));
-    await expect.poll(() => organizer.asksFor(Standings)).toEqual(level);
+    // Given scores have been recorded across rounds 1 and 2, with distinct totals
+    // in an order unlike the player-list order, and round 3 not scored yet.
+    await organizer.attemptsTo(ResumeACompletedTournament(TWO_ROUNDS_SCORED_THIRD_OPEN));
+    const ranked = [
+      { player: 'Bo', points: 45, placement: 1, color: GOLD },
+      { player: 'Gus', points: 39, placement: 2, color: SILVER },
+      { player: 'Hal', points: 35, placement: 3, color: BRONZE },
+      { player: 'Di', points: 23, placement: 4, color: GREY },
+      { player: 'Ada', points: 21, placement: 5, color: GREY },
+      { player: 'Flo', points: 13, placement: 6, color: GREY },
+      { player: 'Ed', points: 9, placement: 7, color: GREY },
+      { player: 'Cy', points: 7, placement: 8, color: GREY },
+    ];
+    expect(await organizer.asksFor(Standings)).toEqual(ranked);
 
-    // When the Organizer types a score key by key and overshoots the points
-    // total: "2" is a complete 2-22 result, "25" is no valid score at all.
+    // When the Organizer types a round-3 score key by key and overshoots the
+    // points total: "25" is no valid score out of 24.
     const leftScore = page.locator('.result-overlay-left input').first();
     await leftScore.pressSequentially('25');
     await expect(leftScore).toHaveValue('25');
     await expect(page.locator('.error-message').first()).toHaveText(/whole number from 0 to 24/);
 
-    // Then only complete results are credited: the half-typed entry leaves
-    // every player level, listed in player-list order and sharing first place.
-    await expect.poll(() => organizer.asksFor(Standings)).toEqual(level);
+    // Then the overshooting entry is not credited, and the players are still
+    // listed in descending order of total points, exactly as before.
+    await expect.poll(() => organizer.asksFor(Standings)).toEqual(ranked);
   });
 
   // @verifies REQ-12
@@ -270,14 +288,24 @@ function collectErrors(page) {
   return errors;
 }
 
-test.describe('Standings without a loaded schedule', () => {
+// Every console.warn text, for asserting a flow reported what it skipped.
+function collectWarnings(page) {
+  const warnings = [];
+  page.on('console', (message) => {
+    if (message.type() === 'warning') warnings.push(message.text());
+  });
+  return warnings;
+}
+
+test.describe('Standings without a current round', () => {
   test('changing the points total with no schedule loaded neither throws nor skips the save', async ({ page }) => {
     // Given the default schedule module fails to load, so the app starts on the
-    // unknown-module branch with no schedule.
+    // unknown-module branch with no schedule. The init path's last report of it
+    // (after which it only sets up the format controls) is the readiness signal.
     const errors = collectErrors(page);
     await page.route('**/schedules/12p11r.js', (route) => route.abort());
     await page.goto('/');
-    await expect(page.locator('#globalTotalPoints')).toBeEnabled();
+    await expect.poll(() => errors).toContain('console.error: No schedule loaded; please load a schedule first.');
     expect(errors).toContain('console.error: Unknown module name: 12p11r.js');
 
     // When the Organizer changes the points total.
@@ -287,6 +315,35 @@ test.describe('Standings without a loaded schedule', () => {
     await expect.poll(() =>
       page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), STATE_KEY)
     ).toMatchObject({ schedule: null, totalPoints: 32 });
+    expect(errors.filter((error) => error.startsWith('pageerror:'))).toEqual([]);
+  });
+
+  test('a score entered while the round index is outside the schedule warns, neither throws nor skips the save', async ({ page }) => {
+    // Given a resumed tournament whose round index has been pushed outside its
+    // three rounds. Every restore path normalises a stored index, so the corrupt
+    // index is set on the live app (a top-level binding of its script).
+    const errors = collectErrors(page);
+    const warnings = collectWarnings(page);
+    const organizer = theOrganizer(page);
+    await organizer.attemptsTo(ResumeACompletedTournament(TWO_ROUNDS_SCORED_THIRD_OPEN));
+    const shown = await organizer.asksFor(Standings);
+    await page.evaluate(() => { currentRoundIndex = 99; }); // eslint-disable-line no-undef
+
+    // When the Organizer enters a complete score in the round on screen.
+    await page.locator('.result-overlay-left input').first().fill('24');
+
+    // Then the missing round is reported, not hidden,
+    await expect.poll(() => warnings).toContain(
+      'No standings: round index 99 is not a round of the loaded schedule.'
+    );
+    // the score is still saved,
+    await expect.poll(async () => {
+      const state = JSON.parse(await page.evaluate((key) => localStorage.getItem(key), STATE_KEY));
+      return state.schedule.rounds[2].matches[0].result;
+    }).toEqual({ left: '24', right: '0' });
+    // the standings on screen are left as drawn (not redrawn for another round),
+    expect(await organizer.asksFor(Standings)).toEqual(shown);
+    // and no page error is thrown on the way.
     expect(errors.filter((error) => error.startsWith('pageerror:'))).toEqual([]);
   });
 });
