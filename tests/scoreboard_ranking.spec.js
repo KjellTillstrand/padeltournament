@@ -93,11 +93,12 @@ const BRONZE = 'rgb(205, 127, 50)';
 const GREY = 'rgb(238, 238, 238)';
 
 // Seeds the stored tournament before any app script runs, then opens the app on
-// the final round, so the standings cover every game.
-const ResumeACompletedTournament = (rounds) => async (actor) => {
+// the final round, so the standings cover every game. The players, in player-list
+// order, default to PLAYERS.
+const ResumeACompletedTournament = (rounds, players = PLAYERS) => async (actor) => {
   const state = {
     schedule: {
-      players: PLAYERS,
+      players: players,
       rounds: rounds.map((games, index) => ({
         roundNumber: index + 1,
         matches: games.map(([left, right, leftPoints, rightPoints], court) => ({
@@ -117,7 +118,7 @@ const ResumeACompletedTournament = (rounds) => async (actor) => {
     localStorage.setItem(key, seed);
   }, { key: STATE_KEY, seed: JSON.stringify(state) });
   await actor.page.goto('/');
-  await expect(actor.page.locator('.scoreboard-container table tr')).toHaveCount(1 + PLAYERS.length);
+  await expect(actor.page.locator('.scoreboard-container table tr')).toHaveCount(1 + players.length);
 };
 
 // Each standings row, top to bottom: the player, total points, placement and the
@@ -389,6 +390,34 @@ test.describe('R-TIEBREAK-H2H: Head-to-head tiebreak, then shared placement', ()
       { player: 'Cy', points: 48, placement: 1, color: GOLD },
       { player: 'Flo', points: 47, placement: 3, color: BRONZE },
       { player: 'Ed', points: 43, placement: 4, color: GREY },
+    ]);
+  });
+
+  // @verifies REQ-44
+  test('R-TIEBREAK-H2H: a shared placement keeps player-list order for integer-like player names', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given players named "10", "1" and "2", listed in that order, where "10" and
+    // "2" end level on 57 points and never opposed each other (the shared-tie
+    // fixture above, with Di, Hal and Gus renamed). Integer-like keys enumerate
+    // first and in numeric order, so ranking by enumerating names would list
+    // "2" before "10".
+    await organizer.attemptsTo(ResumeACompletedTournament([
+      [[['Ada', 'Bo'], ['Cy', '10'], 2, 22], [['Ed', 'Flo'], ['1', '2'], 2, 22]],
+      [[['Ada', 'Ed'], ['Bo', '1'], 7, 17], [['Cy', 'Flo'], ['10', '2'], 13, 11]],
+      [[['Ada', 'Flo'], ['Cy', '1'], 18, 6], [['Bo', 'Ed'], ['10', '2'], 0, 24]],
+    ], ['Ada', 'Bo', 'Cy', '10', 'Ed', 'Flo', '1', '2']));
+
+    // When the Organizer reviews the standings.
+    const standings = await organizer.asksFor(Standings);
+
+    // Then both shall share first place, listed in player-list order, and the
+    // colours follow the shared placement.
+    expect(standings.slice(0, 4)).toEqual([
+      { player: '10', points: 57, placement: 1, color: GOLD },
+      { player: '2', points: 57, placement: 1, color: GOLD },
+      { player: '1', points: 45, placement: 3, color: BRONZE },
+      { player: 'Cy', points: 41, placement: 4, color: GREY },
     ]);
   });
 
