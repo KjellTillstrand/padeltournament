@@ -235,6 +235,37 @@ test.describe('R-SCOREBOARD: Standings ranking and colour coding', () => {
   });
 });
 
+// Every uncaught page error and console.error, for asserting a flow ran cleanly.
+function collectErrors(page) {
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+  });
+  return errors;
+}
+
+test.describe('Standings without a loaded schedule', () => {
+  test('changing the points total with no schedule loaded neither throws nor skips the save', async ({ page }) => {
+    // Given the default schedule module fails to load, so the app starts on the
+    // unknown-module branch with no schedule.
+    const errors = collectErrors(page);
+    await page.route('**/schedules/12p11r.js', (route) => route.abort());
+    await page.goto('/');
+    await expect(page.locator('#globalTotalPoints')).toBeEnabled();
+    expect(errors).toContain('console.error: Unknown module name: 12p11r.js');
+
+    // When the Organizer changes the points total.
+    await page.selectOption('#globalTotalPoints', '32');
+
+    // Then the change is saved, and no page error is thrown on the way.
+    await expect.poll(() =>
+      page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), STATE_KEY)
+    ).toMatchObject({ schedule: null, totalPoints: 32 });
+    expect(errors.filter((error) => error.startsWith('pageerror:'))).toEqual([]);
+  });
+});
+
 test.describe('R-TIEBREAK-H2H: Head-to-head tiebreak, then shared placement', () => {
   // @verifies REQ-44
   test('R-TIEBREAK-H2H: a two-way tie with a mutual game resolves head-to-head', async ({ page }) => {

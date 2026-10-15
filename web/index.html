@@ -1753,7 +1753,11 @@
       return scoreArray;
     }
 
+    // Redraws the current round's standings. Without a loaded schedule (a schedule
+    // module that failed to load leaves none) there is nothing to rank: return, so
+    // callers such as the points listener still go on to save.
     function updateAllScoreboards() {
+      if (!currentSchedule || !Array.isArray(currentSchedule.rounds) || !currentSchedule.rounds[currentRoundIndex]) return;
       const scoreArray = computeStandings(currentRoundIndex);
       const currentRoundNum = currentSchedule.rounds[currentRoundIndex].roundNumber;
       const scoreboardContainer = document.getElementById("scoreboard-round-" + currentRoundNum);
