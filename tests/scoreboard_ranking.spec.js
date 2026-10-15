@@ -84,8 +84,17 @@ const StandingsRowCount = async (actor) => {
 // Ties are set up exactly by resuming a planted, completed tournament rather than
 // by playing one: a full round-robin makes every pair meet, so the "never opposed"
 // case only exists in partial schedules. Eight players on two courts; each game is
-// [left team, right team, left points, right points] out of 24.
+// [left team, right team, left points, right points] out of 24, or just
+// [left team, right team] for a game not scored yet.
 const PLAYERS = ['Ada', 'Bo', 'Cy', 'Di', 'Ed', 'Flo', 'Gus', 'Hal'];
+
+// Rounds 1 and 2 scored (totals: Bo 45, Gus 39, Hal 35, Di 23, Ada 21, Flo 13,
+// Ed 9, Cy 7), round 3 not scored yet.
+const TWO_ROUNDS_SCORED_THIRD_OPEN = [
+  [[['Ada', 'Bo'], ['Cy', 'Di'], 21, 3], [['Ed', 'Flo'], ['Gus', 'Hal'], 9, 15]],
+  [[['Ada', 'Ed'], ['Bo', 'Gus'], 0, 24], [['Cy', 'Flo'], ['Di', 'Hal'], 4, 20]],
+  [[['Ada', 'Flo'], ['Cy', 'Gus']], [['Bo', 'Ed'], ['Di', 'Hal']]],
+];
 
 const GOLD = 'rgb(255, 215, 0)';
 const SILVER = 'rgb(192, 192, 192)';
@@ -93,17 +102,20 @@ const BRONZE = 'rgb(205, 127, 50)';
 const GREY = 'rgb(238, 238, 238)';
 
 // Seeds the stored tournament before any app script runs, then opens the app on
-// the final round, so the standings cover every game.
-const ResumeACompletedTournament = (rounds) => async (actor) => {
+// the final round, so the standings cover every game. The players, in player-list
+// order, default to PLAYERS.
+const ResumeACompletedTournament = (rounds, players = PLAYERS) => async (actor) => {
   const state = {
     schedule: {
-      players: PLAYERS,
+      players: players,
       rounds: rounds.map((games, index) => ({
         roundNumber: index + 1,
         matches: games.map(([left, right, leftPoints, rightPoints], court) => ({
           court: court + 1,
           teams: [left, right],
-          result: { left: String(leftPoints), right: String(rightPoints) },
+          result: leftPoints === undefined
+            ? null
+            : { left: String(leftPoints), right: String(rightPoints) },
         })),
       })),
     },
@@ -117,7 +129,7 @@ const ResumeACompletedTournament = (rounds) => async (actor) => {
     localStorage.setItem(key, seed);
   }, { key: STATE_KEY, seed: JSON.stringify(state) });
   await actor.page.goto('/');
-  await expect(actor.page.locator('.scoreboard-container table tr')).toHaveCount(1 + PLAYERS.length);
+  await expect(actor.page.locator('.scoreboard-container table tr')).toHaveCount(1 + players.length);
 };
 
 // Each standings row, top to bottom: the player, total points, placement and the
@@ -157,6 +169,37 @@ test.describe('R-SCOREBOARD: Standings ranking and colour coding', () => {
   });
 
   // @verifies REQ-12
+  test('R-SCOREBOARD: an overshooting score is never credited and leaves the standings as they were', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given scores have been recorded across rounds 1 and 2, with distinct totals
+    // in an order unlike the player-list order, and round 3 not scored yet.
+    await organizer.attemptsTo(ResumeACompletedTournament(TWO_ROUNDS_SCORED_THIRD_OPEN));
+    const ranked = [
+      { player: 'Bo', points: 45, placement: 1, color: GOLD },
+      { player: 'Gus', points: 39, placement: 2, color: SILVER },
+      { player: 'Hal', points: 35, placement: 3, color: BRONZE },
+      { player: 'Di', points: 23, placement: 4, color: GREY },
+      { player: 'Ada', points: 21, placement: 5, color: GREY },
+      { player: 'Flo', points: 13, placement: 6, color: GREY },
+      { player: 'Ed', points: 9, placement: 7, color: GREY },
+      { player: 'Cy', points: 7, placement: 8, color: GREY },
+    ];
+    expect(await organizer.asksFor(Standings)).toEqual(ranked);
+
+    // When the Organizer types a round-3 score key by key and overshoots the
+    // points total: "25" is no valid score out of 24.
+    const leftScore = page.locator('.result-overlay-left input').first();
+    await leftScore.pressSequentially('25');
+    await expect(leftScore).toHaveValue('25');
+    await expect(page.locator('.error-message').first()).toHaveText(/whole number from 0 to 24/);
+
+    // Then the overshooting entry is not credited, and the players are still
+    // listed in descending order of total points, exactly as before.
+    await expect.poll(() => organizer.asksFor(Standings)).toEqual(ranked);
+  });
+
+  // @verifies REQ-12
   test('R-SCOREBOARD: The top three placements are color-coded', async ({ page }) => {
     const organizer = theOrganizer(page);
 
@@ -175,10 +218,10 @@ test.describe('R-SCOREBOARD: Standings ranking and colour coding', () => {
 
     // Then first place shall be marked gold, second silver, third bronze,
     // and the remaining rows shall be marked light grey.
-    await expect(rows.nth(1)).toHaveCSS('background-color', 'rgb(255, 215, 0)');
-    await expect(rows.nth(2)).toHaveCSS('background-color', 'rgb(192, 192, 192)');
-    await expect(rows.nth(3)).toHaveCSS('background-color', 'rgb(205, 127, 50)');
-    await expect(rows.nth(4)).toHaveCSS('background-color', 'rgb(238, 238, 238)');
+    await expect(rows.nth(1)).toHaveCSS('background-color', GOLD);
+    await expect(rows.nth(2)).toHaveCSS('background-color', SILVER);
+    await expect(rows.nth(3)).toHaveCSS('background-color', BRONZE);
+    await expect(rows.nth(4)).toHaveCSS('background-color', GREY);
   });
 
   // @verifies REQ-12
@@ -232,6 +275,76 @@ test.describe('R-SCOREBOARD: Standings ranking and colour coding', () => {
     expect(await playerCell.textContent()).toBe(payload);
     // and no injected handler shall have run.
     expect(await page.evaluate(() => window.q)).toBeUndefined();
+  });
+});
+
+// Every uncaught page error and console.error, for asserting a flow ran cleanly.
+function collectErrors(page) {
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+  });
+  return errors;
+}
+
+// Every console.warn text, for asserting a flow reported what it skipped.
+function collectWarnings(page) {
+  const warnings = [];
+  page.on('console', (message) => {
+    if (message.type() === 'warning') warnings.push(message.text());
+  });
+  return warnings;
+}
+
+test.describe('Standings without a current round', () => {
+  test('changing the points total with no schedule loaded neither throws nor skips the save', async ({ page }) => {
+    // Given the default schedule module fails to load, so the app starts on the
+    // unknown-module branch with no schedule. The init path's last report of it
+    // (after which it only sets up the format controls) is the readiness signal.
+    const errors = collectErrors(page);
+    await page.route('**/schedules/12p11r.js', (route) => route.abort());
+    await page.goto('/');
+    await expect.poll(() => errors).toContain('console.error: No schedule loaded; please load a schedule first.');
+    expect(errors).toContain('console.error: Unknown module name: 12p11r.js');
+
+    // When the Organizer changes the points total.
+    await page.selectOption('#globalTotalPoints', '32');
+
+    // Then the change is saved, and no page error is thrown on the way.
+    await expect.poll(() =>
+      page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), STATE_KEY)
+    ).toMatchObject({ schedule: null, totalPoints: 32 });
+    expect(errors.filter((error) => error.startsWith('pageerror:'))).toEqual([]);
+  });
+
+  test('a score entered while the round index is outside the schedule warns, neither throws nor skips the save', async ({ page }) => {
+    // Given a resumed tournament whose round index has been pushed outside its
+    // three rounds. Every restore path normalises a stored index, so the corrupt
+    // index is set on the live app (a top-level binding of its script).
+    const errors = collectErrors(page);
+    const warnings = collectWarnings(page);
+    const organizer = theOrganizer(page);
+    await organizer.attemptsTo(ResumeACompletedTournament(TWO_ROUNDS_SCORED_THIRD_OPEN));
+    const shown = await organizer.asksFor(Standings);
+    await page.evaluate(() => { currentRoundIndex = 99; }); // eslint-disable-line no-undef
+
+    // When the Organizer enters a complete score in the round on screen.
+    await page.locator('.result-overlay-left input').first().fill('24');
+
+    // Then the missing round is reported, not hidden,
+    await expect.poll(() => warnings).toContain(
+      'No standings: round index 99 is not a round of the loaded schedule.'
+    );
+    // the score is still saved,
+    await expect.poll(async () => {
+      const state = JSON.parse(await page.evaluate((key) => localStorage.getItem(key), STATE_KEY));
+      return state.schedule.rounds[2].matches[0].result;
+    }).toEqual({ left: '24', right: '0' });
+    // the standings on screen are left as drawn (not redrawn for another round),
+    expect(await organizer.asksFor(Standings)).toEqual(shown);
+    // and no page error is thrown on the way.
+    expect(errors.filter((error) => error.startsWith('pageerror:'))).toEqual([]);
   });
 });
 
@@ -358,6 +471,34 @@ test.describe('R-TIEBREAK-H2H: Head-to-head tiebreak, then shared placement', ()
       { player: 'Cy', points: 48, placement: 1, color: GOLD },
       { player: 'Flo', points: 47, placement: 3, color: BRONZE },
       { player: 'Ed', points: 43, placement: 4, color: GREY },
+    ]);
+  });
+
+  // @verifies REQ-44
+  test('R-TIEBREAK-H2H: a shared placement keeps player-list order for integer-like player names', async ({ page }) => {
+    const organizer = theOrganizer(page);
+
+    // Given players named "10", "1" and "2", listed in that order, where "10" and
+    // "2" end level on 57 points and never opposed each other (the shared-tie
+    // fixture above, with Di, Hal and Gus renamed). Integer-like keys enumerate
+    // first and in numeric order, so ranking by enumerating names would list
+    // "2" before "10".
+    await organizer.attemptsTo(ResumeACompletedTournament([
+      [[['Ada', 'Bo'], ['Cy', '10'], 2, 22], [['Ed', 'Flo'], ['1', '2'], 2, 22]],
+      [[['Ada', 'Ed'], ['Bo', '1'], 7, 17], [['Cy', 'Flo'], ['10', '2'], 13, 11]],
+      [[['Ada', 'Flo'], ['Cy', '1'], 18, 6], [['Bo', 'Ed'], ['10', '2'], 0, 24]],
+    ], ['Ada', 'Bo', 'Cy', '10', 'Ed', 'Flo', '1', '2']));
+
+    // When the Organizer reviews the standings.
+    const standings = await organizer.asksFor(Standings);
+
+    // Then both shall share first place, listed in player-list order, and the
+    // colours follow the shared placement.
+    expect(standings.slice(0, 4)).toEqual([
+      { player: '10', points: 57, placement: 1, color: GOLD },
+      { player: '2', points: 57, placement: 1, color: GOLD },
+      { player: '1', points: 45, placement: 3, color: BRONZE },
+      { player: 'Cy', points: 41, placement: 4, color: GREY },
     ]);
   });
 

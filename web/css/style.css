@@ -161,18 +161,25 @@ body {
     width: 5ch;
     text-align: right;
 }
-/* Scoreboard Row Coloring */
-.scoreboard-container table tr:nth-child(2) {
+/* Scoreboard Row Coloring: by each player row's resolved placement (set by
+   updateAllScoreboards), not its position, so players sharing a placement share
+   its colour. Gold, silver, bronze, then light grey for every other placement;
+   the header row has no placement and stays uncoloured.
+   Keep the grey tr[data-placement] rule BEFORE the gold/silver/bronze rules: all
+   four have equal specificity, so source order decides (the R-SCOREBOARD and
+   R-TIEBREAK-H2H colour tests go red if grey wins). Row colour is keyed on
+   data-placement only: site stylesheets must not restyle rows by position. */
+.scoreboard-container table tr[data-placement] {
+    background-color: #eee;
+}
+.scoreboard-container table tr[data-placement="1"] {
     background-color: gold;
 }
-.scoreboard-container table tr:nth-child(3) {
+.scoreboard-container table tr[data-placement="2"] {
     background-color: silver;
 }
-.scoreboard-container table tr:nth-child(4) {
+.scoreboard-container table tr[data-placement="3"] {
     background-color: #cd7f32;
-}
-.scoreboard-container table tr:nth-child(n+5) {
-    background-color: #eee;
 }
 
 /* Round Container */

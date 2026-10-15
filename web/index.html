@@ -1719,9 +1719,26 @@
       return true;
     }
 
+    // The schedule's round at roundIndex, or null when no schedule is loaded (a
+    // schedule module that failed to load leaves none) or the index is not one of
+    // its rounds.
+    function scheduledRound(roundIndex) {
+      if (!currentSchedule || !Array.isArray(currentSchedule.rounds)) return null;
+      if (!Number.isInteger(roundIndex) || roundIndex < 0 || roundIndex >= currentSchedule.rounds.length) return null;
+      return currentSchedule.rounds[roundIndex];
+    }
+
     // The ranking after the rounds up to roundIndex, best first: the order the
     // scoreboard shows and Mexicano pairs by. Each entry: { player, score, placement }.
+    // Empty when there is no such round, so no caller reads past the schedule. A
+    // loaded schedule asked for a round it lacks is a bug (every restore path
+    // normalises the round index), so that case is warned about, not hidden.
+    // DEFERRED: AB#93 (drop the now-redundant currentSchedule checks below)
     function computeStandings(roundIndex) {
+      if (!scheduledRound(roundIndex)) {
+        if (currentSchedule) console.warn("No standings: round index " + roundIndex + " is not a round of the loaded schedule.");
+        return [];
+      }
       // No prototype, so a player named "__proto__" is scored like any other.
       const scores = Object.create(null);
       if (currentSchedule && currentSchedule.players) {
@@ -1753,15 +1770,22 @@
       return scoreArray;
     }
 
+    // Redraws the current round's standings. With no current round (no schedule
+    // loaded, or an index outside it, which computeStandings warns about) there is
+    // no scoreboard to draw, so it returns and callers such as the points listener
+    // still go on to save. It does not clamp to another round: displayRound shows
+    // "Round data not available." for such an index, with no scoreboard on screen.
     function updateAllScoreboards() {
       const scoreArray = computeStandings(currentRoundIndex);
-      const currentRoundNum = currentSchedule.rounds[currentRoundIndex].roundNumber;
-      const scoreboardContainer = document.getElementById("scoreboard-round-" + currentRoundNum);
+      const round = scheduledRound(currentRoundIndex);
+      if (!round) return;
+      const scoreboardContainer = document.getElementById("scoreboard-round-" + round.roundNumber);
       if (scoreboardContainer) {
         // Player names are user input: build the table with DOM APIs and set
-        // cell text via textContent, never innerHTML. The shape (header row,
-        // then one <tr> per player) is what the rank colours in style.css key on.
-        // The explicit <tbody> matches the DOM the HTML parser used to produce.
+        // cell text via textContent, never innerHTML. Each player row carries its
+        // resolved placement (data-placement), which the rank colours in style.css
+        // key on, so players sharing a placement share its colour. The explicit
+        // <tbody> matches the DOM the HTML parser used to produce.
         const table = document.createElement('table');
         const body = document.createElement('tbody');
         table.appendChild(body);
@@ -1772,8 +1796,9 @@
           headerRow.appendChild(th);
         });
         body.appendChild(headerRow);
-        const rows = scoreArray.map(item => {
+        scoreArray.forEach(item => {
           const row = document.createElement('tr');
+          // Always an integer >= 1, set by rankStandings: style.css keys on it.
           row.dataset.placement = item.placement;
           const playerCell = document.createElement('td');
           playerCell.textContent = item.player;
@@ -1782,10 +1807,8 @@
           row.appendChild(playerCell);
           row.appendChild(scoreCell);
           body.appendChild(row);
-          return row;
         });
         scoreboardContainer.replaceChildren(table);
-        colorRowsByPlacement(rows);
       }
     }
 
@@ -1830,22 +1853,6 @@
         }
       });
       return advantage;
-    }
-
-    // style.css colours the standings by row position (gold, silver, bronze, then
-    // grey). With shared placements a row's colour must follow its placement
-    // instead, so a row whose placement differs from its position takes the colour
-    // the stylesheet gives the row AT that placement's position (every placement
-    // is at or above its own row, so that row exists). The palette is read from
-    // the stylesheet, not repeated here, and read before any row is overridden.
-    function colorRowsByPlacement(rows) {
-      const COLOR_TIERS = 4; // gold, silver, bronze, then one colour for the rest
-      const tierOf = position => Math.min(position, COLOR_TIERS) - 1;
-      const palette = rows.slice(0, COLOR_TIERS).map(row => getComputedStyle(row).backgroundColor);
-      rows.forEach((row, index) => {
-        const tier = tierOf(Number(row.dataset.placement));
-        if (tier !== tierOf(index + 1)) row.style.backgroundColor = palette[tier];
-      });
     }
 
     function disableSettings() {
@@ -1969,6 +1976,7 @@
     document.getElementById("scheduleSelect").addEventListener("change", function () {
       loadScheduleFromModule(this.value);
     });
+    // DEFERRED: AB#88 (a points change before the restore saves a blank state)
     document.getElementById("globalTotalPoints").addEventListener("change", function () {
       totalPoints = normalizeTotalPoints(parseInt(this.value, 10));
       updateAllScoreboards();
