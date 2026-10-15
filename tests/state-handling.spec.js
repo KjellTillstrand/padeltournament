@@ -2249,7 +2249,8 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
     // until the Organizer enters a real score on that court.
     await page.locator('.result-overlay-left input').first().fill('12');
-    await expect(page.locator('#generateNextRoundBtn')).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'false');
+    await expect(page.locator('#generateNextRoundBtn')).not.toHaveAttribute('disabled');
     expect(errors).toEqual([]);
   });
 

@@ -111,7 +111,9 @@ async function expectTheNextRoundNotOffered(page) {
 }
 
 async function expectTheNextRoundOffered(page) {
-  await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'false');
+  const generate = page.locator('#generateNextRoundBtn');
+  await expect(generate).toHaveAttribute('aria-disabled', 'false');
+  await expect(generate).not.toHaveAttribute('disabled');
 }
 
 // Ways to activate the generate control as it is. Playwright's actionability
@@ -480,8 +482,12 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     // Then no next round is offered and the status line explains the cap,
     await expectTheNextRoundNotOffered(page);
     await expect(status).toContainText('maximum of ' + CAP + ' rounds');
-    // and asking anyway (the control activated as it is) adds no round 129.
+    // and asking anyway (the control activated as it is) adds no round 129,
+    // and announces the cap again (once).
+    await watchTheAnnouncements(page);
     await expectActivatingItGeneratesNothing(page);
+    expect(await writesToTheAnnouncer(page)).toBe(1);
+    await expect(theAnnouncement(page)).toContainText('maximum of ' + CAP + ' rounds');
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round ' + CAP);
     await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
     await expect(status).toContainText('maximum of ' + CAP + ' rounds');
@@ -610,7 +616,7 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
   // Integer-like names are enumerated first by a plain object; the scoreboard must
   // keep tied players in player-list order regardless.
   for (const format of ['Americano', 'Mexicano']) {
-    test(`R-SCOREBOARD, R-MEXICANO-ROUNDS: Integer-like names tied on points keep player-list order (${format})`, async ({ page }) => {
+    test(`R-SCOREBOARD: Integer-like names tied on points keep player-list order (${format})`, async ({ page }) => {
       const errors = collectErrors(page);
       const organizer = theOrganizer(page);
 
@@ -632,26 +638,32 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
 
   // --- By keyboard and screen reader (AB#70) ---
 
-  // Count the writes to the status line on screen (a live region: each write is
-  // announced). One textContent write is one childList record.
-  async function watchTheStatusLine(page) {
+  // The next round's state is told two ways: the visible line #nextRoundStatus,
+  // the generate control's description (not live: it follows every rename), and
+  // the visually hidden live region #nextRoundAnnouncement (each write is
+  // announced). Count the writes to the live region: one textContent write is
+  // one childList record.
+  async function watchTheAnnouncements(page) {
     await page.evaluate(() => {
-      const status = document.getElementById('nextRoundStatus');
-      const watch = { status, writes: 0 };
+      const announcer = document.getElementById('nextRoundAnnouncement');
+      const watch = { announcer, writes: 0 };
       watch.observer = new MutationObserver((records) => { watch.writes += records.length; });
-      watch.observer.observe(status, { childList: true, characterData: true, subtree: true });
-      window.statusLineWatch = watch;
+      watch.observer.observe(announcer, { childList: true, characterData: true, subtree: true });
+      window.announcementWatch = watch;
     });
   }
-  async function writesToTheStatusLine(page) {
+  async function writesToTheAnnouncer(page) {
     return page.evaluate(() => {
-      const watch = window.statusLineWatch;
+      const watch = window.announcementWatch;
       watch.writes += watch.observer.takeRecords().length;
-      // A count of a status line no longer on screen would prove nothing.
-      if (document.getElementById('nextRoundStatus') !== watch.status) throw new Error('the watched status line was replaced');
+      // A count of a live region no longer on the page would prove nothing.
+      if (document.getElementById('nextRoundAnnouncement') !== watch.announcer) throw new Error('the watched live region was replaced');
       return watch.writes;
     });
   }
+  const theAnnouncement = (page) => page.locator('#nextRoundAnnouncement');
+  // Court names (such as Libro's "1. Centro kakel") as literal text in a pattern.
+  const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   test('R-MEXICANO-ROUNDS: Generating the next round by keyboard moves focus to the new round heading', async ({ page }) => {
     const errors = collectErrors(page);
@@ -669,7 +681,8 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     // Then round 2 is shown and focus is on its heading, not lost with the replaced button,
     const heading = page.getByRole('heading', { name: 'Round 2', level: 2, exact: true });
     await expect(heading).toBeFocused();
-    expect(await page.evaluate(() => document.activeElement.matches('#tournamentContainer .round-header .left'))).toBe(true);
+    expect(await page.evaluate(() => document.activeElement.matches(
+      '#tournamentContainer .round[data-round="2"] .round-header .left'))).toBe(true);
     // and the heading is focusable from script only: Tab does not stop on it.
     await expect(heading).toHaveAttribute('tabindex', '-1');
     // And the completed round's scores shall no longer be editable.
@@ -679,7 +692,7 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     expect(errors).toEqual([]);
   });
 
-  test('The status line is written only when the set of courts it waits for changes', async ({ page }) => {
+  test('The next round is announced only when the set of courts it waits for changes', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
     const status = page.locator('#nextRoundStatus');
@@ -690,7 +703,8 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     await expect(page.locator('.court')).toHaveCount(3);
     await organizer.attemptsTo(EnterTheScore(0, 14));
     await expect(status).toHaveText(/Waiting for a valid score on: Court 2, Court 3\./);
-    await watchTheStatusLine(page);
+    await expect(theAnnouncement(page)).toHaveText(/Waiting for a valid score on: Court 2, Court 3\./);
+    await watchTheAnnouncements(page);
 
     // When scores are typed that leave the waited-for courts unchanged (court 1
     // re-scored keystroke by keystroke, valid throughout; court 2 given an
@@ -703,26 +717,104 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     await courtTwo.fill('12.5');
     await expect(matches.nth(1).locator('.error-message')).toContainText('whole number from 0 to 24');
     await courtTwo.fill('');
-    // Then nothing is written (nothing re-announced), and the line still says what is missing.
-    expect(await writesToTheStatusLine(page)).toBe(0);
+    // Then nothing is announced, and the line still says what is missing.
+    expect(await writesToTheAnnouncer(page)).toBe(0);
     await expect(status).toHaveText(/Waiting for a valid score on: Court 2, Court 3\./);
 
-    // When a court is renamed while its score is missing,
-    if (!(await page.locator('#settingsContainer').isVisible())) await page.click('#toggleSettingsBtn');
-    await page.locator('#courtNameInput_2').pressSequentially('Centre');
-    await expect(matches.nth(1).locator('.court-label')).toHaveText('Centre');
-    // Then nothing is written either: the line names courts by number, so it is not stale.
-    expect(await writesToTheStatusLine(page)).toBe(0);
-    await expect(status).toHaveText(/Waiting for a valid score on: Court 2, Court 3\./);
-
-    // When court 2 is completed, the line is written once, for the one court left;
+    // When court 2 is completed, it is announced once, for the one court left;
     await organizer.attemptsTo(EnterTheScore(1, 12));
-    expect(await writesToTheStatusLine(page)).toBe(1);
+    expect(await writesToTheAnnouncer(page)).toBe(1);
+    await expect(theAnnouncement(page)).toHaveText(/Waiting for a valid score on: Court 3\./);
     await expect(status).toHaveText(/Waiting for a valid score on: Court 3\./);
-    // and completing the last missing court writes it exactly once more.
+    // and completing the last missing court is announced exactly once more.
     await organizer.attemptsTo(EnterTheScore(2, 24));
-    expect(await writesToTheStatusLine(page)).toBe(2);
+    expect(await writesToTheAnnouncer(page)).toBe(2);
+    await expect(theAnnouncement(page)).toHaveText('All scores are in: the next round can be generated.');
     await expect(status).toHaveText('All scores are in: the next round can be generated.');
+    expect(errors).toEqual([]);
+  });
+
+  // Courts are named as their labels show them: "Court N", or a site's own
+  // default name (Libro), or the Organizer's.
+  for (const { site, courtOne, courtTwo } of [
+    { site: 'default', courtOne: 'Court 1', courtTwo: 'Court 2' },
+    { site: 'libro', courtOne: '1. Centro kakel', courtTwo: '2. Recover' },
+  ]) {
+    test(`A renamed court is described by its new name at once, and announced by it only when the missing courts change (${site} site)`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const organizer = theOrganizer(page);
+      const generate = page.locator('#generateNextRoundBtn');
+      const status = page.locator('#nextRoundStatus');
+      const matches = page.locator('.matches-container .match');
+      if (site !== 'default') {
+        await page.goto(`/?site=${site}`);
+        await page.evaluate(() => localStorage.clear());
+        await page.reload();
+      }
+
+      // Given an 8-player round whose court 2 has no score (court 1 is scored),
+      await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Rename Cup'));
+      await organizer.attemptsTo(EnterTheScore(0, 14));
+      await expect(matches.nth(1).locator('.court-label')).toHaveText(courtTwo);
+      await expect(generate).toHaveAccessibleDescription(
+        `Waiting for a valid score on: ${courtTwo}. The next round can be generated once every match has one.`);
+      await expect(theAnnouncement(page)).toHaveText(new RegExp(`on: ${escapeRegExp(courtTwo)}\\.`));
+      await watchTheAnnouncements(page);
+
+      // When the Organizer renames court 2 "Centre" while its score is missing,
+      if (!(await page.locator('#settingsContainer').isVisible())) await page.click('#toggleSettingsBtn');
+      await page.locator('#courtNameInput_2').pressSequentially('Centre');
+      await expect(matches.nth(1).locator('.court-label')).toHaveText('Centre');
+
+      // Then the control's description, and the line on screen, name it "Centre" at once,
+      await expect(generate).toHaveAccessibleDescription(
+        'Waiting for a valid score on: Centre. The next round can be generated once every match has one.');
+      await expect(status).toHaveText(/Waiting for a valid score on: Centre\./);
+      // and nothing is announced: the courts waited for are the same.
+      expect(await writesToTheAnnouncer(page)).toBe(0);
+
+      // When court 1's score is cleared (the missing courts change),
+      await matches.nth(0).locator('.result-overlay-left input').fill('');
+
+      // Then that is announced exactly once, naming both courts as they are named now.
+      await expect(status).toHaveText(new RegExp(`on: ${escapeRegExp(courtOne)}, Centre\\.`));
+      expect(await writesToTheAnnouncer(page)).toBe(1);
+      await expect(theAnnouncement(page)).toHaveText(
+        `Waiting for a valid score on: ${courtOne}, Centre. The next round can be generated once every match has one.`);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('Going to an earlier round and back announces nothing; a generated round is announced once', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 8-player Mexicano round,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Return Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]));
+    await expect(theAnnouncement(page)).toHaveText('All scores are in: the next round can be generated.');
+    await watchTheAnnouncements(page);
+
+    // When the Organizer generates round 2,
+    await organizer.attemptsTo(GenerateTheNextRound);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+
+    // Then its first state is announced once,
+    expect(await writesToTheAnnouncer(page)).toBe(1);
+    await expect(theAnnouncement(page)).toHaveText(/Waiting for a valid score on: Court 1, Court 2\./);
+
+    // and going to round 1 and back to round 2 (nothing changed) announces nothing.
+    await organizer.attemptsTo(GoToThePreviousRound);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 1');
+    await organizer.attemptsTo(GoToTheNextRound);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    await expect(page.locator('#nextRoundStatus')).toHaveText(/Waiting for a valid score on: Court 1, Court 2\./);
+    expect(await writesToTheAnnouncer(page)).toBe(1);
+
+    // And a change after it is still announced (the region was not left behind).
+    await organizer.attemptsTo(EnterTheScore(0, 13));
+    expect(await writesToTheAnnouncer(page)).toBe(2);
+    await expect(theAnnouncement(page)).toHaveText(/Waiting for a valid score on: Court 2\./);
     expect(errors).toEqual([]);
   });
 
@@ -746,11 +838,21 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
 
     // When the Organizer asks for the next round by Enter, by Space and by click,
     // Then the next round shall not be generated (and nothing is locked) each time,
-    for (const activate of [ActivateTheGenerateControl.byEnter, ActivateTheGenerateControl.bySpace]) {
+    // and each time the reason is announced again (once), though nothing changed,
+    // a real change of the region's text (an identical rewrite may go unheard).
+    const reason = 'Waiting for a valid score on: Court 2. The next round can be generated once every match has one.';
+    const rawAnnouncement = () => page.evaluate(() => document.getElementById('nextRoundAnnouncement').textContent);
+    await watchTheAnnouncements(page);
+    let activations = 0;
+    for (const activate of [ActivateTheGenerateControl.byEnter, ActivateTheGenerateControl.bySpace, ActivateTheGenerateControl.byClick]) {
+      const before = await rawAnnouncement();
       await expectActivatingItGeneratesNothing(page, activate);
-      await expect(generate).toBeFocused();
+      activations += 1;
+      expect(await writesToTheAnnouncer(page)).toBe(activations);
+      expect(await rawAnnouncement()).not.toBe(before);
+      await expect(theAnnouncement(page)).toHaveText(reason);
+      if (activate !== ActivateTheGenerateControl.byClick) await expect(generate).toBeFocused();
     }
-    await expectActivatingItGeneratesNothing(page, ActivateTheGenerateControl.byClick);
     // and the missing score shall be indicated.
     await expect(page.locator('#nextRoundStatus')).toContainText('Court 2');
     await expect(page.locator('.matches-container .match').nth(1)).toHaveClass(/score-missing/);
@@ -766,11 +868,13 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     page.on('dialog', (dialog) => { dialogs.push(dialog.message()); dialog.accept(); });
     const organizer = theOrganizer(page);
 
-    // Given a completed 8-player Mexicano round whose pairing then fails,
+    // Given a completed 8-player Mexicano round whose pairing then fails, and
+    // takes the focus with it (a failure can: an alert, a blur), so that focus
+    // on the control afterwards is the app putting it back, not leaving it,
     await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Failure Cup'));
     await organizer.attemptsTo(CompleteTheRound([18, 7]));
     await page.evaluate(() => {
-      window.Mexicano.nextRound = () => { throw new Error('planted pairing failure'); };
+      window.Mexicano.nextRound = () => { document.activeElement.blur(); throw new Error('planted pairing failure'); };
     });
 
     // When the Organizer generates the next round by keyboard,
@@ -830,6 +934,8 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     // Both re-renders were seen (the watch is not vacuous), and neither added a status line.
     expect(watched).toEqual({ rounds: 2, statusLines: 0 });
     await expect(page.locator('#nextRoundStatus')).toHaveCount(0);
+    // Nor is anything announced.
+    await expect(page.locator('#nextRoundAnnouncement')).toHaveText('');
     expect(errors).toEqual([]);
   });
 
