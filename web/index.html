@@ -1677,6 +1677,7 @@
 
     // A tournament that is replaced (new, deleted, loaded) takes its last
     // announcement with it: the next one's first state is announced.
+    // DEFERRED: AB#94 (no regression test yet for clearing on New, Delete and Load)
     function clearNextRoundAnnouncement() {
       const announcer = document.getElementById("nextRoundAnnouncement");
       if (announcer.textContent !== "") announcer.textContent = "";
@@ -1744,7 +1745,8 @@
       currentRoundIndex = rounds.length - 1;
       displayRound(currentRoundIndex);
       // The re-render replaced the focused button: focus the new round's heading,
-      // found by its round number, before anything else runs.
+      // found by its round number. (displayRound has already saved once; the
+      // save below is a second write of the same state.)
       const roundNumber = String(rounds[currentRoundIndex].roundNumber);
       const heading = document.querySelector(
         '#tournamentContainer .round[data-round="' + CSS.escape(roundNumber) + '"] .round-header .left');
