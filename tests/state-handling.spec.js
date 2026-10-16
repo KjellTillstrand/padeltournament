@@ -332,10 +332,6 @@ test.describe('Malformed or hostile persisted state', () => {
     ['byes of out-of-range indices', (s) => { s.rounds[0].byes = [-1, 99, 1e308, NaN]; }],
     ['byes of the wrong length', (s) => { s.rounds[0].byes = [s.players[0]]; }],
     ['byes of prototype-ish names', (s) => { s.rounds[0].byes = ['__proto__', 'constructor']; }],
-    ['a prototype-ish byes key on the schedule and rounds', (s) => {
-      s.byes = ['__proto__'];
-      s.rounds.forEach((round) => { round.rest = ['constructor']; round.sitOuts = JSON.parse('{"__proto__":{"x":1}}'); });
-    }],
     ['byes listing every player', (s) => { s.rounds.forEach((round) => { round.byes = s.players.slice(); }); }],
   ];
   for (const [description, corrupt] of HOSTILE_BYES) {
@@ -2579,7 +2575,7 @@ test.describe('Rest rounds survive selection, play and reload', () => {
     const rounds = players;
     const courts = Math.floor(players / 4);
     const resting = players % 4;
-    test(`R-SITOUT-PLAY, R-SCHEDULE-SELECT, R-STATE-PERSIST: ${players} players play with ${resting} resting per round, across a reload`, async ({ page }) => {
+    test(`R-SCHEDULE-SELECT, R-STATE-PERSIST: ${players} players play with ${resting} resting per round, across a reload`, async ({ page }) => {
       const errors = collectErrors(page);
       const names = Array.from({ length: players }, (_, i) => `Name${i + 1}`);
       await page.goto('/');
@@ -2632,28 +2628,6 @@ test.describe('Rest rounds survive selection, play and reload', () => {
       expect(errors).toEqual([]);
     });
   }
-
-  test('R-SITOUT-PLAY: a 12-player Americano rests nobody in any round', async ({ page }) => {
-    const errors = collectErrors(page);
-    await page.goto('/');
-    await page.evaluate(() => localStorage.clear());
-    await page.reload();
-
-    // Given 12 players (the default schedule), when the Americano starts,
-    await page.fill('#tournamentName', 'Even Cup');
-    await page.click('#startTournamentBtn');
-
-    // Then no round rests anyone.
-    for (let r = 1; r <= 11; r++) {
-      await expect(page.locator('.round-header .left')).toHaveText(`Round ${r}`);
-      await expect(page.locator('#tournamentContainer .court')).toHaveCount(3);
-      await expect(page.locator('.resting-players')).toHaveCount(0);
-      if (r < 11) await page.getByRole('button', { name: 'NEXT ROUND' }).click();
-    }
-    const schedule = (await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY)).schedule;
-    expect(schedule.rounds.every((round) => !('byes' in round))).toBe(true);
-    expect(errors).toEqual([]);
-  });
 });
 
 // A setup restored before Start (a reload, or a format switch after one) never

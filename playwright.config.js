@@ -26,6 +26,8 @@ const NODE_ONLY_SPECS = [
   '**/perfect_mix.spec.js',
   '**/equitable_mix.spec.js',
   '**/spaced_mix.spec.js',
+  '**/mexicano_pairing.spec.js',
+  '**/sitout_tables.spec.js',
 ];
 
 /**
