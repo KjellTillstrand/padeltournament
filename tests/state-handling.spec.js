@@ -368,8 +368,11 @@ test.describe('Malformed or hostile persisted state', () => {
   // plus sitOuts/rest/extra, on the schedule and on every round. Object spread
   // is used to plant them because it keeps "__proto__" as an own key, whereas
   // Object.assign would invoke the __proto__ setter and JSON.stringify would
-  // then drop it. A copy that spread `...round` would keep the keys, and an
-  // inherited-prototype regression would show "Nobody" as resting.
+  // then drop it. A copy that spread `...round` would keep sitOuts/rest/extra,
+  // and the key allowlist check below catches that. The "Nobody" check is
+  // belt-and-braces only: at 10 players setByes writes an own byes, so an
+  // inherited one never shows, and the read-back cannot see an own __proto__.
+  // DEFERRED: AB#90 (assert on the raw stored text; a 12-player variant)
   test('A 10-player tournament state with unknown keys restores with the true resting players and stores none of the keys', async ({ page, context }) => {
     const errors = collectErrors(page);
     // Given a sound running 10-player tournament whose schedule and rounds carry unknown keys.
