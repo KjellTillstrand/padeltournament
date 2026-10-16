@@ -363,6 +363,41 @@ test.describe('Malformed or hostile persisted state', () => {
     });
   }
 
+  // The copy layer is an allowlist: only the fields it checks survive a restore.
+  // A schedule or round carrying unknown keys (an own "__proto__" among them,
+  // which only JSON.parse can plant) must come back without them; a copy that
+  // spread `...round` would keep them.
+  test('A 10-player tournament state with unknown keys restores with the true resting players and stores none of the keys', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a sound running 10-player tournament whose schedule and rounds carry unknown keys.
+    const state = await captureARealTournamentState(context, { schedule: '10p10r.js' });
+    const expected = restingIn(state.schedule, state.schedule.rounds[0]);
+    expect(expected).toHaveLength(2);
+    const plant = (target) => Object.assign(target, JSON.parse(
+      '{"__proto__":{"x":1},"sitOuts":{"__proto__":{"x":1}},"rest":["constructor"],"extra":1}'));
+    plant(state.schedule);
+    state.schedule.rounds.forEach(plant);
+    const raw = JSON.stringify(state);
+    expect(raw).toContain('"__proto__"'); // the hostile key really is in the stored text
+    await plantStorage(page, { [STATE_KEY]: raw });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament is restored showing the true resting players,
+    await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    expect(await restingOnScreen(page)).toEqual(expected);
+    // what it stores back carries none of the unknown keys,
+    const stored = await storedJson(page, STATE_KEY);
+    const keysOf = (o) => Object.getOwnPropertyNames(o).sort();
+    expect(keysOf(stored.schedule)).toEqual(['players', 'rounds']);
+    for (const round of stored.schedule.rounds) expect(keysOf(round)).toEqual(['byes', 'matches', 'roundNumber']);
+    // and nothing leaked onto the page's object prototype.
+    expect(await page.evaluate(() => ({}).x)).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
+
   test('A 12-player tournament state with planted byes rests nobody', async ({ page, context }) => {
     const errors = collectErrors(page);
     // Given a running 12-player tournament whose stored rounds claim byes.

@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { STATE_KEY } = require('./storage-keys');
 
 // R-SITOUT-PLAY: any player count from 8 to 24 is playable. Counts that are
 // not a multiple of 4 rest the leftover players each round, and the rests
@@ -153,12 +154,18 @@ test.describe('R-SITOUT-PLAY: playing at any count', () => {
     // Given 12 players (the default setup), when the Organizer starts an Americano,
     await organizer.attemptsTo(StartAnAmericano('Even Cup'));
 
-    // Then no round rests any Player.
+    // Then the stored rounds (a fresh start, not planted state) carry no byes,
+    const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
+    expect(stored.schedule.rounds).toHaveLength(11);
+    expect(stored.schedule.rounds.every((round) => !('byes' in round))).toBe(true);
+
+    // and no round rests any Player, nor even shows a resting-players box.
     for (let r = 1; r <= 11; r++) {
       const seen = await organizer.asksFor(ReviewTheRound);
       expect(seen.round).toBe(`Round ${r}`);
       expect(seen.courts).toBe(3);
       expect(seen.resting).toEqual([]);
+      await expect(organizer.page.locator('.resting-players')).toHaveCount(0);
       expect(seen.seated).toHaveLength(12);
       if (r < 11) await organizer.attemptsTo(GoToTheNextRound);
     }
