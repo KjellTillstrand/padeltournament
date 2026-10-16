@@ -475,7 +475,11 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expect(page.locator('.court')).toHaveCount(2);
     await expect(page.locator('.result-overlay-left input').first()).toBeEnabled();
-    await expect(page.locator('#generateNextRoundBtn')).toBeDisabled();
+    // The next round is not offered (aria-disabled, AB#70), and a click generates nothing.
+    await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'true');
+    await page.locator('#generateNextRoundBtn').click({ force: true });
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
     // Round 1 stays viewable and locked.
     await page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true }).click();
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
@@ -2239,10 +2243,14 @@ test.describe('Malformed or hostile persisted state', () => {
     // Then round 2 is not complete: the next round is not offered,
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expectErrorsOnScreen(page, ['whole number from 0 to 24', '']);
-    await expect(page.locator('#generateNextRoundBtn')).toBeDisabled();
+    await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'true');
+    await page.locator('#generateNextRoundBtn').click({ force: true });
+    await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+    await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
     // until the Organizer enters a real score on that court.
     await page.locator('.result-overlay-left input').first().fill('12');
-    await expect(page.locator('#generateNextRoundBtn')).toBeEnabled();
+    await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'false');
+    await expect(page.locator('#generateNextRoundBtn')).not.toHaveAttribute('disabled');
     expect(errors).toEqual([]);
   });
 

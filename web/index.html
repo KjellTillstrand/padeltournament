@@ -34,7 +34,22 @@
       outline: 4px dashed #ff8c00;
       outline-offset: 2px;
     }
-    .round-header .center button:disabled {
+    /* In the accessibility tree, off screen: the announcer of the next round's
+       state (#nextRoundAnnouncement), whose visible counterpart is #nextRoundStatus. */
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    /* Unavailable, not disabled (AB#70): aria-disabled keeps it focusable, so
+       its explanation (aria-describedby) stays reachable by keyboard. */
+    .round-header .center button[aria-disabled="true"] {
       background-color: #8a9a8a;
       cursor: not-allowed;
     }
@@ -181,6 +196,13 @@
 
   <!-- Tournament container: displays one round at a time -->
   <div id="tournamentContainer" class="schedule-container"></div>
+
+  <!-- Mexicano: announces the next round's state (see announceNextRoundState).
+       Outside #tournamentContainer, so no re-render replaces it: it is a live
+       region before any text arrives, and what it last announced (data-key)
+       survives round navigation. Visually hidden: the visible line is the
+       button's description, #nextRoundStatus, which names courts as they are named now. -->
+  <div id="nextRoundAnnouncement" class="visually-hidden" role="status" aria-atomic="true"></div>
 
   <script>
     let currentSchedule = null;
@@ -531,6 +553,7 @@
         document.getElementById("tournamentTitle").textContent = selectedTournament.tournamentName;
         disableSettings();
         document.getElementById("toggleSettingsBtn").style.display = "block";
+        clearNextRoundAnnouncement();
         displayRound(currentRoundIndex);
         saveTournamentState();
       }
@@ -1277,7 +1300,9 @@
         input.addEventListener("input", function () {
           courtNames[courtNumber - 1] = input.value;
           updateCourtLabels();
-          updateNextRoundControl(); // its status names courts
+          // The next round's description names courts: refreshed silently. The
+          // announcement is keyed on the missing courts, so a rename announces nothing.
+          updateNextRoundControl();
           saveTournamentState();
         });
         table.appendChild(input);
@@ -1476,6 +1501,11 @@
       const headerLeft = document.createElement("div");
       headerLeft.className = "left";
       headerLeft.textContent = "Round " + round.roundNumber;
+      // A heading, focusable from script only: focus lands here after "Generate
+      // next round" replaces the button that had it.
+      headerLeft.setAttribute("role", "heading");
+      headerLeft.setAttribute("aria-level", "2");
+      headerLeft.tabIndex = -1;
 
       // Center part: Navigation buttons.
       const headerCenter = document.createElement("div");
@@ -1532,12 +1562,12 @@
       roundDiv.appendChild(roundHeader);
 
       // Mexicano: what the next round waits for (latest round), or why a round is
-      // read-only (every earlier one). Filled by updateNextRoundControl.
+      // read-only (every earlier one). Filled by updateNextRoundControl. Not a
+      // live region (#nextRoundAnnouncement announces): it follows every rename.
       if (latestMexicanoRound) {
         const status = document.createElement("p");
         status.id = "nextRoundStatus";
         status.className = "round-status";
-        status.setAttribute("role", "status");
         roundDiv.appendChild(status);
       } else if (isRoundLocked(roundIndex)) {
         const note = document.createElement("p");
@@ -1594,32 +1624,64 @@
       return latest.matches.filter(match => !isCompleteResult(match.result, totalPoints));
     }
 
-    // Enable "Generate next round" only when the latest round is complete, and
+    // Offer "Generate next round" only when the latest round is complete, and
     // otherwise say (and mark on the courts) which scores it is waiting for.
-    // A no-op unless the latest Mexicano round is on screen.
-    function updateNextRoundControl() {
+    // `reannounce` announces the state even though it has not changed (a refused
+    // activation). A no-op unless the latest Mexicano round is on screen.
+    function updateNextRoundControl(reannounce = false) {
       const button = document.getElementById("generateNextRoundBtn");
       const status = document.getElementById("nextRoundStatus");
       if (!button || !status || !isMexicanoPlay()) return;
       const missing = matchesMissingAScore();
       const full = currentSchedule.rounds.length >= MAX_ROUNDS;
-      button.disabled = missing.length > 0 || full;
+      // aria-disabled, never disabled: the button stays focusable and its
+      // description reachable. generateNextRound refuses on its own.
+      button.setAttribute("aria-disabled", String(missing.length > 0 || full));
       const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
       const containers = document.querySelectorAll("#tournamentContainer .matches-container > .match");
       latest.matches.forEach((match, index) => {
         if (containers[index]) containers[index].classList.toggle("score-missing", missing.includes(match));
       });
-      // Court names are user input: textContent only.
+      // Courts by the name their label shows now. Court names are user input:
+      // textContent only.
+      let text;
       if (missing.length > 0) {
-        status.textContent = "Waiting for a valid score on: " +
+        text = "Waiting for a valid score on: " +
           missing.map(match => getCourtName(match.court)).join(", ") +
           ". The next round can be generated once every match has one.";
       } else if (full) {
-        status.textContent = "All scores are in. This tournament has reached the maximum of " +
+        text = "All scores are in. This tournament has reached the maximum of " +
           MAX_ROUNDS + " rounds.";
       } else {
-        status.textContent = "All scores are in: the next round can be generated.";
+        text = "All scores are in: the next round can be generated.";
       }
+      // The description (not live) follows every change, renames included.
+      if (status.textContent !== text) status.textContent = text;
+      // The announcement follows the state only: which courts of which round
+      // lack a score, or full/ready. Names are not part of it.
+      const key = "round " + latest.roundNumber + ": " + (missing.length > 0
+        ? "missing " + missing.map(match => match.court).join(",") : (full ? "full" : "ready"));
+      const announcer = document.getElementById("nextRoundAnnouncement");
+      if (reannounce || announcer.dataset.key !== key) announceNextRoundState(text, key);
+    }
+
+    // Announce through the polite live region, in one write. Rewriting the text
+    // it already holds is no change, which assistive technology may skip, so a
+    // repeat toggles a trailing no-break space: every announcement is a real
+    // change of the text. (Clear-then-set is two writes and needs a timer.)
+    function announceNextRoundState(text, key) {
+      const announcer = document.getElementById("nextRoundAnnouncement");
+      announcer.textContent = announcer.textContent === text ? text + "\u00A0" : text;
+      announcer.dataset.key = key;
+    }
+
+    // A tournament that is replaced (new, deleted, loaded) takes its last
+    // announcement with it: the next one's first state is announced.
+    // DEFERRED: AB#94 (no regression test yet for clearing on New, Delete and Load)
+    function clearNextRoundAnnouncement() {
+      const announcer = document.getElementById("nextRoundAnnouncement");
+      if (announcer.textContent !== "") announcer.textContent = "";
+      delete announcer.dataset.key;
     }
 
     function isMexicanoPlay() {
@@ -1651,13 +1713,15 @@
     }
 
     // Generate the round after the latest one, from the standings the scoreboard
-    // shows after it, and move to it. Refused while a score is missing: the
-    // missing ones are (re)indicated instead.
+    // shows after it, and move to it. Refused while a score is missing (the
+    // missing ones stay indicated) or at the cap: the only guard, as the button
+    // is never natively disabled, so click, Enter and Space all land here.
     function generateNextRound() {
       if (!isMexicanoPlay()) return;
       const rounds = currentSchedule.rounds;
       if (matchesMissingAScore().length > 0 || rounds.length >= MAX_ROUNDS) {
-        updateNextRoundControl();
+        // Refused: say why again, though nothing changed.
+        updateNextRoundControl(true);
         return;
       }
       let generated;
@@ -1671,12 +1735,22 @@
       } catch (err) {
         console.warn("Could not generate the next Mexicano round:", err);
         alert("The next round could not be generated.");
+        // Nothing was re-rendered: keep the Organizer on the control they used.
+        const button = document.getElementById("generateNextRoundBtn");
+        if (button) button.focus();
         return;
       }
       rounds.push(toScheduleRound(generated));
       setByes(currentSchedule);
       currentRoundIndex = rounds.length - 1;
       displayRound(currentRoundIndex);
+      // The re-render replaced the focused button: focus the new round's heading,
+      // found by its round number. (displayRound has already saved once; the
+      // save below is a second write of the same state.)
+      const roundNumber = String(rounds[currentRoundIndex].roundNumber);
+      const heading = document.querySelector(
+        '#tournamentContainer .round[data-round="' + CSS.escape(roundNumber) + '"] .round-header .left');
+      if (heading) heading.focus();
       saveTournamentState();
     }
 
@@ -1918,6 +1992,7 @@
       generatePlayerInputs(currentSchedule.players);
       generateCourtNameInputs();
       document.getElementById("tournamentContainer").innerHTML = "";
+      clearNextRoundAnnouncement();
       removeStoredValue(STATE_KEY);
     }
 
