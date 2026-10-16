@@ -364,21 +364,26 @@ test.describe('Malformed or hostile persisted state', () => {
   }
 
   // The copy layer is an allowlist: only the fields it checks survive a restore.
-  // A schedule or round carrying unknown keys (an own "__proto__" among them,
-  // which only JSON.parse can plant) must come back without them; a copy that
-  // spread `...round` would keep them.
+  // The planted text puts an own "__proto__" key (carrying a "byes" payload),
+  // plus sitOuts/rest/extra, on the schedule and on every round. Object spread
+  // is used to plant them because it keeps "__proto__" as an own key, whereas
+  // Object.assign would invoke the __proto__ setter and JSON.stringify would
+  // then drop it. A copy that spread `...round` would keep the keys, and an
+  // inherited-prototype regression would show "Nobody" as resting.
   test('A 10-player tournament state with unknown keys restores with the true resting players and stores none of the keys', async ({ page, context }) => {
     const errors = collectErrors(page);
     // Given a sound running 10-player tournament whose schedule and rounds carry unknown keys.
     const state = await captureARealTournamentState(context, { schedule: '10p10r.js' });
     const expected = restingIn(state.schedule, state.schedule.rounds[0]);
     expect(expected).toHaveLength(2);
-    const plant = (target) => Object.assign(target, JSON.parse(
-      '{"__proto__":{"x":1},"sitOuts":{"__proto__":{"x":1}},"rest":["constructor"],"extra":1}'));
-    plant(state.schedule);
-    state.schedule.rounds.forEach(plant);
+    const HOSTILE = '{"__proto__":{"byes":["Nobody"],"x":1},"sitOuts":{"__proto__":{"x":1}},"rest":["constructor"],"extra":1}';
+    state.schedule = { ...state.schedule, ...JSON.parse(HOSTILE) };
+    state.schedule.rounds = state.schedule.rounds.map((r) => ({ ...r, ...JSON.parse(HOSTILE) }));
     const raw = JSON.stringify(state);
-    expect(raw).toContain('"__proto__"'); // the hostile key really is in the stored text
+    // the planted text really has an own "__proto__" on the schedule and on every round
+    const reparsed = JSON.parse(raw);
+    expect(Object.getOwnPropertyNames(reparsed.schedule)).toContain('__proto__');
+    expect(reparsed.schedule.rounds.every((r) => Object.getOwnPropertyNames(r).includes('__proto__'))).toBe(true);
     await plantStorage(page, { [STATE_KEY]: raw });
 
     // When the app loads.
@@ -388,6 +393,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
     expect(await restingOnScreen(page)).toEqual(expected);
+    await expect(page.locator('body')).not.toContainText('Nobody');
     // what it stores back carries none of the unknown keys,
     const stored = await storedJson(page, STATE_KEY);
     const keysOf = (o) => Object.getOwnPropertyNames(o).sort();

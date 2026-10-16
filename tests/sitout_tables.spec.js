@@ -176,7 +176,7 @@ test.describe('R-SITOUT-PLAY: schedule option to script to global wiring', () =>
 // full rest cycle; one more is rejected. (The multiple-of-4 limit is pinned
 // in tests/equitable_mix.spec.js.)
 // ---------------------------------------------------------------------------
-test.describe('R-SITOUT-PLAY: engine round limit', () => {
+test.describe('Engine round limit for counts that are not a multiple of 4', () => {
   let generateSchedule;
   let maxRounds;
   test.beforeAll(async () => {

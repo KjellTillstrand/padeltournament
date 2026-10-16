@@ -19,8 +19,9 @@ const TEST_SERVER_URL = 'http://127.0.0.1:8199';
 
 /**
  * Specs that read schedule data, call the engine or drive web/*.js modules
- * directly in Node, and never touch a page. They behave identically in every browser, so they run once, in the
- * browserless "unit" project, and every browser project ignores them.
+ * directly in Node, and never touch a page. They behave identically in every
+ * browser, so they run once, in the browserless "unit" project, and every
+ * browser project ignores them.
  */
 const NODE_ONLY_SPECS = [
   '**/perfect_mix.spec.js',
