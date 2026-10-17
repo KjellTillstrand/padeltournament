@@ -649,6 +649,7 @@
           // legacy value stays in place, unmigrated, and is tried again by a later
           // load that finds no stored state (the fresh setup, once stored, is newer
           // data until the app removes it).
+          // DEFERRED: AB#100 (one restore-failure policy: a legacy value left unmigrated here can resurface over newer data)
           console.error("Could not restore the saved tournament; starting a fresh setup.", err);
           backupStoredState(storedState);
           delete pendingMigrations[STATE_KEY];
