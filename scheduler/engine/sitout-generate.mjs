@@ -9,9 +9,12 @@
  * Length: N rounds for N players, the full rest cycle (see maxRounds in
  * index.mjs). Over it every player rests exactly B times and plays exactly
  * N - B games, so totals stay comparable (points only come from games
- * played), and nobody partners anyone twice. No shorter length gives equal
- * rests for B = 1 or 3 (it needs R * B to be a multiple of N), and for
- * B = 2 the only shorter one, N/2 rounds, halves the tournament.
+ * played), and nobody partners anyone twice. Equal rests need R * B to be a
+ * multiple of N. For B = 1 no shorter length gives them; for B = 2 the only
+ * shorter one, N/2 rounds, halves the tournament; for B = 3 a shorter one
+ * exists only when 3 divides N, which among these sizes is N = 15 alone
+ * (5 or 10 rounds, every player resting once or twice). Its table still runs
+ * the full N-round cycle, like every other size.
  *
  * The schedule comes from the engine (generateSchedule). Several seeds are
  * tried (defaultSeed(N) + 0 .. SEED_CANDIDATES - 1) and the best is kept:

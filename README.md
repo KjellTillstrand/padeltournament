@@ -1,27 +1,38 @@
 # Padel Tournament Manager
 
-A padel tournament scheduler and scoreboard for club nights: rotating-partner
-("Americano"-style) play from generated schedules that are mathematically optimised
-for fair mixing — every player partners every other player exactly once and opposes
-everyone exactly twice, with repeat encounters spread across the evening.
+A padel tournament scheduler and scoreboard for club nights, in two formats:
+
+- **Americano**: rotating partners from generated schedules optimised for fair
+  mixing. With a multiple of 4 players, every player partners every other player
+  exactly once and opposes everyone exactly twice, with repeat encounters spread
+  across the evening. Any other count from 8 to 24 rests the surplus players each
+  round, and every player rests equally often and plays the same number of games.
+- **Mexicano**: one round at a time: round 1 is a random draw, and every later
+  round is paired from the live standings.
 
 **Live app: <https://kjelltillstrand.github.io/padeltournament/>**
 
 The app is a fully static page — no backend, no accounts, no database. All state
-(schedule, rounds, scores, tournament name, court names) lives in your browser's
-localStorage, so a page reload or crash resumes exactly where you left off.
+(format, schedule, rounds, scores, tournament name, court names) lives in your
+browser's localStorage, so a page reload or crash resumes exactly where you left off.
 
 ## Using it
 
 1. Open the [live app](https://kjelltillstrand.github.io/padeltournament/).
-2. Pick a schedule size — 8, 12, 16, 20 or 24 players (2–6 courts, everyone plays
-   every round).
+2. Pick the format. For Americano, pick a schedule size: any count from 8 to 24
+   players (2–6 courts; at a count that is not a multiple of 4 the surplus
+   players rest each round). For Mexicano, pick a player count from 8 to 24.
 3. Enter player names (or keep the placeholders), optionally name your courts and
-   set the points per game (24 or 32).
+   set the points per game (16, 21, 24 or 32).
 4. Name the tournament and start. Enter one team's score per match — the other
    team's score fills in automatically.
-5. Navigate rounds with the arrows; the scoreboard ranks players by accumulated
-   points with gold/silver/bronze placement colors.
+5. Navigate rounds with the round buttons. In Mexicano, generate the next round
+   once every match of the latest round has a complete, valid score (the two
+   scores sum to the points total); earlier rounds then lock. A Mexicano
+   tournament stops at 128 rounds. The scoreboard ranks players by accumulated
+   points with gold/silver/bronze placement colors; two players level on points
+   are ranked by their head-to-head games where that decides it, and every other
+   tie shares its placement.
 6. Save, load and delete tournaments from the round header at any time.
 
 ### Site variants
@@ -55,9 +66,9 @@ run one there yourself; an occupied port fails fast by design.
 | Path | What it is |
 |---|---|
 | `web/` | The served app — vanilla JS/HTML/CSS, no build step. `web/index.html` is the whole app. |
-| `web/schedules/` | Generated schedule tables (`8p7r.js` … `24p23r.js`). **Generated data — never hand-edit**; regenerate with `node scheduler/whist-generate.js`. |
+| `web/schedules/` | Generated Americano schedule tables, one per player count (`8p7r.js` … `24p23r.js`). **Generated data — never hand-edit**; regenerate the multiples of 4 (8, 12, 16, 20, 24) with `node scheduler/whist-generate.js` and the other twelve counts (9–23) with `node scheduler/engine/sitout-generate.mjs`. |
 | `web/sites/` | Per-venue UI variants (see above). |
-| `scheduler/` | Schedule generators (not served). `whist-generate.js` emits the shipped perfect-whist tables and refuses to write anything that fails verification; `scheduler/engine/` is the parametrized engine for any player count / round length with an equity report. |
+| `scheduler/` | Schedule generators (not served). `whist-generate.js` emits the shipped perfect-whist tables (multiples of 4); `engine/sitout-generate.mjs` emits the shipped rest-round tables (every other count from 9 to 23) from the engine; both refuse to write anything that fails verification. `scheduler/engine/` is the parametrized engine for any player count / round length with an equity report. |
 | `tests/` | Playwright end-to-end and property tests, tagged against the requirements manifest. |
 | `docs/` | `requirements.md` (the requirements prose), `requirements-manifest.json` (the CI coverage gate's source of truth). |
 
@@ -65,9 +76,10 @@ run one there yourself; an occupied port fails fast by design.
 
 Every push to `main` runs the full test suite plus a requirement-coverage gate
 (`.github/workflows/playwright-tests.yml`); only a green run deploys `web/` to
-GitHub Pages. Schedule tables are verified for the perfect-mix property at
-generation time and again in the test suite — including an exhaustive proof of the
-8-player spacing bound.
+GitHub Pages. Schedule tables are verified at generation time and again in the
+test suite: the multiples of 4 for the perfect-mix property (including an
+exhaustive proof of the 8-player spacing bound), the other counts for equal rests,
+equal games, no repeated partner and opponent counts within one of each other.
 
 ## License
 
