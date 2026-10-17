@@ -7,11 +7,11 @@ This document outlines the functional and non-functional requirements for the Pa
 ### 1. Format and Schedule Selection
 - **Format Choice:**  
   - At setup the user chooses the tournament format: **Americano** (the default) or **Mexicano**.
-  - Americano plays a preconfigured, rotating-partner schedule. Mexicano has no precomputed schedule: its rounds are generated one at a time from the live standings (see §5).
+  - Americano plays a preconfigured, rotating-partner schedule. Mexicano has no precomputed schedule: its rounds are generated one at a time, round 1 as a random draw and every later round from the live standings (see §5).
   - The chosen format is saved right away, so it survives a page reload both before and after the tournament starts, and it is stored with every saved tournament. Tournaments saved before formats existed load as Americano.
 - **Americano Schedule Choice:**  
   - The user can choose from several preconfigured schedules, one for every player count from 8 to 24.
-  - Each schedule is stored as a separate JavaScript module (e.g. `12p11r.js`, `13p13r.js`, etc.) and is loaded dynamically.
+  - Each schedule is stored as a separate JavaScript file (e.g. `12p11r.js`, `13p13r.js`, etc.) that sets a global table (e.g. `window.schedule12p11r`). Every table is loaded up front by its own `<script>` tag in the page head, so each option in the schedule selector needs a matching script tag; choosing a schedule only looks up the table already loaded.
   - A player count that is a multiple of 4 plays every player every round (N - 1 rounds). Any other count fills floor(N/4) courts and the remaining players rest each round; its schedule runs N rounds, so every player rests the same number of times (N mod 4) and plays the same number of games. Each round shows which players rest.
 - **Mexicano Setup:**  
   - The user chooses a player count from 8 to 24 (default 12) and the points per game; there is no schedule to choose.
@@ -31,7 +31,7 @@ This document outlines the functional and non-functional requirements for the Pa
 
 ### 3. Player Management
 - **Player Name Inputs:**  
-  - A table or grid of input fields (one per player) is generated dynamically based on the loaded schedule.
+  - A table or grid of input fields (one per player) is generated dynamically: in Americano from the players of the selected schedule, in Mexicano from the chosen player count.
   - Each player has an input field with a default placeholder (e.g., "P1", "P2", ...).
   - When validating, empty inputs are replaced with their default placeholder values.
   - Player names must be unique; the application will warn the user if duplicates are detected.
@@ -52,16 +52,16 @@ This document outlines the functional and non-functional requirements for the Pa
   - The interface displays the current round along with navigation controls.
   - The round header includes:
     - A left-aligned element for the round title.
-    - A center section featuring large, bold "PREVIOUS ROUND" and "NEXT ROUND" buttons (and, in Mexicano, "GENERATE NEXT ROUND" on the latest round).
+    - A center section featuring "PREVIOUS ROUND" and "NEXT ROUND" buttons (and, in Mexicano, "GENERATE NEXT ROUND" on the latest round).
     - A right-aligned section with buttons for saving the current tournament and starting a new tournament.
 - **Score Input:**  
   - Each match has score input fields for each team. When a score is entered for one team, the corresponding team’s score is automatically calculated based on the selected global total.
 - **Mexicano Round Lifecycle:**  
   - Rounds are generated one at a time. Round 1 is a random draw, made once when the tournament starts.
   - Every later round is paired from the standings after the latest round (see §6): the fielded players are grouped in fours by rank (1st-4th, 5th-8th, ...), and within each group 1st and 4th play against 2nd and 3rd. Court 1 holds the top group.
-  - At a count that is not a multiple of 4, the players with the fewest rests so far sit the round out, chosen before the groups are formed; among equally rested players the lowest-ranked rests first.
+  - At a count that is not a multiple of 4, the resting players are chosen before the groups are formed. In round 1 nobody has rested yet, so the players drawn last in the random draw rest. From round 2 on, the players with the fewest rests so far sit the round out; among equally rested players the lowest-ranked rests first.
   - "GENERATE NEXT ROUND" is offered on the latest round and works only once every match in it has a complete, valid score (the two scores sum to the points total). Until then the app names the courts still waiting for a score and marks them.
-  - Generating the next round locks the scores of every earlier round: they remain viewable through round navigation but can no longer be edited. A tournament can have at most 128 rounds.
+  - Generating the next round locks the scores of every earlier round: they remain viewable through round navigation but can no longer be edited. A Mexicano tournament stops at 128 rounds: once the 128th round is reached, no further round can be generated.
   - Americano is unaffected: every round's scores stay editable.
 - **Tournament Control Functions:**  
   - The user can save, load, and delete tournaments via provided controls.
@@ -95,7 +95,7 @@ This document outlines the functional and non-functional requirements for the Pa
 
 ### 4. Visual Design and User Experience
 - **Navigation Elements:**  
-  - Round navigation buttons appear above the courts, centered, as large and bold buttons.
+  - Round navigation buttons appear above the courts, centered.
 - **Scoreboard:**  
   - The scoreboard displays player rankings with colored rows, by each player's placement after the tiebreak (§6), not by row position:
     - Gold for placement 1, silver for placement 2, bronze (or a bronze-like color) for placement 3, and light grey for every other placement.

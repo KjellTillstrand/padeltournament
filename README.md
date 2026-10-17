@@ -7,7 +7,8 @@ A padel tournament scheduler and scoreboard for club nights, in two formats:
   exactly once and opposes everyone exactly twice, with repeat encounters spread
   across the evening. Any other count from 8 to 24 rests the surplus players each
   round, and every player rests equally often and plays the same number of games.
-- **Mexicano**: one round at a time, paired from the live standings.
+- **Mexicano**: one round at a time: round 1 is a random draw, and every later
+  round is paired from the live standings.
 
 **Live app: <https://kjelltillstrand.github.io/padeltournament/>**
 
@@ -26,10 +27,12 @@ browser's localStorage, so a page reload or crash resumes exactly where you left
 4. Name the tournament and start. Enter one team's score per match — the other
    team's score fills in automatically.
 5. Navigate rounds with the round buttons. In Mexicano, generate the next round
-   once every match of the latest round has a score; earlier rounds then lock.
-   The scoreboard ranks players by accumulated points with gold/silver/bronze
-   placement colors; two players level on points are split by their head-to-head
-   games, and any other tie shares its placement.
+   once every match of the latest round has a complete, valid score (the two
+   scores sum to the points total); earlier rounds then lock. A Mexicano
+   tournament stops at 128 rounds. The scoreboard ranks players by accumulated
+   points with gold/silver/bronze placement colors; two players level on points
+   are ranked by their head-to-head games where that decides it, and every other
+   tie shares its placement.
 6. Save, load and delete tournaments from the round header at any time.
 
 ### Site variants
