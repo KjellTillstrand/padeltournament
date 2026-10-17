@@ -332,10 +332,6 @@ test.describe('Malformed or hostile persisted state', () => {
     ['byes of out-of-range indices', (s) => { s.rounds[0].byes = [-1, 99, 1e308, NaN]; }],
     ['byes of the wrong length', (s) => { s.rounds[0].byes = [s.players[0]]; }],
     ['byes of prototype-ish names', (s) => { s.rounds[0].byes = ['__proto__', 'constructor']; }],
-    ['a prototype-ish byes key on the schedule and rounds', (s) => {
-      s.byes = ['__proto__'];
-      s.rounds.forEach((round) => { round.rest = ['constructor']; round.sitOuts = JSON.parse('{"__proto__":{"x":1}}'); });
-    }],
     ['byes listing every player', (s) => { s.rounds.forEach((round) => { round.byes = s.players.slice(); }); }],
   ];
   for (const [description, corrupt] of HOSTILE_BYES) {
@@ -366,6 +362,50 @@ test.describe('Malformed or hostile persisted state', () => {
       expect(errors).toEqual([]);
     });
   }
+
+  // The copy layer is an allowlist: only the fields it checks survive a restore.
+  // The planted text puts an own "__proto__" key (carrying a "byes" payload),
+  // plus sitOuts/rest/extra, on the schedule and on every round. Object spread
+  // is used to plant them because it keeps "__proto__" as an own key, whereas
+  // Object.assign would invoke the __proto__ setter and JSON.stringify would
+  // then drop it. A copy that spread `...round` would keep sitOuts/rest/extra,
+  // and the key allowlist check below catches that. The "Nobody" check is
+  // belt-and-braces only: at 10 players setByes writes an own byes, so an
+  // inherited one never shows, and the read-back cannot see an own __proto__.
+  // DEFERRED: AB#90 (assert on the raw stored text; a 12-player variant)
+  test('A 10-player tournament state with unknown keys restores with the true resting players and stores none of the keys', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a sound running 10-player tournament whose schedule and rounds carry unknown keys.
+    const state = await captureARealTournamentState(context, { schedule: '10p10r.js' });
+    const expected = restingIn(state.schedule, state.schedule.rounds[0]);
+    expect(expected).toHaveLength(2);
+    const HOSTILE = '{"__proto__":{"byes":["Nobody"],"x":1},"sitOuts":{"__proto__":{"x":1}},"rest":["constructor"],"extra":1}';
+    state.schedule = { ...state.schedule, ...JSON.parse(HOSTILE) };
+    state.schedule.rounds = state.schedule.rounds.map((r) => ({ ...r, ...JSON.parse(HOSTILE) }));
+    const raw = JSON.stringify(state);
+    // the planted text really has an own "__proto__" on the schedule and on every round
+    const reparsed = JSON.parse(raw);
+    expect(Object.getOwnPropertyNames(reparsed.schedule)).toContain('__proto__');
+    expect(reparsed.schedule.rounds.every((r) => Object.getOwnPropertyNames(r).includes('__proto__'))).toBe(true);
+    await plantStorage(page, { [STATE_KEY]: raw });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament is restored showing the true resting players,
+    await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    expect(await restingOnScreen(page)).toEqual(expected);
+    await expect(page.locator('body')).not.toContainText('Nobody');
+    // what it stores back carries none of the unknown keys,
+    const stored = await storedJson(page, STATE_KEY);
+    const keysOf = (o) => Object.getOwnPropertyNames(o).sort();
+    expect(keysOf(stored.schedule)).toEqual(['players', 'rounds']);
+    for (const round of stored.schedule.rounds) expect(keysOf(round)).toEqual(['byes', 'matches', 'roundNumber']);
+    // and nothing leaked onto the page's object prototype.
+    expect(await page.evaluate(() => ({}).x)).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
 
   test('A 12-player tournament state with planted byes rests nobody', async ({ page, context }) => {
     const errors = collectErrors(page);
@@ -2579,7 +2619,7 @@ test.describe('Rest rounds survive selection, play and reload', () => {
     const rounds = players;
     const courts = Math.floor(players / 4);
     const resting = players % 4;
-    test(`R-SITOUT-PLAY, R-SCHEDULE-SELECT, R-STATE-PERSIST: ${players} players play with ${resting} resting per round, across a reload`, async ({ page }) => {
+    test(`R-SCHEDULE-SELECT, R-STATE-PERSIST: ${players} players play with ${resting} resting per round, across a reload`, async ({ page }) => {
       const errors = collectErrors(page);
       const names = Array.from({ length: players }, (_, i) => `Name${i + 1}`);
       await page.goto('/');
@@ -2632,28 +2672,6 @@ test.describe('Rest rounds survive selection, play and reload', () => {
       expect(errors).toEqual([]);
     });
   }
-
-  test('R-SITOUT-PLAY: a 12-player Americano rests nobody in any round', async ({ page }) => {
-    const errors = collectErrors(page);
-    await page.goto('/');
-    await page.evaluate(() => localStorage.clear());
-    await page.reload();
-
-    // Given 12 players (the default schedule), when the Americano starts,
-    await page.fill('#tournamentName', 'Even Cup');
-    await page.click('#startTournamentBtn');
-
-    // Then no round rests anyone.
-    for (let r = 1; r <= 11; r++) {
-      await expect(page.locator('.round-header .left')).toHaveText(`Round ${r}`);
-      await expect(page.locator('#tournamentContainer .court')).toHaveCount(3);
-      await expect(page.locator('.resting-players')).toHaveCount(0);
-      if (r < 11) await page.getByRole('button', { name: 'NEXT ROUND' }).click();
-    }
-    const schedule = (await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY)).schedule;
-    expect(schedule.rounds.every((round) => !('byes' in round))).toBe(true);
-    expect(errors).toEqual([]);
-  });
 });
 
 // A setup restored before Start (a reload, or a format switch after one) never

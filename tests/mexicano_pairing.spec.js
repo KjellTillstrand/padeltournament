@@ -1,4 +1,3 @@
-// DEFERRED: AB#66 — add this spec to NODE_ONLY_SPECS in playwright.config.js so it runs once, not per browser project.
 const { test, expect } = require('@playwright/test');
 const path = require('path');
 
