@@ -117,8 +117,11 @@
     </div>
   </div>
 
-
-  <div id="settingsContainer">
+  <!-- Every control is in #settingsContainer, #toggleSettingsBtn or
+       #tournamentContainer. They are inert (no clicks, typing or focus) until the
+       initial restore has run (see releaseControls): a choice made while the page
+       is still loading would act on the not-yet-restored default. -->
+  <div id="settingsContainer" inert data-inert-until-restored>
     <div class="global-controls">
       <label for="formatSelect">Format:</label>
       <select id="formatSelect">
@@ -192,10 +195,10 @@
     </div>
 
   </div>
-  <button id="toggleSettingsBtn" style="display:none;">Tournament Settings</button>
+  <button id="toggleSettingsBtn" style="display:none;" inert data-inert-until-restored>Tournament Settings</button>
 
   <!-- Tournament container: displays one round at a time -->
-  <div id="tournamentContainer" class="schedule-container"></div>
+  <div id="tournamentContainer" class="schedule-container" inert data-inert-until-restored></div>
 
   <!-- Mexicano: announces the next round's state (see announceNextRoundState).
        Outside #tournamentContainer, so no re-render replaces it: it is a live
@@ -283,21 +286,40 @@
     const SAVED_TOURNAMENTS_MIGRATED_KEY = "padeltournament:migrated:savedTournaments";
 
     // Legacy migrations whose copy could not be stored on load, by prefixed key
-    // (see migrateLegacyKey): { legacyKey, migratedKey, copy, lossless }. Until
-    // the app's first write of that key that works, which completes the migration
-    // (writeAppValue), the app reads the copy as the key's stored value.
+    // (see migrateLegacyKey). Each is { legacyKey, legacyRaw, migratedKey, raw,
+    // lossless, carried }: legacyRaw is the legacy value as read then, raw the copy
+    // as it would be stored. Until the app's first write of that key that works
+    // (writeAppValue), the app reads raw as the key's stored value: the state the
+    // load restores, the saved list. carried: whether the app still holds the
+    // legacy state (see abandonPendingState; the saved list is checked per write).
     const pendingMigrations = {};
 
     // Whether the initial restore (the load handler) has begun. Until then the
     // state in memory is the not-yet-restored default, so the stored state is
-    // neither saved over nor removed (saveTournamentState, removeStoredState).
+    // neither saved over nor removed (saveTournamentState, removeStoredState), and
+    // no control takes effect (the guard below, and releaseControls).
     let initialRestoreBegun = false;
+    // Whether the initial restore has finished (restored, or fallen back to a fresh
+    // setup). Only then is a pending legacy state stored, so a restore that throws
+    // can never complete its migration (see saveTournamentState).
+    let initialRestoreDone = false;
+
+    // Until the initial restore, every event that could reach a control's handler
+    // is stopped here, before it gets there. The controls are inert as well (see
+    // releaseControls), which stops the Organizer's clicks, typing and focus; this
+    // also stops events dispatched from script, which inert does not.
+    ["click", "input", "change"].forEach(function (type) {
+      document.addEventListener(type, function (event) {
+        if (!initialRestoreBegun) event.stopImmediatePropagation();
+      }, true);
+    });
 
     // Migrate the legacy keys now, synchronously, while this script is still
-    // running: no event handler is registered yet, so nothing the app does can
-    // write a prefixed key first and pre-empt the migration. It needs no DOM, and
-    // reads only constants declared above this line (moving a const below it is a
-    // TDZ error the per-key catch would hide as a skipped migration).
+    // running: no handler that writes is registered yet (only the guard above), so
+    // nothing the app does can write a prefixed key first and pre-empt the
+    // migration. It needs no DOM, and reads only bindings declared above this line
+    // (moving one below it is a TDZ error the per-key catch would hide as a
+    // skipped migration).
     migrateLegacyStorage();
 
     // Update header when tournament name changes.
@@ -306,12 +328,15 @@
     });
 
     // Save tournament state to localStorage. Before the initial restore has begun
-    // it saves nothing: leaving the page or a setup choice made while the page is
-    // still loading would otherwise write the not-yet-restored default (with no
-    // schedule) over the stored tournament, which the restore would then drop as
-    // unusable. The restore replaces whatever such a choice set in memory anyway.
+    // it saves nothing: leaving the page while it is still loading (beforeunload,
+    // which is no control and so passes the guard above) would otherwise write the
+    // not-yet-restored default (with no schedule) over the stored tournament,
+    // which the restore would then drop as unusable. While a pending legacy state
+    // is being restored it saves nothing either: the load handler saves it once
+    // the restore has succeeded, completing its migration.
     function saveTournamentState() {
       if (!initialRestoreBegun) return;
+      if (!initialRestoreDone && pendingMigrations[STATE_KEY]) return;
       const state = {
         schedule: currentSchedule,
         currentRoundIndex: currentRoundIndex,
@@ -331,6 +356,21 @@
     function removeStoredState() {
       if (!initialRestoreBegun) return;
       removeStoredValue(STATE_KEY);
+    }
+
+    // The app drops the tournament it holds (a new setup, another schedule, a
+    // loaded tournament, a failed restore). If that was a pending legacy state,
+    // what the app stores from now on no longer holds the legacy data: its
+    // migration completes without removing the legacy value (writeMigratedValue).
+    function abandonPendingState() {
+      if (pendingMigrations[STATE_KEY]) pendingMigrations[STATE_KEY].carried = false;
+    }
+
+    // Make the controls usable: the end of the initial restore.
+    function releaseControls() {
+      document.querySelectorAll("[data-inert-until-restored]").forEach(element => {
+        element.removeAttribute("inert");
+      });
     }
 
     // Show the auto-save warning while saving the tournament state fails, and clear
@@ -362,41 +402,82 @@
 
     // Store a value of the app under one of its prefixed keys (STATE_KEY or
     // SAVED_TOURNAMENTS_KEY), reporting whether it was stored. While that key's
-    // legacy migration is pending, the value carries the legacy data (the app read
-    // the pending copy as the stored value), so a write that works completes the
-    // migration (writeMigratedValue).
+    // legacy migration is pending, a write that works completes the migration
+    // (writeMigratedValue), noting whether the value still holds the legacy data:
+    // the state unless the app has dropped it since (abandonPendingState), the
+    // saved list if it keeps every legacy save unchanged.
     function writeAppValue(key, value) {
       const migration = pendingMigrations[key];
       if (!migration) return writeStoredJson(key, value);
-      if (!writeMigratedValue(key, value, migration)) return false;
+      const carried = key === SAVED_TOURNAMENTS_KEY
+        ? keepsEverySavedTournament(value, migration.raw)
+        : migration.carried;
+      if (!writeMigratedValue(key, value, migration, carried)) return false;
       delete pendingMigrations[key];
       return true;
     }
 
-    // Write the first value under key that carries its legacy value (migration:
-    // see pendingMigrations), and report whether it was stored. The migrated
-    // marker is written first, and the value only once the marker is stored, so
-    // a value never stands under key without its marker: such a value would let
-    // the legacy value be migrated again whenever the key is later removed. A
-    // value that cannot be written takes the marker back off, so the migration is
-    // tried again on a later load. Once both are stored, the legacy value is
-    // removed if the copy carried all of it (isLosslessCopy).
-    function writeMigratedValue(key, value, migration) {
-      if (!writeStoredJson(migration.migratedKey, true)) return false;
+    // Write the first value under key since its legacy value was read (migration:
+    // see pendingMigrations), and report whether it was stored. carried: whether
+    // the value holds the legacy data.
+    // The migrated marker is written first, and the value only once the marker is
+    // stored, so a value never stands under key without its marker: that would
+    // let the legacy value be migrated again, over later data, whenever the key is
+    // later removed. A value that cannot be written takes back off a marker this
+    // call wrote, so the migration is tried again on a later load; a marker that
+    // was already there (another tab completed the migration) is left alone, and
+    // what to do with the legacy value was that tab's call.
+    // Accepted risk: if taking the marker back off fails too (storage unavailable),
+    // or the browser dies between the two writes, the marker stands without the
+    // value; the legacy value is then left in place but never migrated.
+    function writeMigratedValue(key, value, migration, carried) {
+      const markerWritten = !storedValueExists(migration.migratedKey);
+      if (markerWritten && !writeStoredJson(migration.migratedKey, true)) return false;
       if (!writeStoredJson(key, value)) {
-        removeStoredValue(migration.migratedKey);
+        if (markerWritten) removeStoredValue(migration.migratedKey);
         return false;
       }
-      if (!migration.lossless) {
-        console.warn("Migrated the usable part of a legacy localStorage value; leaving the value in place:", migration.legacyKey);
-        return true;
-      }
-      try {
-        localStorage.removeItem(migration.legacyKey);
-      } catch (err) {
-        console.error("Could not migrate a legacy localStorage value; leaving it in place:", migration.legacyKey, err);
-      }
+      if (markerWritten) retireLegacyValue(migration, carried);
       return true;
+    }
+
+    // Remove a migrated legacy value, but only once its data is stored and only if
+    // it is still exactly the value that was migrated: carried (the value stored
+    // holds the legacy data), lossless (isLosslessCopy) and unchanged since it was
+    // read (another page may have written the key since). Otherwise it is left in
+    // place, never read again (the marker).
+    function retireLegacyValue(migration, carried) {
+      const legacyKey = migration.legacyKey;
+      try {
+        if (!carried) {
+          console.warn("The app no longer holds the legacy localStorage value it migrated; leaving the value in place:", legacyKey);
+        } else if (!migration.lossless) {
+          console.warn("Migrated the usable part of a legacy localStorage value; leaving the value in place:", legacyKey);
+        } else if (localStorage.getItem(legacyKey) !== migration.legacyRaw) {
+          console.warn("A legacy localStorage value changed after it was read for migration; leaving it in place:", legacyKey);
+        } else {
+          localStorage.removeItem(legacyKey);
+        }
+      } catch (err) {
+        console.error("Could not migrate a legacy localStorage value; leaving it in place:", legacyKey, err);
+      }
+    }
+
+    // Whether a localStorage key holds a value; storage that cannot be read counts
+    // as holding none (a write to it then fails and is reported as such).
+    function storedValueExists(key) {
+      try {
+        return localStorage.getItem(key) !== null;
+      } catch (err) {
+        return false;
+      }
+    }
+
+    // Whether a saved list about to be written keeps every saved tournament of
+    // raw (a pending legacy list's copy) unchanged.
+    function keepsEverySavedTournament(savedTournaments, raw) {
+      const kept = new Set(savedTournaments.map(entry => JSON.stringify(entry)));
+      return copySavedTournamentList(raw).every(entry => kept.has(JSON.stringify(entry)));
     }
 
     // The pending migration of key (see pendingMigrations), given raw, the value
@@ -441,15 +522,33 @@
 
     // Discard whatever is in memory and show the setup for a new tournament.
     function startFreshSetup() {
+      resetSetupMemory();
+      resetTournamentState(); // also drops the stored state and loads the chosen schedule
+      document.getElementById("settingsContainer").style.display = "block";
+    }
+
+    // Set everything a setup holds in memory back to a fresh setup's defaults, with
+    // no schedule loaded yet (the caller loads one): nothing that was in memory
+    // carries over.
+    function resetSetupMemory() {
+      tournamentStarted = false;
+      currentSchedule = null;
+      currentRoundIndex = 0;
       courtNames = [];
       tournamentFormat = DEFAULT_FORMAT;
       mexicanoPlayerCount = DEFAULT_MEXICANO_PLAYERS;
       mexicanoSeed = null;
       totalPoints = DEFAULT_TOTAL_POINTS;
+      clearPlayerNameDrafts();
       document.getElementById("tournamentName").value = "";
       document.getElementById("tournamentTitle").textContent = "Tournament Title";
-      resetTournamentState(); // also drops the stored state and loads the default schedule
-      document.getElementById("settingsContainer").style.display = "block";
+    }
+
+    // Point #scheduleSelect back at its default option (the one the markup selects).
+    function resetScheduleSelect() {
+      const select = document.getElementById("scheduleSelect");
+      const option = Array.from(select.options).find(o => o.defaultSelected) || select.options[0];
+      select.value = option.value;
     }
 
 
@@ -479,14 +578,6 @@
       }
     }
 
-    // The raw state the load restores: the stored one or, while the legacy
-    // state's migration is pending (its copy could not be stored), that copy.
-    function readStateToRestore() {
-      const raw = readRawStoredState();
-      const migration = pendingMigrationFor(STATE_KEY, raw);
-      return migration ? JSON.stringify(migration.copy) : raw;
-    }
-
     // The raw stored state, or null when there is none or storage cannot be read
     // (logged; the app then starts as if nothing were stored).
     function readRawStoredState() {
@@ -510,41 +601,56 @@
 
     // Restore tournament state from localStorage.
     window.addEventListener("load", function () {
-      // From here on the state may be saved and removed: this handler runs to its
-      // end without yielding, so every write from now on is either the restore's
-      // own (re-saving the restored tournament, dropping an unusable state, the
-      // fallback) or comes after it.
+      // From here on the state may be saved and removed, and controls take
+      // effect: this handler runs to its end without yielding, so every write from
+      // now on is either the restore's own (re-saving the restored tournament,
+      // dropping an unusable state, the fallback) or comes after it.
       initialRestoreBegun = true;
-      // The stored state is read once, here: restoring uses this value, and it is
-      // the one backed up if restoring throws (restoring may rewrite the key).
-      const storedState = readStateToRestore();
       try {
-        showInitialView(storedState);
-      } catch (err) {
-        // Last line of defence: stored state is validated before use, but whatever
-        // slips through must never leave a broken page. The fresh setup drops the
-        // stored state, so it is backed up first.
-        console.error("Could not restore the saved tournament; starting a fresh setup.", err);
-        backupStoredState(storedState);
-        // A pending legacy state that could not be restored is left unmigrated (in
-        // place, and backed up): the fresh setup's saves must not mark it migrated.
-        delete pendingMigrations[STATE_KEY];
-        startFreshSetup();
-      }
+        // The stored state is read once, here: restoring uses this value, and it
+        // is the one backed up if restoring throws (restoring may rewrite the key).
+        // While the legacy state's migration is pending (its copy could not be
+        // stored), that copy is restored instead.
+        const storedState = readRawStoredState();
+        const pendingState = pendingMigrationFor(STATE_KEY, storedState);
+        try {
+          showInitialView(pendingState ? pendingState.raw : storedState);
+          initialRestoreDone = true;
+          // Restored: store the legacy tournament now, completing its migration.
+          if (pendingState) saveTournamentState();
+        } catch (err) {
+          // Last line of defence: stored state is validated before use, but whatever
+          // slips through must never leave a broken page. The fresh setup drops the
+          // stored state, so it is backed up first. Only stored data is backed up: a
+          // pending legacy state is not stored, and stays in place under its legacy
+          // key (the fresh setup no longer holds it: abandonPendingState).
+          console.error("Could not restore the saved tournament; starting a fresh setup.", err);
+          backupStoredState(storedState);
+          abandonPendingState();
+          initialRestoreDone = true;
+          startFreshSetup();
+        }
 
-      // Populate the saved tournament dropdown. Storage that cannot be read must
-      // not break the page: the list then stays empty.
-      try {
-        populateSavedTournamentDropdown();
-      } catch (err) {
-        console.error("Could not list the saved tournaments.", err);
+        // Populate the saved tournament dropdown. Storage that cannot be read must
+        // not break the page: the list then stays empty.
+        try {
+          populateSavedTournamentDropdown();
+        } catch (err) {
+          console.error("Could not list the saved tournaments.", err);
+        }
+      } finally {
+        initialRestoreDone = true;
+        releaseControls();
       }
     });
 
     // storedState: the raw stored tournament state (see restoreTournamentState).
     function showInitialView(storedState) {
-      // 1. Restore a saved state; 2. without a usable one, load the default schedule.
+      // 1. Restore a saved state; 2. without a usable one, start a fresh setup in
+      // memory, whatever the page held before, and load the default schedule.
       if (!restoreTournamentState(storedState)) {
+        resetSetupMemory();
+        resetScheduleSelect();
         const defaultModule = document.getElementById("scheduleSelect").value;
         loadScheduleFromModule(defaultModule);
       }
@@ -614,6 +720,7 @@
       const selectedIndex = parseInt(dropdown.value, 10);
       if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
         const selectedTournament = savedTournaments[selectedIndex];
+        abandonPendingState(); // the loaded tournament replaces the one held
         currentSchedule = selectedTournament.schedule;
         // Tournaments saved before round position was tracked (or with a corrupted
         // index) carry none/an invalid value: fall back to round 0.
@@ -734,6 +841,7 @@
 
 
     function resetTournamentState() {
+      abandonPendingState(); // the new setup replaces the tournament held
       tournamentStarted = false;
       currentSchedule = null;
       currentRoundIndex = 0;
@@ -820,16 +928,6 @@
 
     function isPlainObject(value) {
       return value !== null && typeof value === "object" && !Array.isArray(value);
-    }
-
-    // The parsed value of a localStorage key, or null when missing or unparsable.
-    // Reading storage that throws (unavailable) throws: only the load path, which
-    // reads the stored state once (readRawStoredState), turns that into "nothing
-    // stored". Elsewhere a saved list that could not be read must not be taken for
-    // an empty one, which Save would then overwrite (readSavedTournaments reads
-    // its key the same way).
-    function readStoredJson(key) {
-      return parseStoredJson(localStorage.getItem(key), key);
     }
 
     // The parsed value of a raw stored string read from key, or null when it is
@@ -1176,11 +1274,20 @@
     // The usable saved tournaments, rebuilt; unusable entries are skipped (and
     // dropped from storage the next time the list is written). While the legacy
     // list's migration is pending (its copy could not be stored), that copy is
-    // the list, so the next list written keeps it.
+    // the list, so the next list written keeps it. Reading storage that throws
+    // (unavailable) throws: a saved list that could not be read must not be taken
+    // for an empty one, which Save would then overwrite. (Only the load path,
+    // which reads the stored state once, readRawStoredState, turns an unreadable
+    // value into "nothing stored".)
     function readSavedTournaments() {
       const raw = localStorage.getItem(SAVED_TOURNAMENTS_KEY);
       const migration = pendingMigrationFor(SAVED_TOURNAMENTS_KEY, raw);
-      const saved = migration ? JSON.parse(JSON.stringify(migration.copy)) : parseStoredJson(raw, SAVED_TOURNAMENTS_KEY);
+      return copySavedTournamentList(migration ? migration.raw : raw);
+    }
+
+    // The usable saved tournaments of a raw saved list, rebuilt (see readSavedTournaments).
+    function copySavedTournamentList(raw) {
+      const saved = parseStoredJson(raw, SAVED_TOURNAMENTS_KEY);
       if (!Array.isArray(saved)) return [];
       return saved.map(copySavedTournament).filter(entry => entry !== null);
     }
@@ -1209,18 +1316,22 @@
     // - if either write fails, it is logged as an error, the marker is taken back
     //   off and the legacy key is left in place. The migration is then pending
     //   (pendingMigrations): the app reads the copy as the prefixed key's stored
-    //   value (the state restored on load, the saved list offered and written),
-    //   and its first write of that key that works stores the copy's data, as the
-    //   app has since changed it, with the marker: the migration is done. So no
-    //   later write of the app's leaves the legacy value behind unmigrated. Until
-    //   then (a page closed with every such write failing) the next load migrates
-    //   again;
+    //   value (the state restored on load, once that restore has succeeded; the
+    //   saved list offered and written), and its first write of that key that
+    //   works stores it with the marker: the migration is done. So no later write
+    //   of the app's leaves the legacy value behind unmigrated. Until then (a page
+    //   closed with every such write failing) the next load migrates again;
     // - once migrated, the legacy value is never migrated again (the marker);
-    // - the legacy key is removed only when that copy is lossless (isLosslessCopy).
-    //   A copy that repaired, dropped or left out anything (a reset round index,
-    //   an extra field, a skipped saved tournament) leaves the legacy value in
-    //   place indefinitely, never read again (the marker). That stale copy is the
-    //   accepted price of never deleting data the app did not fully carry over.
+    // - the legacy key is removed (retireLegacyValue) only once its data is
+    //   stored and the value is exactly what was migrated: the value written still
+    //   holds the legacy data (the app has not dropped the legacy state for a new
+    //   setup, another schedule or a loaded tournament; the saved list keeps every
+    //   legacy save unchanged), the copy is lossless (isLosslessCopy), and the
+    //   legacy key still holds what was read (another page may have written it
+    //   since). Otherwise, as when a copy repaired, dropped or left out anything (a
+    //   reset round index, an extra field, a skipped saved tournament), the legacy
+    //   value is left in place indefinitely, never read again (the marker). That
+    //   stale copy is the accepted price of never deleting data that is not stored.
     // The markers came with the prefixed keys, before any release. Earlier builds
     // wrote the marker after the copy, so a marker write that failed there (only
     // with full storage) left a copy without its marker: that legacy value can
@@ -1239,15 +1350,19 @@
       try {
         if (localStorage.getItem(migratedKey) !== null) return;
         if (localStorage.getItem(newKey) !== null) return;
-        if (localStorage.getItem(legacyKey) === null) return;
-        const legacy = readStoredJson(legacyKey);
+        const legacyRaw = localStorage.getItem(legacyKey);
+        if (legacyRaw === null) return;
+        const legacy = parseStoredJson(legacyRaw, legacyKey);
         const copy = copyLegacy(legacy);
         if (copy === null) {
           console.warn("Leaving an unusable legacy localStorage value in place:", legacyKey);
           return;
         }
-        const migration = { legacyKey, migratedKey, copy, lossless: isLosslessCopy(legacy, copy) };
-        if (!writeMigratedValue(newKey, copy, migration)) {
+        const migration = {
+          legacyKey, legacyRaw, migratedKey, raw: JSON.stringify(copy),
+          lossless: isLosslessCopy(legacy, copy), carried: true
+        };
+        if (!writeMigratedValue(newKey, copy, migration, true)) {
           console.error("Could not write the migrated copy of a legacy localStorage value; leaving it in place:", legacyKey);
           pendingMigrations[newKey] = migration;
         }
@@ -1936,8 +2051,8 @@
     // Redraws the current round's standings. With no current round (no schedule
     // loaded, or an index outside it, which computeStandings warns about) there is
     // no scoreboard to draw, so it returns and callers such as the points listener
-    // still go on to save (which before the initial restore saves nothing: see
-    // saveTournamentState). It does not clamp to another round: displayRound shows
+    // still go on to save (no control takes effect before the initial restore,
+    // which loads a schedule: see initialRestoreBegun). It does not clamp to another round: displayRound shows
     // "Round data not available." for such an index, with no scoreboard on screen.
     function updateAllScoreboards() {
       const scoreArray = computeStandings(currentRoundIndex);
@@ -2067,6 +2182,7 @@
         console.error("Unknown module name:", moduleName);
         return;
       }
+      abandonPendingState(); // the new schedule replaces the tournament held
       currentSchedule = schedule;
       storeDefaultPlayerNames(currentSchedule.players);
       setByes(currentSchedule);
@@ -2122,9 +2238,9 @@
     }
 
     // A format or player-count choice is saved right away, so it survives a reload
-    // before the tournament starts; one made before the initial restore is not
-    // (see saveTournamentState). The player and court inputs follow the new
-    // player count, starting from the default names.
+    // before the tournament starts (like every control, not before the initial
+    // restore: see initialRestoreBegun). The player and court inputs follow the
+    // new player count, starting from the default names.
     document.getElementById("formatSelect").addEventListener("change", function () {
       tournamentFormat = normalizeFormat(this.value);
       renderSetupInputs();
@@ -2142,9 +2258,8 @@
     document.getElementById("scheduleSelect").addEventListener("change", function () {
       loadScheduleFromModule(this.value);
     });
-    // A points choice made before the initial restore is not saved (with no
-    // schedule loaded yet it would save a state the restore drops as unusable):
-    // the restore sets the points total of the stored tournament.
+    // Not before the initial restore (see initialRestoreBegun): with no schedule
+    // loaded yet it would save a state the restore drops as unusable.
     document.getElementById("globalTotalPoints").addEventListener("change", function () {
       totalPoints = normalizeTotalPoints(parseInt(this.value, 10));
       updateAllScoreboards();
