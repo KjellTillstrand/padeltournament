@@ -2418,7 +2418,8 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors[0]).toContain('console.error: Could not restore the saved tournament');
   });
 
-  test('R-STATE-PERSIST: a legacy tournament not yet migrated whose restore throws is kept in place, and the earlier backup is kept', async ({ page, context }) => {
+  // Migration safety, not a Requirement's scenario: untagged.
+  test('A legacy tournament not yet migrated whose restore throws is left unmigrated, tried again later, and the earlier backup is kept', async ({ page, context }) => {
     const errors = collectErrors(page);
     // Given a tournament in progress under the legacy key only, whose restore
     // throws, an earlier backup, and storage that refuses the first write of the
@@ -2442,11 +2443,11 @@ test.describe('Malformed or hostile persisted state', () => {
     // When the app loads, restoring the tournament from its copy, which throws,
     await page.goto('/');
 
-    // then the tournament setup is presented, and stored (as migrated, so the
-    // legacy value is not migrated again over it),
+    // then the tournament setup is presented and stored, but the legacy value is
+    // not marked as migrated,
     await expectAFreshSetup(page);
     expect((await storedJson(page, STATE_KEY)).tournamentStarted).toBe(false);
-    expect(await storedRaw(page, STATE_MIGRATED_KEY)).not.toBeNull();
+    expect(await storedRaw(page, STATE_MIGRATED_KEY)).toBeNull();
     // the tournament is not lost: its legacy value is kept byte for byte, and the
     // earlier backup is not overwritten (the copy was never stored data),
     expect(await storedRaw(page, LEGACY_STATE_KEY)).toBe(rawState);
@@ -2455,6 +2456,42 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toHaveLength(2);
     expect(errors[0]).toContain('console.error: Could not write the migrated copy of a legacy localStorage value');
     expect(errors[1]).toContain('console.error: Could not restore the saved tournament');
+
+    // When the stored state is removed (choosing another schedule) and the page is
+    // closed without its save on leaving,
+    await page.selectOption('#scheduleSelect', '16p15r.js');
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    await page.close({ runBeforeUnload: false });
+
+    // then the next load tries the migration again: with nothing in the way of the
+    // restore now, the tournament resumes at round 3 with its scores and names.
+    const next = await context.newPage();
+    const nextErrors = collectErrors(next);
+    await next.goto('/');
+    await expectTheTournamentInProgress(next, 'Crash Cup');
+    expect(await storedRaw(next, STATE_MIGRATED_KEY)).not.toBeNull();
+    expect(nextErrors).toEqual([]);
+  });
+
+  // Untagged: a fallback detail, not a Requirement's scenario.
+  test('A stored tournament whose restore throws after its schedule is shown falls back to the default schedule', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a sound 16-player tournament in progress whose restore throws late:
+    // after the schedule select shows its schedule, while its round is drawn.
+    const state = await captureARealTournamentState(context, { schedule: '16p15r.js' });
+    await failToShowName(page, 'Round 1');
+    await plantStorageOnce(page, { [STATE_KEY]: JSON.stringify(state), [LEGACY_STATE_KEY]: null });
+
+    // When the app loads,
+    await page.goto('/');
+
+    // then the fresh setup is the default one: 12 players, the default schedule
+    // selected, not the restored tournament's.
+    await expectAFreshSetup(page);
+    await expect(page.locator('#scheduleSelect')).toHaveValue('12p11r.js');
+    expect((await storedJson(page, STATE_KEY)).schedule.players).toHaveLength(12);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not restore the saved tournament');
   });
 
   for (const [description, crash] of [['is unusable', false], ['cannot be restored', true]]) {
@@ -3026,6 +3063,14 @@ test.describe('Malformed or hostile persisted state', () => {
     return state;
   }
 
+  // The same, as a Mexicano setup (12 players): Start draws a new schedule.
+  async function captureALegacyMexicanoSetup(context) {
+    const state = await captureALegacySetup(context);
+    state.format = 'mexicano';
+    expect(state.mexicanoPlayerCount).toBe(12);
+    return state;
+  }
+
   // Ways the Organizer drops the tournament the app holds, each with what is
   // stored afterwards. Choosing a schedule saves nothing by itself (it removes the
   // stored state), so a court name is typed after it, which saves.
@@ -3050,9 +3095,19 @@ test.describe('Malformed or hostile persisted state', () => {
     }, (stored) => {
       expect(stored.schedule.players).toHaveLength(16);
     }],
+    ['starts a Mexicano tournament from the setup', captureALegacyMexicanoSetup, async (page) => {
+      await page.fill('#tournamentName', 'Mexi Cup');
+      await page.click('#startTournamentBtn');
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    }, (stored) => {
+      expect(stored.format).toBe('mexicano');
+      expect(stored.tournamentStarted).toBe(true);
+      expect(stored.tournamentName).toBe('Mexi Cup');
+    }],
   ];
+  // Migration safety, not a Requirement's scenario: untagged.
   for (const [description, captureLegacy, drop, expectStored] of LEGACY_STATE_DROPS) {
-    test(`R-STATE-PERSIST: a legacy tournament not yet migrated is kept in place when the Organizer ${description}`, async ({ page, context }) => {
+    test(`A legacy tournament not yet migrated is kept in place when the Organizer ${description}`, async ({ page, context }) => {
       const errors = collectErrors(page);
       page.on('dialog', (dialog) => (dialog.type() === 'confirm' ? dialog.dismiss() : dialog.accept()));
       // Given a legacy tournament (copied losslessly) and a saved one, and storage
@@ -3120,6 +3175,52 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(changed);
     expect(errors).toHaveLength(1);
   });
+
+  // The first saved list written that does not keep the legacy save unchanged.
+  const LEGACY_SAVE_DROPS = [
+    ['deletes the legacy save', async (page) => {
+      await page.fill('#tournamentName', 'Legacy Save');
+      await page.click('#deleteTournamentBtn');
+    }, ['Are you sure you want to delete "Legacy Save"? Your secret sauce will vanish forever!',
+      'Tournament "Legacy Save" deleted!'], []],
+    ['saves over the legacy save under its name', async (page) => {
+      await page.click('#loadTournamentBtn');
+      await expect(page.locator('#tournamentTitle')).toHaveText('Legacy Save');
+      await page.click('#saveTournamentBtn');
+    }, ['Tournament saved!'], ['Legacy Save']],
+  ];
+  // Migration safety, not a Requirement's scenario: untagged.
+  for (const [description, drop, expectedDialogs, expectedNames] of LEGACY_SAVE_DROPS) {
+    test(`A legacy saved list not yet migrated is kept in place when the Organizer ${description}`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      const dialogs = collectDialogs(page);
+      // Given a saved tournament under the legacy key only (copied losslessly),
+      // and storage that refuses the saved list, so its migration is pending,
+      const { schedule } = await captureALegacyTournamentInProgress(context);
+      const rawSaved = JSON.stringify([aLosslessLegacySave('Legacy Save', schedule)]);
+      await plantStorageOnce(page, {
+        [STATE_KEY]: null, [SAVED_TOURNAMENTS_KEY]: null, [SAVED_TOURNAMENTS_MIGRATED_KEY]: null,
+        [LEGACY_SAVED_TOURNAMENTS_KEY]: rawSaved,
+      });
+      await refuseWritesOfOnFirstPage(page, SAVED_TOURNAMENTS_KEY);
+      await page.goto('/');
+      await expect(page.locator('#savedTournamentSelect option')).toContainText(['Legacy Save']);
+
+      // when, storage working again, the first list the Organizer stores no
+      // longer holds that save as it was,
+      await allowWrites(page);
+      await drop(page);
+      await expect.poll(() => dialogs.length).toBe(expectedDialogs.length);
+      expect(dialogs).toEqual(expectedDialogs);
+
+      // then that list is stored, marked as migrated,
+      expect((await storedJson(page, SAVED_TOURNAMENTS_KEY)).map((t) => t.tournamentName)).toEqual(expectedNames);
+      expect(await storedRaw(page, SAVED_TOURNAMENTS_MIGRATED_KEY)).not.toBeNull();
+      // and the legacy list, whose save is stored nowhere else as it was, is kept byte for byte.
+      expect(await storedRaw(page, LEGACY_SAVED_TOURNAMENTS_KEY)).toBe(rawSaved);
+      expect(errors).toHaveLength(1);
+    });
+  }
 
   test('R-STATE-PERSIST: a legacy migration another tab completes meanwhile is left to it: its marker stays and its legacy value is untouched', async ({ page, context }) => {
     const errors = collectErrors(page);

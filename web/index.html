@@ -287,11 +287,11 @@
 
     // Legacy migrations whose copy could not be stored on load, by prefixed key
     // (see migrateLegacyKey). Each is { legacyKey, legacyRaw, migratedKey, raw,
-    // lossless, carried }: legacyRaw is the legacy value as read then, raw the copy
-    // as it would be stored. Until the app's first write of that key that works
+    // lossless }: legacyRaw is the legacy value as read then, raw the copy as it
+    // would be stored. Until the app's first write of that key that works
     // (writeAppValue), the app reads raw as the key's stored value: the state the
-    // load restores, the saved list. carried: whether the app still holds the
-    // legacy state (see abandonPendingState; the saved list is checked per write).
+    // load restores, the saved list. The state's record gets abandoned: true once
+    // the app drops the legacy tournament (abandonPendingState).
     const pendingMigrations = {};
 
     // Whether the initial restore (the load handler) has begun. Until then the
@@ -301,7 +301,8 @@
     let initialRestoreBegun = false;
     // Whether the initial restore has finished (restored, or fallen back to a fresh
     // setup). Only then is a pending legacy state stored, so a restore that throws
-    // can never complete its migration (see saveTournamentState).
+    // can never complete its migration (see saveTournamentState; the fallback
+    // drops the pending migration, leaving the legacy value unmigrated).
     let initialRestoreDone = false;
 
     // Until the initial restore, every event that could reach a control's handler
@@ -358,15 +359,17 @@
       removeStoredValue(STATE_KEY);
     }
 
-    // The app drops the tournament it holds (a new setup, another schedule, a
-    // loaded tournament, a failed restore). If that was a pending legacy state,
-    // what the app stores from now on no longer holds the legacy data: its
-    // migration completes without removing the legacy value (writeMigratedValue).
+    // The app drops the tournament it holds for another one (a new setup, another
+    // schedule, a loaded tournament, a Mexicano start, which draws a new
+    // schedule). If that was a pending legacy state, what the app stores from now
+    // on no longer holds the legacy data: its migration completes without
+    // removing the legacy value (writeAppValue, retireLegacyValue).
     function abandonPendingState() {
-      if (pendingMigrations[STATE_KEY]) pendingMigrations[STATE_KEY].carried = false;
+      if (pendingMigrations[STATE_KEY]) pendingMigrations[STATE_KEY].abandoned = true;
     }
 
     // Make the controls usable: the end of the initial restore.
+    // DEFERRED: AB#99 (restore timing: controls wait for the window load event)
     function releaseControls() {
       document.querySelectorAll("[data-inert-until-restored]").forEach(element => {
         element.removeAttribute("inert");
@@ -406,12 +409,16 @@
     // (writeMigratedValue), noting whether the value still holds the legacy data:
     // the state unless the app has dropped it since (abandonPendingState), the
     // saved list if it keeps every legacy save unchanged.
+    // Accepted multi-tab risk (localStorage has no compare-and-set): while the
+    // state's migration is pending here, another tab may store a tournament under
+    // the key; this tab's next save then overwrites it, as any two tabs saving
+    // the one stored state do.
     function writeAppValue(key, value) {
       const migration = pendingMigrations[key];
       if (!migration) return writeStoredJson(key, value);
       const carried = key === SAVED_TOURNAMENTS_KEY
         ? keepsEverySavedTournament(value, migration.raw)
-        : migration.carried;
+        : !migration.abandoned;
       if (!writeMigratedValue(key, value, migration, carried)) return false;
       delete pendingMigrations[key];
       return true;
@@ -430,6 +437,13 @@
     // Accepted risk: if taking the marker back off fails too (storage unavailable),
     // or the browser dies between the two writes, the marker stands without the
     // value; the legacy value is then left in place but never migrated.
+    // Accepted multi-tab risk (localStorage has no compare-and-set): the marker is
+    // checked, then written. Another tab can do the same in between, so both may
+    // take it as their own. At worst a tab whose value write fails then takes off
+    // the marker the other tab's stored value relies on: that value stands without
+    // its marker, so the legacy value can be migrated again if the app later
+    // removes it and the page is closed before its next save. Otherwise both tabs
+    // judge removing the legacy value, each by the rules of retireLegacyValue.
     function writeMigratedValue(key, value, migration, carried) {
       const markerWritten = !storedValueExists(migration.migratedKey);
       if (markerWritten && !writeStoredJson(migration.migratedKey, true)) return false;
@@ -474,7 +488,8 @@
     }
 
     // Whether a saved list about to be written keeps every saved tournament of
-    // raw (a pending legacy list's copy) unchanged.
+    // raw (a pending legacy list's copy) unchanged. It rebuilds that copy on each
+    // call, which only Save and Delete make, and only while the migration is pending.
     function keepsEverySavedTournament(savedTournaments, raw) {
       const kept = new Set(savedTournaments.map(entry => JSON.stringify(entry)));
       return copySavedTournamentList(raw).every(entry => kept.has(JSON.stringify(entry)));
@@ -520,28 +535,38 @@
       return true;
     }
 
-    // Discard whatever is in memory and show the setup for a new tournament.
+    // Discard whatever is in memory and show (and store) the setup for a new
+    // tournament: the fallback when a restore throws.
     function startFreshSetup() {
-      resetSetupMemory();
-      resetTournamentState(); // also drops the stored state and loads the chosen schedule
+      resetSetupChoices();
+      resetTournamentState(); // also drops the stored state and loads the default schedule
       document.getElementById("settingsContainer").style.display = "block";
     }
 
-    // Set everything a setup holds in memory back to a fresh setup's defaults, with
-    // no schedule loaded yet (the caller loads one): nothing that was in memory
-    // carries over.
-    function resetSetupMemory() {
-      tournamentStarted = false;
-      currentSchedule = null;
-      currentRoundIndex = 0;
+    // Set the setup's own choices back to a fresh setup's defaults, the default
+    // schedule chosen: everything but the tournament itself (resetTournamentMemory).
+    // Both fresh setups on load use it (nothing usable stored; a restore that
+    // threw), so neither keeps a choice made, or restored, before.
+    function resetSetupChoices() {
       courtNames = [];
       tournamentFormat = DEFAULT_FORMAT;
       mexicanoPlayerCount = DEFAULT_MEXICANO_PLAYERS;
-      mexicanoSeed = null;
       totalPoints = DEFAULT_TOTAL_POINTS;
-      clearPlayerNameDrafts();
       document.getElementById("tournamentName").value = "";
       document.getElementById("tournamentTitle").textContent = "Tournament Title";
+      resetScheduleSelect();
+    }
+
+    // Drop the tournament held in memory (see abandonPendingState): not started,
+    // no schedule (the caller loads one), round 1, no seed, no typed name drafts
+    // (a new setup starts from the default names).
+    function resetTournamentMemory() {
+      abandonPendingState();
+      tournamentStarted = false;
+      currentSchedule = null;
+      currentRoundIndex = 0;
+      mexicanoSeed = null;
+      clearPlayerNameDrafts();
     }
 
     // Point #scheduleSelect back at its default option (the one the markup selects).
@@ -615,21 +640,23 @@
         const pendingState = pendingMigrationFor(STATE_KEY, storedState);
         try {
           showInitialView(pendingState ? pendingState.raw : storedState);
-          initialRestoreDone = true;
-          // Restored: store the legacy tournament now, completing its migration.
-          if (pendingState) saveTournamentState();
         } catch (err) {
           // Last line of defence: stored state is validated before use, but whatever
           // slips through must never leave a broken page. The fresh setup drops the
           // stored state, so it is backed up first. Only stored data is backed up: a
-          // pending legacy state is not stored, and stays in place under its legacy
-          // key (the fresh setup no longer holds it: abandonPendingState).
+          // pending legacy state is not stored. Its migration is dropped instead, so
+          // the fresh setup's saves neither mark it migrated nor remove it: the
+          // legacy value stays in place, unmigrated, and is tried again by a later
+          // load that finds no stored state (the fresh setup, once stored, is newer
+          // data until the app removes it).
           console.error("Could not restore the saved tournament; starting a fresh setup.", err);
           backupStoredState(storedState);
-          abandonPendingState();
-          initialRestoreDone = true;
+          delete pendingMigrations[STATE_KEY];
           startFreshSetup();
         }
+        initialRestoreDone = true;
+        // Restored from a pending legacy state: store it now, completing its migration.
+        if (pendingMigrations[STATE_KEY]) saveTournamentState();
 
         // Populate the saved tournament dropdown. Storage that cannot be read must
         // not break the page: the list then stays empty.
@@ -639,7 +666,6 @@
           console.error("Could not list the saved tournaments.", err);
         }
       } finally {
-        initialRestoreDone = true;
         releaseControls();
       }
     });
@@ -649,8 +675,8 @@
       // 1. Restore a saved state; 2. without a usable one, start a fresh setup in
       // memory, whatever the page held before, and load the default schedule.
       if (!restoreTournamentState(storedState)) {
-        resetSetupMemory();
-        resetScheduleSelect();
+        resetSetupChoices();
+        resetTournamentMemory();
         const defaultModule = document.getElementById("scheduleSelect").value;
         loadScheduleFromModule(defaultModule);
       }
@@ -841,11 +867,7 @@
 
 
     function resetTournamentState() {
-      abandonPendingState(); // the new setup replaces the tournament held
-      tournamentStarted = false;
-      currentSchedule = null;
-      currentRoundIndex = 0;
-      mexicanoSeed = null;
+      resetTournamentMemory(); // the new setup replaces the tournament held
       document.getElementById("formatSelect").disabled = false;
       document.getElementById("playerCountSelect").disabled = false;
       document.getElementById("scheduleSelect").disabled = false;
@@ -857,7 +879,6 @@
       document.getElementById("toggleSettingsBtn").style.display = "none";
       removeStoredState();
       loadScheduleFromModule(document.getElementById("scheduleSelect").value);
-      clearPlayerNameDrafts(); // a new setup starts from the default names
       renderSetupInputs(); // the chosen format is kept, with its player count
       applyFormatUI();
       saveTournamentState(); // persist the kept format now, not only on unload
@@ -1320,12 +1341,15 @@
     //   saved list offered and written), and its first write of that key that
     //   works stores it with the marker: the migration is done. So no later write
     //   of the app's leaves the legacy value behind unmigrated. Until then (a page
-    //   closed with every such write failing) the next load migrates again;
+    //   closed with every such write failing) the next load migrates again. A
+    //   pending state whose restore throws is dropped from pendingMigrations
+    //   unmigrated (see the load handler);
     // - once migrated, the legacy value is never migrated again (the marker);
     // - the legacy key is removed (retireLegacyValue) only once its data is
     //   stored and the value is exactly what was migrated: the value written still
     //   holds the legacy data (the app has not dropped the legacy state for a new
-    //   setup, another schedule or a loaded tournament; the saved list keeps every
+    //   setup, another schedule, a loaded tournament or a Mexicano start:
+    //   abandonPendingState; the saved list keeps every
     //   legacy save unchanged), the copy is lossless (isLosslessCopy), and the
     //   legacy key still holds what was read (another page may have written it
     //   since). Otherwise, as when a copy repaired, dropped or left out anything (a
@@ -1359,8 +1383,7 @@
           return;
         }
         const migration = {
-          legacyKey, legacyRaw, migratedKey, raw: JSON.stringify(copy),
-          lossless: isLosslessCopy(legacy, copy), carried: true
+          legacyKey, legacyRaw, migratedKey, raw: JSON.stringify(copy), lossless: isLosslessCopy(legacy, copy)
         };
         if (!writeMigratedValue(newKey, copy, migration, true)) {
           console.error("Could not write the migrated copy of a legacy localStorage value; leaving it in place:", legacyKey);
@@ -1990,6 +2013,7 @@
         alert("The first round could not be drawn.");
         return false;
       }
+      abandonPendingState(); // the drawn schedule replaces the one held
       mexicanoSeed = seed;
       currentSchedule = setByes({ players: names.slice(), rounds: [toScheduleRound(first)] });
       // The settings show the players as they play (locked once started).
@@ -2052,8 +2076,9 @@
     // loaded, or an index outside it, which computeStandings warns about) there is
     // no scoreboard to draw, so it returns and callers such as the points listener
     // still go on to save (no control takes effect before the initial restore,
-    // which loads a schedule: see initialRestoreBegun). It does not clamp to another round: displayRound shows
-    // "Round data not available." for such an index, with no scoreboard on screen.
+    // which loads a schedule: see initialRestoreBegun). It does not clamp to
+    // another round: displayRound shows "Round data not available." for such an
+    // index, with no scoreboard on screen.
     function updateAllScoreboards() {
       const scoreArray = computeStandings(currentRoundIndex);
       const round = scheduledRound(currentRoundIndex);
