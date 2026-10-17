@@ -18,7 +18,7 @@ step), never prose alone, per the retro rule (REQ-490).
 |----|-------|-----------|--------|
 | DF-1 | Drain writes "Deployed" without verifying the deploy | verification-step | open |
 | DF-2 | Worktree teardown fails after a squash merge, so worktrees accumulate | process-step | open |
-| DF-3 | Worktree-isolation guard false-positives on paths containing `git` | Claude Code feedback (matcher fix) + process-step (harness workaround) | open |
+| DF-3 | Worktree-isolation guard false-positives on paths containing `git` | Claude Code feedback (matcher fix); accepted risk on the harness side | open |
 | DF-4 | Drain requires `scripts/forge/queue.sh`, which onboarding never provisioned | process-step + preflight gate | open (operator in progress) |
 | DF-5 | Mock board adapter forks the board when run from a worktree | gate (adapter fix) | open |
 | DF-6 | Mock board `create_item` leaves a new item's state null | gate (adapter fix) | open |
@@ -142,8 +142,8 @@ step), never prose alone, per the retro rule (REQ-490).
 
 - **Status:** open. Answered 2026-10-17: the guard is built into Claude Code
   (no dotfiles-claude file produces its message), so the matcher fix below is
-  Claude Code feedback, not a harness change. The harness-side mechanism is the
-  process step under **Harness workaround**.
+  Claude Code feedback, not a harness change. On the harness side this is an
+  accepted risk (see **Harness side**).
 - **Source:** drain-491-closeout session, 2026-10-03
 - **Goal:** the worktree-isolation guard blocks real git operations aimed
   outside the worktree, and nothing else.
@@ -171,24 +171,26 @@ step), never prose alone, per the retro rule (REQ-490).
   Effect: creating a board item (AB#69) from inside an item worktree was
   impossible, so it waited until the worktree was gone. Review agents also lost
   the ability to run scratch mutation checks.
-- **Mechanism (gate fix):** match `git` as a command token (argv[0], or after
-  `;`, `&&`, `|` or `$(`), not as a substring of a path argument. Keep the
-  refusal for `git -C <outside>`, `--git-dir` and `--work-tree`.
-- **Target:** Claude Code feedback (the guard is built in) for the matcher
-  fix. dotfiles-claude for the workaround below.
-- **Harness workaround (process-step):** the drain runs its helper scripts
-  through the projected `~/.claude/...` paths, which contain no `git` segment,
-  rather than the harness checkout path. When no writer is live, it does
-  board and teardown steps from the main checkout (after `ExitWorktree`), and
-  never from inside an item worktree. Target:
-  `home/skills/drain/SKILL.md` § Ports and §2g. Verify: a skill-text
-  assertion that no drain step invokes a `scripts/drain/*` helper by the
-  harness checkout path.
+- **Mechanism (Claude Code feedback, matcher fix):** match `git` as a command
+  token (argv[0], or after `;`, `&&`, `|` or `$(`), not as a substring of a path
+  argument. Keep the refusal for `git -C <outside>`, `--git-dir` and
+  `--work-tree`.
+- **Target:** Claude Code feedback. The guard is built into Claude Code, not a
+  dotfiles-claude hook.
+- **Harness side (accepted risk):** dotfiles-claude has no reliable workaround.
+  - `scripts/drain/*` is not projected under `~/.claude`.
+  - A projected path was refused too, under the `.`-in-a-construct rule.
+
+  The drain lives with the refusals by doing board, scope and teardown steps
+  from the main checkout after `ExitWorktree`, whenever no writer is live, as
+  this batch did. Reason for accepting rather than building a harness
+  mechanism: the defect is in Claude Code, and the cost seen here was minutes
+  per refusal. Revisit if the matcher fix is declined.
 - **More evidence (batch 2, 2026-10-08..10):** the guard refused agents' inline
   Playwright lock loop (`until mkdir "$L" …; do sleep 20; done; …`), with no git
   involved, because the lock path contains `/git/`. Agents moved the identical
   loop into a `/tmp` script.
-- **Verify:** hook tests:
+- **Verify (acceptance cases for the Claude Code feedback):**
   - commands with `/x/git/y` path arguments, and a `--jq` filter containing
     `[1]`, are allowed;
   - `D=$(mktemp -d) && …` and `--description-html "$(cat f)"`, with no git in
@@ -663,7 +665,8 @@ step), never prose alone, per the retro rule (REQ-490).
   2 changes touching `home/skills/drain`, `home/hooks` or `home/agents`:
   e05ad28 (2026-10-14, `home/hooks`) and 63bc6a6 (2026-10-15 06:38Z;
   `home/skills/drain`, `retro`, `audit-board`, `scripts`). Two more
-  (bffeb26, cf8e8e6) touched only `scripts/boards`.
+  (bffeb26, cf8e8e6) touched none of `home/skills/drain`, `home/hooks` or
+  `home/agents`.
   An earlier commit, 54940b8, landed before preflight and passed the currency
   check. 63bc6a6 added the `[drain-batch] $BATCH_ID claimed` / outcome markers
   to SKILL.md. The drain kept following the skill text it loaded at the start,
@@ -689,12 +692,14 @@ step), never prose alone, per the retro rule (REQ-490).
   - No back-filling: a batch that never minted a `BATCH_ID` gets no markers
     after the fact. Markers feed the clean-drain promotion count and must not
     be self-asserted. The gap is recorded in the retro instead.
-- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §0/§2a,
-  `home/hooks/lib.sh` (`hook_runtime_currency`).
-- **Verify:** skill-text assertion that §2a runs the fetch-and-diff before
-  every claim; a fixture harness repo where a commit touching
-  `home/skills/drain` lands between two claims makes the check report
-  "reload".
+- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §1/§2a, plus a
+  small helper `scripts/drain/harness-moved.sh <recorded-sha>`. It fetches,
+  diffs the three paths and exits 3 when they changed.
+- **Verify:**
+  - a bats case: in a fixture harness repo, a commit touching
+    `home/skills/drain` after the recorded sha makes `harness-moved.sh` exit 3,
+    and a commit touching only `scripts/boards` exits 0;
+  - a skill-text assertion that §2a calls it before every claim.
 
 ## DF-19: Item target files miss the tests a rename or refactor must touch
 
@@ -798,8 +803,8 @@ step), never prose alone, per the retro rule (REQ-490).
   Each cost a fix round or a comment-only commit. None was raised by the
   specialist that wrote it; each was found by a review pass.
 - **Mechanism (process-step + gate):**
-  - A script lists every comment, user-facing string and doc line the diff
-    adds or changes, in the same family as DF-20's lister.
+  - A script lists every comment, user-facing string, test title and doc line
+    the diff adds or changes, in the same family as DF-20's lister.
   - The completion report's `claims_changed:` gives, for each listed line,
     the code location that makes it true.
   - The orchestrator diffs the two lists and re-dispatches when a listed line
@@ -811,8 +816,9 @@ step), never prose alone, per the retro rule (REQ-490).
 - **Target (dotfiles-claude):** `home/skills/drain/references/handoff.md`
   (completion-report), `home/agents/reviewer.md`, `scripts/drain/`, AB#709.
 - **Verify:** bats cases:
-  - the lister emits an added comment, an added or changed user-facing string
-    and a changed doc line, and does not emit unchanged lines;
+  - the lister emits an added comment, an added or changed user-facing string,
+    a renamed test title and a changed doc line, and does not emit unchanged
+    lines;
   - `check-completion-report.sh` rejects a report with no `claims_changed`
     entry for a listed line;
   - it rejects an entry whose cited `file:line` does not exist at the head
