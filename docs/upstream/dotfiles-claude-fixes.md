@@ -32,6 +32,13 @@ step), never prose alone, per the retro rule (REQ-490).
 | DF-14 | Refinement doesn't assess impact on persisted data | process-step | open |
 | DF-15 | Parallel tracks: the session still moves per track, and shared local resources have no lock | process-step | open |
 | DF-16 | A local test bar run under heavy machine load fails spuriously | verification-step | open |
+| DF-17 | A review pass detached the writer's worktree | gate + process-step | open |
+| DF-18 | A long drain keeps running a skill the harness has since changed | process-step + gate | open |
+| DF-19 | Item target files miss the tests a rename or refactor must touch | verification-step | open |
+| DF-20 | Nothing lists the tagged tests a diff touches, so the annotation audit input is hand-made | gate (script) | open |
+| DF-21 | An interrupted writer loses uncommitted work | process-step | open |
+| DF-22 | Drain working state lives in a session scratchpad that can disappear | process-step | open |
+| DF-23 | Comments and docs claim more than the code does, in most items | process-step | open |
 
 ---
 
@@ -595,3 +602,220 @@ step), never prose alone, per the retro rule (REQ-490).
   `home/skills/drain/SKILL.md` §2d.
 - **Verify:** wrapper tests with a stubbed load average, covering a wait above
   the ceiling and a red-under-load result recorded as non-final.
+
+## DF-17: A review pass detached the writer's worktree
+
+- **Status:** open
+- **Source:** drain 2026-10-10..17, AB#63 review round 1 (2026-10-15)
+- **Goal:** no review or audit pass can change the writer's worktree, including
+  its HEAD.
+- **Problem:** the writer's worktree ended review round 1 on a detached HEAD at
+  the reviewed commit. Its reflog reads `checkout: moving from
+  worktree-chore+scoreboard-polish-follow-ups to c69e864`. The review prompts
+  said "in your own isolated worktree run `git checkout --detach <sha>`", and
+  `/code-review` (a forked skill, not an isolated agent) was handed the
+  writer's worktree path. Which pass ran the checkout is not proven. The
+  `reviewer` and `security-reviewer` were dispatched with `isolation:
+  worktree`; the `/code-review` fork was not.
+- **Evidence:**
+  - Only a HEAD move: the tree was clean, nothing was lost.
+  - It was caught only because the next fix-round writer's isolation check
+    found `git branch --show-current` empty and stopped. The drain re-attached
+    the branch with `git switch` and re-dispatched.
+  - From then on every review prompt began with a self-check (`git rev-parse
+    --show-toplevel` must not be the writer's path, else STOP), and
+    `/code-review` was told not to change HEAD. No recurrence in any later
+    review pass (AB#63 round 2, AB#70, AB#66, AB#60). Every agent reviewer
+    reported its own worktree.
+- **Mechanism (gate + process-step):**
+  - The `reviewer` and `security-reviewer` agent definitions open with that
+    isolation self-check as a hard STOP, so it doesn't depend on the prompt.
+  - The drain passes `/code-review` a commit range checked out in a throwaway
+    detached worktree it creates, never the writer's path.
+  - Before every fix-round dispatch and before publish, the drain asserts
+    `git -C "$WS" symbolic-ref -q HEAD` names the item branch. A detached or
+    foreign HEAD is a STOP, not a fix-up.
+- **Target (dotfiles-claude):** `home/agents/reviewer.md`,
+  `home/agents/security-reviewer.md`, `home/skills/drain/SKILL.md` §2e/§2f.
+- **Verify:** a fixture where a review stub checks out a commit in the writer's
+  path: the drain stops before the next dispatch.
+
+## DF-18: A long drain keeps running a skill the harness has since changed
+
+- **Status:** open
+- **Source:** drain 2026-10-10..17 retro
+- **Goal:** a drain notices when the harness it runs on changes under it.
+- **Problem:** the batch ran for 7 days. The harness shipped 3 changes to
+  `home/skills/drain`, `home/hooks` and `home/agents` during it (54940b8
+  2026-10-10, e05ad28 2026-10-14, 63bc6a6 2026-10-15). 63bc6a6 added the
+  `[drain-batch] $BATCH_ID claimed` / outcome markers to SKILL.md. The drain
+  kept following the skill text it loaded at the start, so none of the 7
+  delivered stories carries a batch marker, and the board alone can't name the
+  batch.
+- **Evidence:** `git log -S'[drain-batch]' origin/main -- home/skills/drain/SKILL.md`
+  in dotfiles-claude gives 63bc6a6 (2026-10-15). `get_comments` on AB#40, 41,
+  75, 63, 70, 66, 60 finds no `[drain-batch]` comment. `install.sh --check` and
+  the runtime-currency check ran once, at preflight.
+- **Mechanism (process-step + gate):**
+  - The drain records the harness sha at the §1 batch gate.
+  - Before each §2a claim it re-runs `hook_runtime_currency`. If the harness
+    moved and the change touches `home/skills/drain/**`, `home/hooks/**` or
+    `home/agents/**`, it STOPs and reloads the skill before claiming.
+  - Markers that a mid-batch change introduces are back-filled for items
+    already delivered, labelled as back-filled.
+- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §0/§2a,
+  `home/hooks/lib.sh` (`hook_runtime_currency`).
+- **Verify:** a fixture batch where the harness sha changes between two claims:
+  the second claim is refused until the skill is reloaded.
+
+## DF-19: Item target files miss the tests a rename or refactor must touch
+
+- **Status:** open
+- **Source:** drain 2026-10-10..17, AB#40, AB#41, AB#66, AB#70
+- **Goal:** an item's declared surface includes every file its approach forces
+  it to change.
+- **Problem:** 4 of 7 items needed a batch-gate surface delta for test files
+  their own approach made unavoidable:
+  - AB#40 renamed the localStorage keys; 7 other specs planted or read them.
+  - AB#41 needed the shared key helper AB#40 had just created.
+  - AB#66's own board comment named `mexicano_pairing.spec.js`, which its
+    Target files omitted.
+  - AB#70 changed the Generate button from `disabled` to `aria-disabled`; 3
+    assertions in `state-handling.spec.js` checked `toBeDisabled()`.
+- **Evidence:** `.claude/worktrees/.drain-state/deltas.log` in this repo (5
+  entries); `check-scope.sh` exit 3 on AB#40; AB#70's implementer stopped before
+  editing and reported the 3 assertions.
+- **Mechanism (verification-step):**
+  - At refinement, `/refine` greps `tests/**` for every identifier, storage
+    key, selector and attribute the Approach says it renames, removes or
+    changes, and lists the hits under Target files, or records why each one is
+    unaffected.
+  - Files named in the item's own comments are added to Target files.
+  - At the batch gate the drain re-runs the grep against the current tree
+    (later items change the code) and shows any new hits as a surface delta for
+    approval, before dispatch rather than after review.
+- **Target (dotfiles-claude):** `home/skills/refine/SKILL.md` (Target files),
+  `home/skills/drain/SKILL.md` §1, `scripts/drain/plan-tracks.sh`.
+- **Verify:** a fixture item whose Approach renames a key used in two specs:
+  `/refine` lists both, and the batch gate reports a new third use as a delta.
+
+## DF-20: Nothing lists the tagged tests a diff touches, so the annotation audit input is hand-made
+
+- **Status:** open
+- **Source:** drain 2026-10-10..17 (every item)
+- **Goal:** the §2e annotation audit's list of tags is computed, complete and
+  repeatable.
+- **Problem:** §2e makes the orchestrator list every tag whose line or test
+  body changed, and AB#731 (the gate) is deferred. This drain wrote its own
+  lister (`.claude/worktrees/.drain-state/tagged-hunks.mjs`). Reviewers found
+  that it missed:
+  - multi-tag titles (`R-A, R-B: …`), in round 1 of AB#40;
+  - tagged tests changed only through a helper they call (AB#40, AB#70);
+  - data rows of parametrized tests (AB#66).
+  It also over-listed tests next to a hunk. The drain added these to prompts
+  by hand.
+- **Mechanism (gate, script):** `scripts/drain/list-tagged-changes.sh --base
+  <sha> --head <sha>`. It parses test titles (single and multi-tag, template
+  literals), maps changed lines to the enclosing test, follows changed
+  top-level helpers to their callers, and emits `file: title → tags`. The
+  drain passes its output verbatim to the reviewer, and the reviewer's
+  classified set is diffed against it (AB#731).
+- **Target (dotfiles-claude):** `scripts/drain/`, `home/skills/drain/SKILL.md`
+  §2e, AB#731.
+- **Verify:** bats fixtures covering a multi-tag title, a helper-only change, a
+  parametrized-row change, and a hunk adjacent to an unchanged test.
+
+## DF-21: An interrupted writer loses uncommitted work
+
+- **Status:** open
+- **Source:** drain 2026-10-10..17, AB#41 fix round 2 and two review passes
+- **Goal:** an interrupted specialist leaves its finished parts on the branch.
+- **Problem:** account usage limits stopped three subagents mid-run, in two
+  events. Both AB#40 round-2 review passes stopped and were re-dispatched. The
+  AB#41 fix-round writer stopped with nothing committed, and the round was
+  redone from scratch.
+- **Evidence:** task notifications `rate_limit, HTTP 429` (a session limit
+  during AB#40 round 2; a weekly limit during AB#41 fix round 2, 2026-10-13). From the re-dispatch on, the briefs said "commit as you
+  complete each class", and later interrupted work was recoverable.
+- **Mechanism (process-step):**
+  - `handoff.md` requires a writer to commit after each finished class or
+    numbered item, not only at the end. The final report's `class_inventory`
+    names the commit for each class.
+  - The drain resumes an interrupted writer from its last commit, never from
+    the base.
+- **Target (dotfiles-claude):** `home/skills/drain/references/handoff.md`
+  (writer standards, completion-report).
+- **Verify:** skill-text assertion; a fixture where a writer stops after class
+  2 of 3 leaves 2 commits, and the re-dispatch brief starts at class 3.
+
+## DF-22: Drain working state lives in a session scratchpad that can disappear
+
+- **Status:** open
+- **Source:** drain 2026-10-10..17, after AB#40 round 1 (2026-10-10)
+- **Goal:** a drain's working state (batch file, conflict map, surface deltas,
+  bar logs, retro notes) survives the session.
+- **Problem:** the drain kept `batch.json`, `map.json` and bar logs in the
+  session scratchpad. The harness withdrew that directory mid-batch, so the
+  drain moved its state to `.claude/worktrees/.drain-state/`, a git-ignored
+  path in the target repo. The resume note and this retro both depend on it.
+- **Mechanism (process-step):** the drain declares one state directory at §0,
+  git-ignored in the target repo (for example `.claude/drain/<batch-id>/`),
+  checks it is ignored, writes every working file there, and names it in the
+  resume note. `/retro` reads it as an evidence source.
+- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §0/§1,
+  `home/skills/retro/SKILL.md` §1, `home/skills/onboard-project` (gitignore
+  entry).
+- **Verify:** skill-text assertion; onboarding adds the ignore entry.
+
+## DF-23: Comments and docs claim more than the code does, in most items
+
+- **Status:** open
+- **Source:** drain 2026-10-10..17, AB#40, AB#75, AB#63, AB#66, AB#60
+- **Goal:** a comment or doc sentence a change adds is true of the code when it
+  ships.
+- **Problem:** in 5 of 7 items a reviewer or `/code-review` found an added or
+  changed comment, message or doc sentence that claimed more than the code did:
+  - AB#40: "migrated once", "kept for the next load", "never read again".
+  - AB#75: "will be saved automatically", with no retry.
+  - AB#63: a test titled "never reorders" while it did.
+  - AB#66: a comment said `__proto__` was planted as an own key; it was not.
+  - AB#60: navigation buttons called "large, bold".
+  Each cost a fix round or a comment-only commit. The specialists' reports
+  never flagged them.
+- **Mechanism (process-step):** the completion report gains a
+  `claims_changed:` list, covering every added or changed comment, user-facing
+  message and doc sentence, each with the code location that makes it true.
+  The orchestrator checks the list against the diff (as with
+  `class_inventory`) and re-dispatches when it is missing. The reviewer
+  verifies each entry instead of hunting for them.
+- **Target (dotfiles-claude):** `home/skills/drain/references/handoff.md`
+  (completion-report), `home/agents/reviewer.md`.
+- **Verify:** skill-text assertion; a fixture report missing `claims_changed`
+  for a changed comment is re-dispatched.
+
+## Evidence added by the 2026-10-17 retro (existing entries)
+
+- **DF-1 (deploy not verified):** the merge of AB#75 (PR #53, 7f11e79) produced
+  no workflow run at all: `actions/runs?head_sha=…` total 0, no skip directive,
+  Actions enabled, GitHub status operational. The drain's by-hand deploy check
+  caught it, kept AB#75 out of Deployed, and verified it live with the next
+  push (c42d90c, Pages 7085639169). A "no run within N minutes of landing"
+  check belongs in the DF-1 post-land step. In-repo, AB#65 (deploy-freshness
+  monitor) would also have flagged it and is still not delivered.
+- **DF-3 (worktree guard false positives):** the guard refused every command
+  naming the harness path (`/Users/…/git/dotfiles-mui/…`) or the worktree path
+  while the session was in a worktree. That included `check-scope.sh`, sourcing
+  `resolve-runner-id.sh`, a `jq` marker write, a heredoc append to this file
+  and the AB#40 board write-back. The drain worked round it with
+  `ExitWorktree` whenever no writer was live, which delayed AB#40's write-back
+  by one item. These refusals come from the session's isolation check, not a
+  hook, so they never reach `~/.claude/gate-log.jsonl` and a retro cannot
+  count them.
+- **DF-6 (create_item leaves state null):** recurred. AB#88 came back with
+  `state: null` (seen directly). The drain then set every later item it created
+  (AB#89–98) to New with `update_item --state New` as a matter of routine, so
+  their raw create state was not checked.
+- **DF-16 (load):** the machine hibernated at 4% battery during one full run.
+  Firefox tests in flight across the sleep failed with 5.4 h durations. The run
+  was voided and re-run cold. The DF-16 bar wrapper should also void a run that
+  spans a system sleep (`pmset -g log` on macOS).
