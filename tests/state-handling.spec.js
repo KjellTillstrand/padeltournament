@@ -1564,7 +1564,7 @@ test.describe('Malformed or hostile persisted state', () => {
     return page.evaluate((k) => localStorage.getItem(k), key);
   }
 
-  test('R-STATE-PERSIST: the specs use the same localStorage keys as the app', async ({ page }) => {
+  test('The specs use the same localStorage keys as the app', async ({ page }) => {
     await page.goto('/');
     const appKeys = await page.evaluate(() => ({
       STATE_KEY, SAVED_TOURNAMENTS_KEY, STATE_BACKUP_KEY, LEGACY_STATE_KEY, LEGACY_SAVED_TOURNAMENTS_KEY,
@@ -1626,7 +1626,7 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
-  test('R-STATE-PERSIST: saved tournaments stored under the legacy key are migrated and still load', async ({ page, context }) => {
+  test('R-TOURNAMENT-STORE: saved tournaments stored under the legacy key are migrated and still load', async ({ page, context }) => {
     const errors = collectErrors(page);
     // Given a saved tournament list under the legacy key only, its entry holding
     // every field a save writes.
@@ -1716,7 +1716,7 @@ test.describe('Malformed or hostile persisted state', () => {
     ['a legacy saved list of one sound save is migrated and removed', false, false],
     ['a partly usable legacy saved list migrates its usable entries and is kept whole', true, true],
   ]) {
-    test(`R-STATE-PERSIST: ${description}`, async ({ page, context }) => {
+    test(`${description[0].toUpperCase()}${description.slice(1)}`, async ({ page, context }) => {
       const errors = collectErrors(page);
       // Given a legacy saved list of one sound (lossless) save, and maybe a foreign entry.
       const { schedule } = await captureALegacyTournamentInProgress(context);
@@ -1768,7 +1768,7 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
-  test('R-STATE-PERSIST: a legacy saved list is kept when its migrated copy cannot be written', async ({ page, context }) => {
+  test('A legacy saved list is kept when its migrated copy cannot be written', async ({ page, context }) => {
     const errors = collectErrors(page);
     // Given a sound legacy saved list, and storage that refuses the prefixed list.
     const { schedule } = await captureARealTournamentState(context);
@@ -1891,7 +1891,7 @@ test.describe('Malformed or hostile persisted state', () => {
 
   // An empty list is nothing to migrate, and may be another page's.
   for (const rawSaved of ['[]', ' [ ] ']) {
-    test(`R-STATE-PERSIST: an empty legacy saved list (${JSON.stringify(rawSaved)}) is left in place and nothing is written`, async ({ page }) => {
+    test(`An empty legacy saved list (${JSON.stringify(rawSaved)}) is left in place and nothing is written`, async ({ page }) => {
       const errors = collectErrors(page);
       // Given an empty list under the legacy saved-list key, and nothing under the prefixed one.
       await plantStorageOnce(page, { [SAVED_TOURNAMENTS_KEY]: null, [LEGACY_SAVED_TOURNAMENTS_KEY]: rawSaved });
@@ -1913,20 +1913,19 @@ test.describe('Malformed or hostile persisted state', () => {
   // A legacy value the copy layer accepts only by repairing it, dropping part of
   // it, or both, may hold data that is not the app's: it is migrated (the app
   // uses the repaired copy), but the legacy value itself is kept as it was.
-  // DEFERRED: AB#89 (pin the 16-court truncation; fit of R-STATE-PERSIST tags on migration tests)
   const LEGACY_STATES_NEEDING_REPAIR = [
     ['an out-of-range round index', (s) => { s.currentRoundIndex = 99; }, 'Round 1'],
     ["an extra field (another page's data)", (s) => { s.siblingSecretData = { token: 'keep-me' }; }, 'Round 3'],
     ['an invalid court name entry', (s) => { s.courtNames = [42]; }, 'Round 3'],
     ['17 court names (the copy keeps the first 16)', (s) => {
       s.courtNames = Array.from({ length: 17 }, (_, i) => `Court ${i + 1}`);
-    }, 'Round 3'],
+    }, 'Round 3', Array.from({ length: 16 }, (_, i) => `Court ${i + 1}`)],
     ["the schedule module's own fields, as stored right after Start", (s) => {
       s.schedule.playerCount = s.schedule.players.length;
       s.schedule.totalRounds = s.schedule.rounds.length;
     }, 'Round 3'],
   ];
-  for (const [description, tamper, round] of LEGACY_STATES_NEEDING_REPAIR) {
+  for (const [description, tamper, round, keptCourtNames] of LEGACY_STATES_NEEDING_REPAIR) {
     test(`R-STATE-PERSIST: a legacy state with ${description} is migrated as repaired, and the legacy value is kept`, async ({ page, context }) => {
       const errors = collectErrors(page);
       // Given a legacy tournament state the copy layer must repair.
@@ -1946,6 +1945,11 @@ test.describe('Malformed or hostile persisted state', () => {
         expect(stored.tournamentName).toBe('Legacy Cup');
         expect(stored).not.toHaveProperty('siblingSecretData');
         expect(stored.schedule).not.toHaveProperty('playerCount');
+        // (a row that names its kept court names pins the cut: length 16, the first 16)
+        if (keptCourtNames) {
+          expect(stored.courtNames).toHaveLength(16);
+          expect(stored.courtNames).toEqual(keptCourtNames);
+        }
         // and the legacy value is kept, byte for byte.
         expect(await storedRaw(page, LEGACY_STATE_KEY)).toBe(rawState);
       }
@@ -1992,7 +1996,7 @@ test.describe('Malformed or hostile persisted state', () => {
     }],
   ];
   for (const [description, tamper] of LEGACY_SAVES_NEEDING_REPAIR) {
-    test(`R-STATE-PERSIST: a legacy saved tournament with ${description} is migrated and offered, and the legacy list is kept`, async ({ page, context }) => {
+    test(`A legacy saved tournament with ${description} is migrated and offered, and the legacy list is kept`, async ({ page, context }) => {
       const errors = collectErrors(page);
       // Given a legacy saved list whose only entry the copy layer must repair.
       const { schedule } = await captureALegacyTournamentInProgress(context);
