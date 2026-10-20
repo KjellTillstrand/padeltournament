@@ -1653,6 +1653,8 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(page.locator('#tournamentTitle')).toHaveText('Legacy Save');
     await expect(page.locator('.round-header .left')).toHaveText('Round 3');
     await expect(page.locator('.result-overlay-left input').first()).toHaveValue('15');
+    await expect(page.locator('#courtNameInput_1')).toHaveValue('Centre');
+    await expect(page.locator('.scoreboard-container')).toContainText('Ada');
     expect(errors).toEqual([]);
   });
 
@@ -1713,10 +1715,10 @@ test.describe('Malformed or hostile persisted state', () => {
   // The same sound save, alone and next to a foreign entry: only the foreign
   // entry (which the copy skips) decides whether the legacy list is kept.
   for (const [description, withForeignEntry, legacyKept] of [
-    ['a legacy saved list of one sound save is migrated and removed', false, false],
-    ['a partly usable legacy saved list migrates its usable entries and is kept whole', true, true],
+    ['A legacy saved list of one sound save is migrated and removed', false, false],
+    ['A partly usable legacy saved list migrates its usable entries and is kept whole', true, true],
   ]) {
-    test(`${description[0].toUpperCase()}${description.slice(1)}`, async ({ page, context }) => {
+    test(description, async ({ page, context }) => {
       const errors = collectErrors(page);
       // Given a legacy saved list of one sound (lossless) save, and maybe a foreign entry.
       const { schedule } = await captureALegacyTournamentInProgress(context);
@@ -1914,16 +1916,16 @@ test.describe('Malformed or hostile persisted state', () => {
   // it, or both, may hold data that is not the app's: it is migrated (the app
   // uses the repaired copy), but the legacy value itself is kept as it was.
   const LEGACY_STATES_NEEDING_REPAIR = [
-    ['an out-of-range round index', (s) => { s.currentRoundIndex = 99; }, 'Round 1'],
-    ["an extra field (another page's data)", (s) => { s.siblingSecretData = { token: 'keep-me' }; }, 'Round 3'],
-    ['an invalid court name entry', (s) => { s.courtNames = [42]; }, 'Round 3'],
+    ['an out-of-range round index', (s) => { s.currentRoundIndex = 99; }, 'Round 1', ['Centre']],
+    ["an extra field (another page's data)", (s) => { s.siblingSecretData = { token: 'keep-me' }; }, 'Round 3', ['Centre']],
+    ['an invalid court name entry', (s) => { s.courtNames = [42]; }, 'Round 3', ['']],
     ['17 court names (the copy keeps the first 16)', (s) => {
       s.courtNames = Array.from({ length: 17 }, (_, i) => `Court ${i + 1}`);
     }, 'Round 3', Array.from({ length: 16 }, (_, i) => `Court ${i + 1}`)],
     ["the schedule module's own fields, as stored right after Start", (s) => {
       s.schedule.playerCount = s.schedule.players.length;
       s.schedule.totalRounds = s.schedule.rounds.length;
-    }, 'Round 3'],
+    }, 'Round 3', ['Centre']],
   ];
   for (const [description, tamper, round, keptCourtNames] of LEGACY_STATES_NEEDING_REPAIR) {
     test(`R-STATE-PERSIST: a legacy state with ${description} is migrated as repaired, and the legacy value is kept`, async ({ page, context }) => {
@@ -1945,11 +1947,9 @@ test.describe('Malformed or hostile persisted state', () => {
         expect(stored.tournamentName).toBe('Legacy Cup');
         expect(stored).not.toHaveProperty('siblingSecretData');
         expect(stored.schedule).not.toHaveProperty('playerCount');
-        // (a row that names its kept court names pins the cut: length 16, the first 16)
-        if (keptCourtNames) {
-          expect(stored.courtNames).toHaveLength(16);
-          expect(stored.courtNames).toEqual(keptCourtNames);
-        }
+        // (every row names the court names it keeps; the 17-court row pins the
+        // cut: exactly the first 16)
+        expect(stored.courtNames).toEqual(keptCourtNames);
         // and the legacy value is kept, byte for byte.
         expect(await storedRaw(page, LEGACY_STATE_KEY)).toBe(rawState);
       }
@@ -2090,7 +2090,7 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
-  test('R-STATE-PERSIST: an error migrating the legacy state is logged as an error and does not stop the saved list migrating', async ({ page, context }) => {
+  test('An error migrating the legacy state is logged as an error and does not stop the saved list migrating', async ({ page, context }) => {
     const errors = collectErrors(page);
     // Given sound data under both legacy keys, and storage that throws when the
     // legacy state key is removed (after its copy was written).
