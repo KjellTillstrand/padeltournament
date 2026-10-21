@@ -215,7 +215,6 @@
     let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
     let autoSaveFailing = false; // whether the last auto-save of the state failed (see reportAutoSave)
     let autoSaveRetryTimer = null; // the pending retry of a failed auto-save, if any (see retryFailedAutoSave)
-    let leavingSaveTried = false; // whether the latest save was tried on leaving the page (see saveOnLeaving)
     // The name the running tournament started under when Start could not check
     // it against the saved tournaments (getUniqueTournamentName), or null: it may
     // be a saved tournament's name. While the name input holds this name, Save
@@ -354,10 +353,9 @@
     function saveTournamentState() {
       if (!initialRestoreBegun) return;
       if (!initialRestoreDone && pendingMigrations[STATE_KEY]) return;
-      // This is now the latest attempt: a pending retry would only repeat it, and
-      // leaving the page tries again after it (see retryFailedAutoSave, saveOnLeaving).
+      // This is now the latest attempt: a pending retry would only repeat it (see
+      // retryFailedAutoSave).
       cancelAutoSaveRetry();
-      leavingSaveTried = false;
       const state = {
         schedule: currentSchedule,
         currentRoundIndex: currentRoundIndex,
@@ -2421,7 +2419,6 @@
     window.addEventListener("beforeunload", function (event) {
       const warningShown = autoSaveFailing;
       saveTournamentState();
-      leavingSaveTried = true; // the hide and pagehide that follow need not repeat it
       if (warningShown && autoSaveFailing) {
         event.preventDefault();
         event.returnValue = true; // legacy: older browsers (e.g. Chrome < 119) prompt only on a non-empty returnValue
@@ -2449,8 +2446,8 @@
     // removes the legacy value), or the Organizer's return to this tab, as any
     // save from a tab left open with older state already could. What AB#91 adds:
     // a tab can now write without the Organizer changing anything in it, on
-    // returning to it, on a freeing storage event while it is in the background
-    // (after the delay), and on being hidden or left (at once, with no delay).
+    // returning to it, on a freeing storage event (after the delay), and on
+    // being hidden or left (at once, with no delay).
     const AUTO_SAVE_RETRY_DELAY_MS = 1000;
     function retryFailedAutoSave() {
       if (!autoSaveFailing || autoSaveRetryTimer !== null) return;
@@ -2472,6 +2469,7 @@
     // tournament) or overwrite. And a failing save of a pending legacy state
     // writes and then removes the migrated marker, so two failing tabs answering
     // each other's marker would retry for as long as both fail.
+    // DEFERRED: AB#106 (storageArea check; storage clear writes the cleared state back)
     function storageChangeMayFreeRoom(event) {
       if (event.key === STATE_KEY || event.key === STATE_MIGRATED_KEY) return false;
       return event.key === null || event.newValue === null ||
@@ -2482,28 +2480,21 @@
     });
     window.addEventListener("focus", retryFailedAutoSave);
     window.addEventListener("pageshow", function (event) {
-      leavingSaveTried = false; // the page is shown again: leaving it later saves anew
       if (event.persisted) retryFailedAutoSave(); // back to the page from the back/forward cache
     });
     // Leaving the page (switching away, or the page being hidden for good) while
     // saves fail: try once more, at once, as the page may be frozen or discarded
-    // next and many mobile browsers never fire beforeunload. No prompt here. One
-    // way of leaving fires several events (beforeunload, then hidden and
-    // pagehide): only the first tries, until the page is shown again or another
-    // save runs (leavingSaveTried). Until then nothing has been saved since that
-    // attempt, so a repeat would write the same state.
+    // next and many mobile browsers never fire beforeunload. No prompt here. Each
+    // of these events tries, even when one way of leaving fires several of them
+    // (beforeunload, then hidden and pagehide): a repeated failed write is cheap,
+    // and skipping one could miss a change not saved since the last attempt (a
+    // rename, or a schedule change that removes the stored state).
     function saveOnLeaving() {
-      if (!autoSaveFailing || leavingSaveTried) return;
-      saveTournamentState();
-      leavingSaveTried = true;
+      if (autoSaveFailing) saveTournamentState();
     }
     document.addEventListener("visibilitychange", function () {
-      if (document.visibilityState === "visible") {
-        leavingSaveTried = false;
-        retryFailedAutoSave();
-      } else {
-        saveOnLeaving();
-      }
+      if (document.visibilityState === "visible") retryFailedAutoSave();
+      else saveOnLeaving();
     });
     window.addEventListener("pagehide", saveOnLeaving);
 

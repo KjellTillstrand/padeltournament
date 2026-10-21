@@ -3949,8 +3949,7 @@ test.describe('A visible warning when the auto-save fails', () => {
   // shortens a value other than the state's own) and when the Organizer returns
   // to the page, without waiting for a further change; such a retry waits a
   // second, the triggers arriving meanwhile join it, and any other save cancels
-  // it. It also tries, at once, when the page is hidden or left (once per way of
-  // leaving).
+  // it. It also tries, at once, each time the page is hidden or left.
   const RETRY_DELAY_MS = 1000;
 
   // A tournament whose auto-save has failed: a score entered and refused, the
@@ -4120,23 +4119,34 @@ test.describe('A visible warning when the auto-save fails', () => {
           { childList: true, characterData: true, subtree: true, attributes: true });
     });
     const refused = await refusedStateWrites(page);
-    const burst = () => page.evaluate(() => {
-      for (let i = 0; i < 20; i++) window.dispatchEvent(new StorageEvent('storage', { key: 'elsewhere', newValue: String(i) }));
+    // Storage events that free room, as another tab's would (a value shortened,
+    // a key removed): each is a trigger on its own.
+    const freeingStorageEvents = () => page.evaluate(() => {
+      for (let i = 0; i < 20; i++) {
+        window.dispatchEvent(new StorageEvent('storage', i % 2
+          ? { key: 'elsewhere', oldValue: 'ab', newValue: 'a' }
+          : { key: 'elsewhere', oldValue: 'a', newValue: null }));
+      }
+    });
+    const returnsToThePage = () => page.evaluate(() => {
       for (let i = 0; i < 2; i++) document.dispatchEvent(new Event('visibilitychange'));
       window.dispatchEvent(new FocusEvent('focus'));
     });
 
-    // Given storage still refuses the state, when a burst of triggers arrives
-    // (twenty storage events, two returns to the page, a focus),
-    await burst();
+    // Given storage still refuses the state, when a burst of twenty freeing
+    // storage events arrives,
+    await freeingStorageEvents();
     // then no save is tried at once, one is tried after the delay, refused,
     expect(await refusedStateWrites(page)).toBe(refused);
     await expect.poll(() => refusedStateWrites(page)).toBe(refused + 1);
     // and nothing more follows of its own accord;
     await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
     expect(await refusedStateWrites(page)).toBe(refused + 1);
-    // a later burst is again one retry.
-    await burst();
+    // a later burst of both kinds (twenty storage events, two returns to the
+    // page, a focus) is again one retry.
+    await freeingStorageEvents();
+    await returnsToThePage();
+    expect(await refusedStateWrites(page)).toBe(refused + 1);
     await expect.poll(() => refusedStateWrites(page)).toBe(refused + 2);
     await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
     expect(await refusedStateWrites(page)).toBe(refused + 2);
@@ -4284,6 +4294,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     expect(errors).toEqual([]);
   });
 
+  // DEFERRED: AB#106 (timing race: the score entry must land within the 1 s retry delay)
   test('A save made while a retry is pending cancels the retry, which would only repeat it', async ({ page }) => {
     const errors = collectErrors(page);
     await refuseStateWritesOnDemand(page);
@@ -4317,53 +4328,88 @@ test.describe('A visible warning when the auto-save fails', () => {
     expect(errors).toEqual([]);
   });
 
-  test('One way of leaving tries the save once while saves fail, not again on each of its events', async ({ page }) => {
+  for (const [where, description] of [['hidden', 'hidden'], ['pagehide', 'left (pagehide)']]) {
+    test(`While saves fail, a page hidden or left after a cancelled leave prompt and a rename still tries the save: ${description}`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const prompts = [];
+      page.on('dialog', (dialog) => {
+        prompts.push(dialog.type());
+        if (dialog.type() === 'beforeunload') dialog.dismiss();
+        else dialog.accept();
+      });
+      await refuseStateWritesOnDemand(page);
+      await page.goto('/');
+      // Given a failed auto-save is being announced,
+      const storedBefore = await failASave(page, 'Before Cup');
+      // and the Organizer tried to leave and stayed (the prompt cancelled),
+      await page.close({ runBeforeUnload: true });
+      await expect.poll(() => prompts).toEqual(['beforeunload']);
+      expect(page.isClosed()).toBe(false);
+      // then renamed the tournament (a change the name field does not save by itself),
+      await page.click('#toggleSettingsBtn'); // the name is among the settings
+      await page.fill('#tournamentName', 'After Cup');
+      await expect(page.locator('#tournamentTitle')).toHaveText('After Cup');
+      // and storage is freed, the page not told,
+      await freeStorageQuietly(page, storedBefore);
+      const attempts = await stateWriteAttempts(page);
+
+      // when the page is hidden or left,
+      const storedAtOnce = await page.evaluate(([type, key]) => {
+        if (type === 'hidden') {
+          Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+          document.dispatchEvent(new Event('visibilitychange'));
+          delete document.visibilityState;
+        } else {
+          window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+        }
+        return localStorage.getItem(key);
+      }, [where, STATE_KEY]);
+
+      // then the save is tried at once and stores the new name with the score,
+      expect(await stateWriteAttempts(page)).toBe(attempts + 1);
+      const stored = JSON.parse(storedAtOnce);
+      expect(stored.tournamentName).toBe('After Cup');
+      expect(stored.schedule.rounds[0].matches[0].result).toEqual({ left: '10', right: '14' });
+      // and the warning clears, nothing more asked.
+      await expectNoWarning(page);
+      expect(prompts).toEqual(['beforeunload']);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('Leaving always tries the save on beforeunload: after a cancelled prompt, a reload once storage works asks nothing and keeps the state', async ({ page }) => {
     const errors = collectErrors(page);
+    const prompts = [];
+    let stay = true;
+    page.on('dialog', (dialog) => {
+      prompts.push(dialog.type());
+      if (dialog.type() === 'beforeunload' && stay) dialog.dismiss();
+      else dialog.accept();
+    });
     await refuseStateWritesOnDemand(page);
     await page.goto('/');
-    // Given storage still refuses the state and the warning is shown,
-    await failASave(page, 'Unload Cup');
-    const attempts = await stateWriteAttempts(page);
-    const hide = () => page.evaluate(() => {
-      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-    const show = () => page.evaluate(() => {
-      delete document.visibilityState;
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
+    // Given a failed auto-save is being announced,
+    const storedBefore = await failASave(page, 'Again Cup');
+    // and the Organizer tried to leave and stayed (the prompt cancelled),
+    await page.close({ runBeforeUnload: true });
+    await expect.poll(() => prompts).toEqual(['beforeunload']);
+    expect(page.isClosed()).toBe(false);
+    // and storage is freed, the page not told,
+    await freeStorageQuietly(page, storedBefore);
 
-    // when the page is closed on a desktop browser (beforeunload, then hidden,
-    // then pagehide),
-    const prompted = await page.evaluate(() => {
-      const event = new Event('beforeunload', { cancelable: true });
-      window.dispatchEvent(event);
-      return event.defaultPrevented;
-    });
-    await hide();
-    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false })));
-    // then the save was tried once, on beforeunload, which asked for the prompt.
-    expect(prompted).toBe(true);
-    expect(await stateWriteAttempts(page)).toBe(attempts + 1);
+    // when the Organizer reloads the page (any prompt now would be confirmed),
+    stay = false;
+    await page.reload();
 
-    // When the Organizer stays, comes back to the page and switches away again,
-    // the switch tries the save anew, at once (cancelling the retry the return set up).
-    await show();
-    await hide();
-    expect(await stateWriteAttempts(page)).toBe(attempts + 2);
-    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
-    expect(await stateWriteAttempts(page)).toBe(attempts + 2);
-
-    // When the page is shown again from the cache and then left as many mobile
-    // browsers do (pagehide, then hidden), the save is tried once more, once.
-    await page.evaluate(() => {
-      delete document.visibilityState;
-      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
-      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
-    });
-    await hide();
-    expect(await stateWriteAttempts(page)).toBe(attempts + 3);
-    await expectTheWarning(page);
+    // then the save on leaving was tried again and worked: nothing asked,
+    expect(prompts).toEqual(['beforeunload']);
+    // and the score entered while saving failed is stored and restored.
+    await expectNoWarning(page);
+    await expect(page.locator('#tournamentTitle')).toHaveText('Again Cup');
+    await expect(leftScore(page, 0)).toHaveValue('10');
+    await expect(rightScore(page, 0)).toHaveValue('14');
+    expect((await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[0].result)
+      .toEqual({ left: '10', right: '14' });
     expect(errors).toEqual([]);
   });
 
@@ -4376,6 +4422,8 @@ test.describe('A visible warning when the auto-save fails', () => {
     await expect.poll(async () => (await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[0].result)
       .toEqual({ left: '10', right: '14' });
     await expectNoWarning(page);
+    // (another app on this shared origin holds a value),
+    await page.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'x'));
     const attempts = await stateWriteAttempts(page);
     const stored = await storedRaw(page, STATE_KEY);
     await page.evaluate(() => {
@@ -4383,11 +4431,16 @@ test.describe('A visible warning when the auto-save fails', () => {
       window.addEventListener('storage', () => { window.storageEventsSeen++; });
     });
 
-    // Given no warning is shown, when storage events (three dispatched, and a
-    // real one from another tab), returns to the page (visible, focus, pageshow
-    // from the back/forward cache) and leaving it (hidden, pagehide) arrive,
+    // Given no warning is shown, when storage events that free room (three
+    // dispatched, a value shortened or a key removed, and a real removal from
+    // another tab), returns to the page (visible, focus, pageshow from the
+    // back/forward cache) and leaving it (hidden, pagehide) arrive,
     await page.evaluate(() => {
-      for (let i = 0; i < 3; i++) window.dispatchEvent(new StorageEvent('storage', { key: 'elsewhere', newValue: String(i) }));
+      for (let i = 0; i < 3; i++) {
+        window.dispatchEvent(new StorageEvent('storage', i % 2
+          ? { key: 'elsewhere', oldValue: 'ab', newValue: 'a' }
+          : { key: 'elsewhere', oldValue: 'a', newValue: null }));
+      }
       for (let i = 0; i < 2; i++) document.dispatchEvent(new Event('visibilitychange'));
       window.dispatchEvent(new FocusEvent('focus'));
       window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
@@ -4397,7 +4450,7 @@ test.describe('A visible warning when the auto-save fails', () => {
       delete document.visibilityState;
     });
     const other = await anotherTab(context);
-    await other.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'x'));
+    await other.evaluate(() => localStorage.removeItem('another-app-on-this-origin'));
     await expect.poll(() => page.evaluate(() => window.storageEventsSeen)).toBe(4);
     await other.close();
     await page.waitForTimeout(RETRY_DELAY_MS * 1.5); // past any retry's delay
