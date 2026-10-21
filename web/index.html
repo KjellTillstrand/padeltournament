@@ -214,6 +214,13 @@
     let currentRoundIndex = 0; // 0-indexed
     let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
     let autoSaveFailing = false; // whether the last auto-save of the state failed (see reportAutoSave)
+    // Whether the running tournament's name went unchecked against the saved
+    // tournaments, as Start could not read them (getUniqueTournamentName): it may
+    // be a saved tournament's name. Save and Delete check it before they write
+    // the saved list (checkedTournamentName). Set by Start; cleared by a Start
+    // that read the list, by Load, by dropping the tournament held
+    // (resetTournamentMemory: New Tournament, Delete) and once the name is checked.
+    let nameUncheckedAgainstSaved = false;
     // The text of the auto-save warning (see reportAutoSave). It states only what
     // is known: the changes are not being saved now, and the next auto-save that
     // works saves the whole state, the changes made meanwhile included. It names
@@ -566,6 +573,7 @@
       currentSchedule = null;
       currentRoundIndex = 0;
       mexicanoSeed = null;
+      nameUncheckedAgainstSaved = false;
       clearPlayerNameDrafts();
     }
 
@@ -589,6 +597,7 @@
     // written. A reset the Organizer chose (New Tournament, another schedule) is no
     // fallback and backs nothing up.
     function backupStoredState(raw) {
+      // DEFERRED: AB#102 (contentless stored state must not overwrite the backup)
       if (raw === null || raw === "") return;
       if (raw.length > MAX_BACKUP_LENGTH) {
         console.warn("Not backing up a stored tournament state longer than " + MAX_BACKUP_LENGTH +
@@ -715,7 +724,8 @@
     // Returns whether the tournament was stored.
     function saveTournament() {
       if (!currentSchedule) return false;
-      const tournamentName = document.getElementById("tournamentName").value.trim() || "Unnamed Tournament";
+      const tournamentName = checkedTournamentName(
+        document.getElementById("tournamentName").value.trim() || "Unnamed Tournament");
       const savedTournament = {
         tournamentName: tournamentName,
         schedule: currentSchedule,
@@ -747,6 +757,7 @@
       if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
         const selectedTournament = savedTournaments[selectedIndex];
         abandonPendingState(); // the loaded tournament replaces the one held
+        nameUncheckedAgainstSaved = false; // its name is the saved tournament's own
         currentSchedule = selectedTournament.schedule;
         // Tournaments saved before round position was tracked (or with a corrupted
         // index) carry none/an invalid value: fall back to round 0.
@@ -779,11 +790,12 @@
 
     // Delete tournament.
     function deleteTournament() {
-      const tournamentName = document.getElementById("tournamentName").value.trim();
+      let tournamentName = document.getElementById("tournamentName").value.trim();
       if (!tournamentName) {
         alert("No tournament name provided.");
         return;
       }
+      tournamentName = checkedTournamentName(tournamentName);
       if (confirm(`Are you sure you want to delete "${tournamentName}"? Your secret sauce will vanish forever!`)) {
         let savedTournaments = readSavedTournaments();
         savedTournaments = savedTournaments.filter(t => t.tournamentName !== tournamentName);
@@ -794,21 +806,56 @@
       }
     }
 
-    // baseName, or, when a saved tournament already has that name, baseName with
-    // the first free "-<n>" suffix. A saved list that cannot be read (storage
-    // unavailable, as with blocked site data) is taken for an empty one here
-    // (logged): Start must not fail for it, and nothing is written from it. The
-    // tournament then starts and its auto-save fails, which shows the auto-save
-    // warning. Accepted risk: should storage work again later in the session,
-    // Save may then replace a saved tournament of the same name.
+    // Start's name: { name, checked }. name is baseName, or, when a saved
+    // tournament already has that name, baseName with the first free "-<n>"
+    // suffix (uniqueNameAmong). When storage refuses the saved list (a
+    // DOMException, as with blocked site data) the name is not checked: name is
+    // baseName and checked is false (logged). Start must not fail for it, and
+    // nothing is written from it; the tournament starts, its auto-save fails and
+    // the auto-save warning shows. Start then sets nameUncheckedAgainstSaved, and
+    // Save and Delete check the name before they write the saved list
+    // (checkedTournamentName), so neither replaces nor deletes an older saved
+    // tournament of that name once storage works again. Any other error is no
+    // storage refusal (a bug, say in the copy layer) and is thrown: it must never
+    // switch the check off.
+    // Accepted residual risk: the flag is held in memory only. The auto-save
+    // stores the unchecked name, so after a reload (or in another tab) before a
+    // Save or Delete has checked it, the name is taken for a checked one: Save
+    // may then replace, and Delete delete, a saved tournament of that name.
     function getUniqueTournamentName(baseName) {
       let savedTournaments;
       try {
         savedTournaments = readSavedTournaments();
       } catch (err) {
+        if (!(err instanceof DOMException)) throw err;
         console.warn("Could not read the saved tournaments; the tournament name is not checked against them:", err);
-        savedTournaments = [];
+        return { name: baseName, checked: false };
       }
+      return { name: uniqueNameAmong(baseName, savedTournaments), checked: true };
+    }
+
+    // The name Save or Delete is to write the saved list under: name, unless the
+    // running tournament's name went unchecked at Start (nameUncheckedAgainstSaved).
+    // It is then checked now, as Start would have, and the tournament renamed to
+    // the unique name (the name input, the title and the stored state), so that
+    // neither replaces nor deletes an older saved tournament of the same name.
+    // Storage that still refuses the saved list throws here, as the list's read in
+    // Save and Delete would, and the name stays unchecked.
+    function checkedTournamentName(name) {
+      if (!nameUncheckedAgainstSaved) return name;
+      const uniqueName = uniqueNameAmong(name, readSavedTournaments());
+      nameUncheckedAgainstSaved = false;
+      if (uniqueName !== name) {
+        document.getElementById("tournamentName").value = uniqueName;
+        document.getElementById("tournamentTitle").textContent = uniqueName;
+        saveTournamentState();
+      }
+      return uniqueName;
+    }
+
+    // baseName, or, when one of savedTournaments already has that name, baseName
+    // with the first free "-<n>" suffix.
+    function uniqueNameAmong(baseName, savedTournaments) {
       let usedNames = new Set(savedTournaments.map(t => t.tournamentName));
       if (!usedNames.has(baseName)) return baseName;
 
@@ -837,8 +884,9 @@
       }
 
       // Generate unique tournament name and update input.
-      tournamentName = getUniqueTournamentName(tournamentName);
-      document.getElementById("tournamentName").value = tournamentName;
+      const uniqueName = getUniqueTournamentName(tournamentName);
+      // DEFERRED: AB#103 (aborted Start leaves a renamed name input)
+      document.getElementById("tournamentName").value = uniqueName.name;
 
       if (tournamentFormat === "mexicano") {
         if (!startMexicano()) return;
@@ -853,6 +901,7 @@
 
       // Now proceed to start the tournament.
       tournamentStarted = true;
+      nameUncheckedAgainstSaved = !uniqueName.checked;
       currentRoundIndex = 0;
       disableSettings();
       document.getElementById("settingsContainer").style.display = "none";
@@ -1313,7 +1362,8 @@
     // for an empty one, which Save would then overwrite. (Only the load path,
     // which reads the stored state once, readRawStoredState, turns an unreadable
     // value into "nothing stored", and Start's name check, which writes nothing
-    // from the list, into "no saved tournaments": getUniqueTournamentName.)
+    // from the list, into "name not checked": getUniqueTournamentName.)
+    // DEFERRED: AB#101 (Save/Load/Delete/New Tournament with storage fully blocked)
     function readSavedTournaments() {
       const raw = localStorage.getItem(SAVED_TOURNAMENTS_KEY);
       const migration = pendingMigrationFor(SAVED_TOURNAMENTS_KEY, raw);
