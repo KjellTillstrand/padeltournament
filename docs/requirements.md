@@ -92,6 +92,7 @@ This document outlines the functional and non-functional requirements for the Pa
 - The layout adapts dynamically:
   - The number of courts is determined based on the number of players: floor(N/4) courts (e.g., 20 players require 5 courts so that every player can compete simultaneously; 22 players also use 5 courts, and 2 players rest each round).
   - The UI supports dynamic reordering and resizing of components.
+  - On a phone screen 390 CSS pixels wide, every court's score entry is on screen and the page does not scroll sideways.
 - The design prioritizes readability:
   - Player names are displayed in large input fields (or within a table/grid) to maximize legibility.
   - The scoreboard’s points column is constrained to a fixed width (e.g., 5 characters wide).

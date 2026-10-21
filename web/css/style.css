@@ -368,6 +368,7 @@ body {
 /* Phones (AB#92): no part of the page is wider than the screen, so nothing
    needs sideways scrolling and every court's score inputs are on screen. */
 @media (max-width: 600px) {
+    /* DEFERRED: AB#107 (landscape, banner over focused input, tap targets) */
     body {
         margin: 10px;
     }
@@ -384,10 +385,22 @@ body {
     #siteName {
         font-size: 1.1em;
     }
-    /* On the narrowest screens the header's buttons wrap to a line of their own. */
+    /* A select is as wide as its longest option (a saved tournament's name can
+       be long): never wider than the settings panel. */
+    #settingsContainer select {
+        max-width: 100%;
+    }
+    /* The round header's parts (title, round buttons, Save/New) take their
+       natural width, so a part that does not fit beside the others wraps to a
+       row of its own instead of squeezing its button labels. */
     .round-header {
         flex-wrap: wrap;
         row-gap: 10px;
+    }
+    .round-header .left,
+    .round-header .center,
+    .round-header .right {
+        flex: 1 1 auto;
     }
     /* One column: the courts on top (the scores are entered there), the
        scoreboard below them, both the full width. */
@@ -397,14 +410,25 @@ body {
     .scoreboard-container {
         flex: none;
     }
-    /* A court is as wide as the screen allows, up to its desktop width. */
+    /* A court fills the column, up to its desktop size (330px inside its
+       border); the same box model as on desktop. */
     .court {
-        width: 100%;
+        width: auto;
         max-width: 330px;
-        box-sizing: border-box;
     }
-    /* Its padding inside its width, so the score overlay stays inside the court. */
+    /* The score overlay keeps its padding inside the court, and a score error
+       takes a row of its own below the two inputs, so neither input moves out
+       of its team's half. */
     .result-overlay-container {
         box-sizing: border-box;
+        flex-wrap: wrap;
+    }
+    .result-overlay-container .error-message {
+        flex-basis: 100%;
+    }
+    /* Long unbroken names wrap inside their team label and scoreboard cell. */
+    .team,
+    .scoreboard-container td {
+        overflow-wrap: anywhere;
     }
 }
