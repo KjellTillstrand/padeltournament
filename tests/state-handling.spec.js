@@ -369,43 +369,58 @@ test.describe('Malformed or hostile persisted state', () => {
   // is used to plant them because it keeps "__proto__" as an own key, whereas
   // Object.assign would invoke the __proto__ setter and JSON.stringify would
   // then drop it. A copy that spread `...round` would keep sitOuts/rest/extra,
-  // and the key allowlist check below catches that. The "Nobody" check is
-  // belt-and-braces only: at 10 players setByes writes an own byes, so an
-  // inherited one never shows, and the read-back cannot see an own __proto__.
-  // DEFERRED: AB#90 (assert on the raw stored text; a 12-player variant)
-  test('A 10-player tournament state with unknown keys restores with the true resting players and stores none of the keys', async ({ page, context }) => {
-    const errors = collectErrors(page);
-    // Given a sound running 10-player tournament whose schedule and rounds carry unknown keys.
-    const state = await captureARealTournamentState(context, { schedule: '10p10r.js' });
-    const expected = restingIn(state.schedule, state.schedule.rounds[0]);
-    expect(expected).toHaveLength(2);
-    const HOSTILE = '{"__proto__":{"byes":["Nobody"],"x":1},"sitOuts":{"__proto__":{"x":1}},"rest":["constructor"],"extra":1}';
-    state.schedule = { ...state.schedule, ...JSON.parse(HOSTILE) };
-    state.schedule.rounds = state.schedule.rounds.map((r) => ({ ...r, ...JSON.parse(HOSTILE) }));
-    const raw = JSON.stringify(state);
-    // the planted text really has an own "__proto__" on the schedule and on every round
-    const reparsed = JSON.parse(raw);
-    expect(Object.getOwnPropertyNames(reparsed.schedule)).toContain('__proto__');
-    expect(reparsed.schedule.rounds.every((r) => Object.getOwnPropertyNames(r).includes('__proto__'))).toBe(true);
-    await plantStorage(page, { [STATE_KEY]: raw });
+  // and the key allowlist check below catches that; the raw stored text is
+  // checked too, as reading it back through the page cannot show an own
+  // "__proto__". At 10 players setByes writes an own byes, so an inherited one
+  // could never show; at 12 nobody rests and no byes is written, so a round
+  // that inherited the planted one would show "Nobody" resting.
+  const UNKNOWN_KEYS = [
+    // schedule, players, players resting in round 1, the keys of a stored round
+    ['10p10r.js', 10, 2, ['byes', 'matches', 'roundNumber']],
+    ['12p11r.js', 12, 0, ['matches', 'roundNumber']],
+  ];
+  for (const [schedule, players, resting, roundKeys] of UNKNOWN_KEYS) {
+    test(`A ${players}-player tournament state with unknown keys restores with the true resting players and stores none of the keys`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a sound running tournament whose schedule and rounds carry unknown keys.
+      const state = await captureARealTournamentState(context, { schedule });
+      expect(state.schedule.players).toHaveLength(players);
+      const expected = restingIn(state.schedule, state.schedule.rounds[0]);
+      expect(expected).toHaveLength(resting);
+      const HOSTILE = '{"__proto__":{"byes":["Nobody"],"x":1},"sitOuts":{"__proto__":{"x":1}},"rest":["constructor"],"extra":1}';
+      state.schedule = { ...state.schedule, ...JSON.parse(HOSTILE) };
+      state.schedule.rounds = state.schedule.rounds.map((r) => ({ ...r, ...JSON.parse(HOSTILE) }));
+      const raw = JSON.stringify(state);
+      // the planted text really has an own "__proto__" on the schedule and on every round
+      const reparsed = JSON.parse(raw);
+      expect(Object.getOwnPropertyNames(reparsed.schedule)).toContain('__proto__');
+      expect(reparsed.schedule.rounds.every((r) => Object.getOwnPropertyNames(r).includes('__proto__'))).toBe(true);
+      await plantStorage(page, { [STATE_KEY]: raw });
 
-    // When the app loads.
-    await page.goto('/');
+      // When the app loads.
+      await page.goto('/');
 
-    // Then the tournament is restored showing the true resting players,
-    await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
-    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-    expect(await restingOnScreen(page)).toEqual(expected);
-    await expect(page.locator('body')).not.toContainText('Nobody');
-    // what it stores back carries none of the unknown keys,
-    const stored = await storedJson(page, STATE_KEY);
-    const keysOf = (o) => Object.getOwnPropertyNames(o).sort();
-    expect(keysOf(stored.schedule)).toEqual(['players', 'rounds']);
-    for (const round of stored.schedule.rounds) expect(keysOf(round)).toEqual(['byes', 'matches', 'roundNumber']);
-    // and nothing leaked onto the page's object prototype.
-    expect(await page.evaluate(() => ({}).x)).toBeUndefined();
-    expect(errors).toEqual([]);
-  });
+      // Then the tournament is restored showing the true resting players,
+      await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('.scoreboard-container table tr')).toHaveCount(players + 1);
+      expect(await restingOnScreen(page)).toEqual(expected);
+      await expect(page.locator('body')).not.toContainText('Nobody');
+      // what it stores back carries none of the unknown keys,
+      const stored = await storedJson(page, STATE_KEY);
+      const keysOf = (o) => Object.getOwnPropertyNames(o).sort();
+      expect(keysOf(stored.schedule)).toEqual(['players', 'rounds']);
+      for (const round of stored.schedule.rounds) expect(keysOf(round)).toEqual(roundKeys);
+      // not even in the raw stored text,
+      const storedText = await page.evaluate((key) => localStorage.getItem(key), STATE_KEY);
+      for (const planted of ['"__proto__":', '"sitOuts":', '"rest":', '"extra":', '"x":', 'Nobody']) {
+        expect(storedText).not.toContain(planted);
+      }
+      // and nothing leaked onto the page's object prototype.
+      expect(await page.evaluate(() => ({}).x)).toBeUndefined();
+      expect(errors).toEqual([]);
+    });
+  }
 
   test('A 12-player tournament state with planted byes rests nobody', async ({ page, context }) => {
     const errors = collectErrors(page);
@@ -930,7 +945,7 @@ test.describe('Malformed or hostile persisted state', () => {
   });
 
   // --- Round trip: the checks are never stricter than the app's own writers ---
-  test('Anything the app itself can write survives a reload', async ({ page }) => {
+  test('R-STATE-PERSIST: Anything the app itself can write survives a reload', async ({ page }) => {
     const errors = collectErrors(page);
     collectDialogs(page);
     const longName = 'T'.repeat(200);
@@ -1457,6 +1472,42 @@ test.describe('Malformed or hostile persisted state', () => {
     // None of them is valid at 24: each says why, and nobody is credited.
     await expectErrorsOnScreen(page, ['Sum must equal 24', 'Sum must equal 24', 'Please fill in both scores']);
     expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    expect(errors).toEqual([]);
+  });
+
+  // The inference counts only pairs the score rule can read (isScoreDigits): a
+  // side of 1000 characters is never a score, however its digits add up. Here
+  // the only pair is 20 and 12 zero-padded to 1000 characters each, which as
+  // numbers would sum to 32.
+  test('R-STATE-PERSIST, R-POINT-POOLS: a legacy state whose only pair summing to 32 is zero-padded to 1000 characters restores at 24', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a legacy state (no stored total) whose only result is that pair,
+    const state = await captureARealTournamentState(context);
+    delete state.totalPoints;
+    const padded = { left: '0'.repeat(998) + '20', right: '0'.repeat(998) + '12' };
+    expect([padded.left.length, padded.right.length]).toEqual([1000, 1000]);
+    plantResults(state.schedule, [padded]);
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then it resumes at 24, not 32,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+    // the pair is shown with its error and credited to nobody,
+    await expectErrorsOnScreen(page, ['whole number from 0 to 24', '', '']);
+    expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    // and is stored back byte-for-byte, with the total of 24.
+    const stored = await storedJson(page, STATE_KEY);
+    expect(stored.totalPoints).toBe(24);
+    expect(stored.schedule.rounds[0].matches[0].result).toEqual(padded);
+
+    // And a score on another match completes to 24.
+    const second = page.locator('.result-overlay-container').nth(1);
+    await second.locator('.result-overlay-left input').fill('15');
+    await expect(second.locator('.result-overlay-right input')).toHaveValue('9');
+    await expect(second.locator('.error-message')).toHaveText('');
     expect(errors).toEqual([]);
   });
 
@@ -2266,6 +2317,13 @@ test.describe('Malformed or hostile persisted state', () => {
           expect(stored).toEqual({ left: storedBack, right: '12' });
         }
       }
+
+      // And the match can be scored again.
+      const first = page.locator('.result-overlay-container').first();
+      await first.locator('.result-overlay-left input').fill('3');
+      await expect(first.locator('.result-overlay-right input')).toHaveValue('21');
+      await expect(first.locator('.error-message')).toHaveText('');
+      expect((await storedResults(page))[0]).toEqual({ left: '3', right: '21' });
       expect(errors).toEqual([]);
     });
   }
@@ -2584,6 +2642,23 @@ test.describe('Malformed or hostile persisted state', () => {
     // and the rescue is logged as the one error.
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('console.error: Could not restore the saved tournament');
+  });
+
+  test('R-STATE-PERSIST: an empty stored state falls back to a fresh setup and keeps the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given a stored state that is an empty string, and a backup from earlier.
+    await plantStorageOnce(page, { [STATE_KEY]: '', [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented and the empty value is dropped,
+    await expectAFreshSetup(page);
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    // and, an empty value holding nothing to recover, the earlier backup is kept.
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(PREVIOUS_BACKUP);
+    await expectATournamentCanStart(page, 'Recovered Cup');
+    expect(errors).toEqual([]);
   });
 
   // A stored state longer than the backup limit is dropped without a backup;
@@ -3950,6 +4025,63 @@ test.describe('A visible warning when the auto-save fails', () => {
     await expectNoWarning(page);
     expect(errors).toEqual([]);
   });
+
+  // Site data blocked: the browser refuses every call on the storage, or the
+  // storage object itself (as Chromium does when a site's data is blocked).
+  const refuseEveryStorageCall = () => {
+    for (const method of ['getItem', 'setItem', 'removeItem', 'key', 'clear']) {
+      Storage.prototype[method] = function () { throw new DOMException('The operation is insecure.', 'SecurityError'); };
+    }
+  };
+  const refuseTheStorageObject = () => {
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() { throw new DOMException('Access is denied for this document.', 'SecurityError'); },
+    });
+  };
+  const BLOCKED_STARTS = [
+    ['every storage call is refused', refuseEveryStorageCall, 'Americano'],
+    ['the storage object itself is refused', refuseTheStorageObject, 'Americano'],
+    ['every storage call is refused', refuseEveryStorageCall, 'Mexicano'],
+  ];
+  for (const [description, block, format] of BLOCKED_STARTS) {
+    test(`R-STATE-PERSIST: when ${description}, a tournament (${format}) still starts and the auto-save warning shows`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const dialogs = collectDialogs(page);
+      await page.addInitScript(block);
+      // Given the browser refuses all storage,
+      await page.goto('/');
+      expect(await page.evaluate(() => {
+        try { localStorage.getItem('probe'); return 'readable'; } catch (err) { return err.name; }
+      })).toBe('SecurityError');
+      await expect(page.locator('#settingsContainer')).toBeVisible();
+      if (format === 'Mexicano') await page.selectOption('#formatSelect', 'mexicano');
+
+      // when the Organizer starts a tournament,
+      await startTournament(page, 'Blocked Cup');
+
+      // then the tournament starts, under the name given (no saved list to clash with),
+      await expect(page.locator('#tournamentTitle')).toHaveText('Blocked Cup');
+      await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup');
+      await expect(page.locator('#settingsContainer')).toBeHidden();
+      await expect(page.locator('.court')).toHaveCount(3);
+      await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
+      // the warning that progress is not being saved is shown,
+      await expectTheWarning(page);
+      // and the tournament plays on.
+      await leftScore(page, 0).fill('15');
+      await expect(rightScore(page, 0)).toHaveValue('9');
+      await expectTheWarning(page);
+      // Nothing threw and nothing alerted: the errors logged are the load's, the
+      // two legacy migrations and the saved-tournament list, none of which can read.
+      expect(dialogs).toEqual([]);
+      expect(errors).toEqual([
+        expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
+        expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
+        expect.stringContaining('console.error: Could not list the saved tournaments'),
+      ]);
+    });
+  }
 
   test('The Save button reports its own outcome, apart from the auto-save warning', async ({ page }) => {
     const errors = collectErrors(page);

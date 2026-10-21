@@ -582,15 +582,14 @@
     // threw. So such a state can still be recovered by hand from the backup, unless
     // it is longer than MAX_BACKUP_LENGTH (logged, not backed up) or the backup
     // write fails (logged); neither blocks the fallback. One generation only: each
-    // backup overwrites the last, except that with nothing stored (null) the last
-    // backup is kept.
+    // backup overwrites the last, except that with nothing stored (null) or an
+    // empty stored string, which holds nothing to recover, the last backup is kept.
     // Only the stored state is backed up: an unusable saved tournament is skipped
     // and dropped from storage, with no backup, the next time the saved list is
     // written. A reset the Organizer chose (New Tournament, another schedule) is no
     // fallback and backs nothing up.
-    // DEFERRED: AB#90 (an empty stored string still overwrites an earlier backup)
     function backupStoredState(raw) {
-      if (raw === null) return;
+      if (raw === null || raw === "") return;
       if (raw.length > MAX_BACKUP_LENGTH) {
         console.warn("Not backing up a stored tournament state longer than " + MAX_BACKUP_LENGTH +
           " characters:", STATE_BACKUP_KEY, raw.length);
@@ -795,8 +794,21 @@
       }
     }
 
+    // baseName, or, when a saved tournament already has that name, baseName with
+    // the first free "-<n>" suffix. A saved list that cannot be read (storage
+    // unavailable, as with blocked site data) is taken for an empty one here
+    // (logged): Start must not fail for it, and nothing is written from it. The
+    // tournament then starts and its auto-save fails, which shows the auto-save
+    // warning. Accepted risk: should storage work again later in the session,
+    // Save may then replace a saved tournament of the same name.
     function getUniqueTournamentName(baseName) {
-      let savedTournaments = readSavedTournaments();
+      let savedTournaments;
+      try {
+        savedTournaments = readSavedTournaments();
+      } catch (err) {
+        console.warn("Could not read the saved tournaments; the tournament name is not checked against them:", err);
+        savedTournaments = [];
+      }
       let usedNames = new Set(savedTournaments.map(t => t.tournamentName));
       if (!usedNames.has(baseName)) return baseName;
 
@@ -1300,7 +1312,8 @@
     // (unavailable) throws: a saved list that could not be read must not be taken
     // for an empty one, which Save would then overwrite. (Only the load path,
     // which reads the stored state once, readRawStoredState, turns an unreadable
-    // value into "nothing stored".)
+    // value into "nothing stored", and Start's name check, which writes nothing
+    // from the list, into "no saved tournaments": getUniqueTournamentName.)
     function readSavedTournaments() {
       const raw = localStorage.getItem(SAVED_TOURNAMENTS_KEY);
       const migration = pendingMigrationFor(SAVED_TOURNAMENTS_KEY, raw);
