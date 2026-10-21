@@ -225,16 +225,16 @@
     let uncheckedTournamentName = null;
     // The text of the auto-save warning (see reportAutoSave). It states only what
     // is known: the changes are not being saved now, and the next auto-save that
-    // works saves the whole state, the changes made meanwhile included. That save
-    // needs no action from the Organizer: a failed save is retried on returning to
-    // the page and when another tab changes this origin's storage, as well as by
-    // the next change that is saved (retryFailedAutoSave). It claims no more: the
-    // warning stays until a save has worked, so while it shows, nothing is saved.
+    // works saves the whole state, the changes made meanwhile included. It names
+    // the triggers the Organizer controls: the next change that saves, and
+    // returning to the page (retryFailedAutoSave; a storage change in another
+    // tab retries too). It claims no more: the warning stays until a save has
+    // worked, so while it shows, nothing is saved.
     // It names no cause (a failed write may be full or blocked storage, or a state
     // that cannot be serialized) and points at no in-app action: the only way the
     // app frees storage, Delete Tournament, also resets the running tournament.
     const AUTO_SAVE_WARNING = "Scores and other changes are not being saved in this browser right now. " +
-      "Keep this page open: once saving works again, everything is saved automatically and this warning disappears.";
+      "Keep this page open: saving is tried again when you change something or return to this page, and this warning disappears once a save works.";
 
     // Tournament format. Americano plays a precomputed schedule. Mexicano is set up by
     // player count and played one round at a time: round 1 is a seeded random draw,
@@ -2402,13 +2402,18 @@
     document.getElementById("loadTournamentBtn").addEventListener("click", loadTournament);
     document.getElementById("deleteTournamentBtn").addEventListener("click", deleteTournament);
 
-    // Auto-save state before unload (to handle crashes/reloads). If that save
-    // fails too (the auto-save warning is shown), the changes made since the last
-    // save that worked would be lost, so the browser asks the Organizer to confirm
-    // leaving. When it works, or nothing has failed, the page is left without a prompt.
+    // Auto-save state before unload (to handle crashes/reloads). If the auto-save
+    // warning was already shown and this save fails too, the changes made since
+    // the last save that worked would be lost, so the browser is asked to have the
+    // Organizer confirm leaving (a best-effort prompt: browsers show it only after
+    // the Organizer has interacted with the page, and many mobile browsers never
+    // do). When the save works, or the warning was not shown before (this is the
+    // first save to fail: every change that saves was saved, and the Organizer
+    // was never warned), the page is left without a prompt.
     window.addEventListener("beforeunload", function (event) {
+      const warningShown = autoSaveFailing;
       saveTournamentState();
-      if (autoSaveFailing) {
+      if (warningShown && autoSaveFailing) {
         event.preventDefault();
         event.returnValue = true; // legacy: older browsers (e.g. Chrome < 119) prompt only on a non-empty returnValue
       }
@@ -2420,13 +2425,48 @@
     // (storage may have been freed or unblocked meanwhile). A retry that works
     // clears the warning; one that fails changes nothing (see reportAutoSave).
     // While saving works, these events do nothing.
+    // The retry waits AUTO_SAVE_RETRY_DELAY_MS, and the triggers arriving meanwhile
+    // join it: at most one retry is pending at a time, so no pattern of events
+    // (another app on this origin writing on every keystroke, two failing tabs
+    // answering each other's writes) can drive a loop of saves.
+    // A storage event for the state's own keys is no trigger: it frees no room
+    // here, and answering it would at once write this tab's state over the one
+    // another tab has just saved or removed. Nor is the migrated marker's: a
+    // failing save of a pending legacy state writes and removes it, so two
+    // failing tabs would answer each other forever.
+    // Accepted multi-tab risk (localStorage has no compare-and-set): a retry on
+    // returning to this page (or on a storage event for another key) still writes
+    // this tab's state over a newer one another tab has saved meanwhile, as any
+    // save from a tab left open with older state already does.
+    const AUTO_SAVE_RETRY_DELAY_MS = 1000;
+    let autoSaveRetryPending = false;
     function retryFailedAutoSave() {
+      if (!autoSaveFailing || autoSaveRetryPending) return;
+      autoSaveRetryPending = true;
+      setTimeout(function () {
+        autoSaveRetryPending = false;
+        if (autoSaveFailing) saveTournamentState();
+      }, AUTO_SAVE_RETRY_DELAY_MS);
+    }
+    window.addEventListener("storage", function (event) {
+      if (event.key === STATE_KEY || event.key === STATE_MIGRATED_KEY) return;
+      retryFailedAutoSave();
+    });
+    window.addEventListener("focus", retryFailedAutoSave);
+    window.addEventListener("pageshow", function (event) {
+      if (event.persisted) retryFailedAutoSave(); // back to the page from the back/forward cache
+    });
+    // Leaving the page (switching away, or the page being hidden for good) while
+    // saves fail: try once more, at once, as the page may be frozen or discarded
+    // next and many mobile browsers never fire beforeunload. No prompt here.
+    function saveOnHideWhileFailing() {
       if (autoSaveFailing) saveTournamentState();
     }
-    window.addEventListener("storage", retryFailedAutoSave);
     document.addEventListener("visibilitychange", function () {
       if (document.visibilityState === "visible") retryFailedAutoSave();
+      else saveOnHideWhileFailing();
     });
+    window.addEventListener("pagehide", saveOnHideWhileFailing);
 
     // Randomize players on tournament start.
     function updatePlayerNamesFromInputs() {
