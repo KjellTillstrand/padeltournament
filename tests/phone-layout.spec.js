@@ -6,45 +6,49 @@
 // by vertical scrolling alone) and the page never scrolls sideways. The
 // R-SCORE-ENTRY tests record a score there.
 const { test, expect } = require('@playwright/test');
+const { STATE_KEY } = require('./storage-keys');
 
 const PHONE = { width: 390, height: 844 };
+const PHONE_WIDTHS = [320, 390];
 const DESKTOP = { width: 1280, height: 720 };
 
-const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// The width of the layout viewport, a classic scrollbar excluded.
+const layoutWidth = (page) => page.evaluate(() => document.documentElement.clientWidth);
 
 // The page is no wider than the screen: nothing to scroll sideways.
 async function expectNoSidewaysScroll(page) {
-  const { scrollWidth, innerWidth } = await page.evaluate(() => ({
+  const { scrollWidth, clientWidth } = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
-    innerWidth: window.innerWidth,
+    clientWidth: document.documentElement.clientWidth,
   }));
-  expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+  expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 }
 
-// Every rendered element matching the selector lies within [0, innerWidth]
+// Every rendered element matching the selector lies within the screen width
 // (elements not rendered, such as the other format's select, are skipped).
 // Returns the boxes checked.
 async function expectAllWithinTheScreenWidth(page, selector) {
-  const { boxes, innerWidth } = await page.evaluate((sel) => ({
+  const { boxes, width } = await page.evaluate((sel) => ({
     boxes: [...document.querySelectorAll(sel)]
       .filter((el) => el.getClientRects().length > 0)
       .map((el) => {
         const r = el.getBoundingClientRect();
         return { what: el.className || el.id || el.tagName, left: r.left, right: r.right, width: r.width };
       }),
-    innerWidth: window.innerWidth,
+    width: document.documentElement.clientWidth,
   }), selector);
   expect(boxes.length).toBeGreaterThan(0);
   for (const box of boxes) {
     expect(box.width, box.what).toBeGreaterThan(0);
     expect(box.left, box.what).toBeGreaterThanOrEqual(0);
-    expect(box.right, box.what).toBeLessThanOrEqual(innerWidth);
+    expect(box.right, box.what).toBeLessThanOrEqual(width);
   }
   return boxes;
 }
 
-// Every score input lies inside its court, in its own team's half, and is what
-// a tap at its centre reaches (nothing covers it). Returns how many were checked.
+// Every score input lies inside its court, in its own team's half, above the
+// court's team labels, and is what a tap at its centre reaches (nothing covers
+// it). Returns how many were checked.
 async function expectScoreInputsInsideTheirCourtsAndUncovered(page) {
   const inputs = await page.evaluate(() =>
     [...document.querySelectorAll('.matches-container .court')].flatMap((court) => {
@@ -54,14 +58,16 @@ async function expectScoreInputsInsideTheirCourtsAndUncovered(page) {
         input.scrollIntoView({ block: 'center' });
         const r = input.getBoundingClientRect();
         const courtNow = court.getBoundingClientRect();
+        const labelsTop = Math.min(...[...court.querySelectorAll('.team')].map((t) => t.getBoundingClientRect().top));
         const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
         return {
           side: input.closest('.result-overlay-left') ? 'left' : 'right',
-          left: r.left, right: r.right, width: r.width,
+          left: r.left, right: r.right, bottom: r.bottom,
           courtLeft: c.left, courtRight: c.right,
           insideVertically: r.top >= courtNow.top && r.bottom <= courtNow.bottom,
+          labelsTop,
           middle: middle.left + middle.width / 2,
-          uncovered: hit === input,
+          hit: hit === input ? 'the input' : (hit ? hit.className || hit.tagName : 'nothing'),
         };
       });
     }));
@@ -72,7 +78,8 @@ async function expectScoreInputsInsideTheirCourtsAndUncovered(page) {
     expect(input.insideVertically).toBe(true);
     if (input.side === 'left') expect(input.right).toBeLessThanOrEqual(input.middle);
     else expect(input.left).toBeGreaterThanOrEqual(input.middle);
-    expect(input.uncovered).toBe(true);
+    expect(input.bottom, 'the team labels start below the score inputs').toBeLessThanOrEqual(input.labelsTop);
+    expect(input.hit).toBe('the input');
   }
   return inputs.length;
 }
@@ -98,7 +105,7 @@ async function expectCourtsStackedAboveTheScoreboard(page) {
 // A player's points cell on the displayed round's scoreboard.
 async function pointsOf(page, player) {
   const row = page.locator('.scoreboard-container table tr').filter({
-    has: page.locator('td:first-child', { hasText: new RegExp('^' + escapeRegExp(player) + '$') }),
+    has: page.getByRole('cell', { name: player, exact: true }),
   });
   await expect(row).toHaveCount(1);
   return row.locator('td').nth(1);
@@ -121,17 +128,44 @@ async function recordAScore(page, matchIndex, left, right) {
   };
 }
 
-// The text of every round-header button sits on one line.
-async function expectRoundHeaderButtonsOnOneLine(page) {
-  const lines = await page.evaluate(() =>
+// The text of every round-header button sits on one line, and no two buttons
+// overlap or touch.
+async function expectRoundHeaderButtonsOnOneLineAndApart(page) {
+  const buttons = await page.evaluate(() =>
     [...document.querySelectorAll('.round-header button')].map((button) => {
       const range = document.createRange();
       range.selectNodeContents(button);
       const tops = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
-      return { label: button.textContent, lines: tops.size };
+      const r = button.getBoundingClientRect();
+      return { label: button.textContent, lines: tops.size, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
     }));
-  expect(lines.length).toBeGreaterThan(0);
-  for (const { label, lines: count } of lines) expect(count, label).toBe(1);
+  expect(buttons.length).toBeGreaterThan(1);
+  for (const { label, lines } of buttons) expect(lines, label).toBe(1);
+  for (const [i, a] of buttons.entries()) {
+    for (const b of buttons.slice(i + 1)) {
+      const apart = a.right < b.left || b.right < a.left || a.bottom < b.top || b.bottom < a.top;
+      expect(apart, `${a.label} and ${b.label} are apart`).toBe(true);
+    }
+  }
+}
+
+// Each settings select, its right margin included, ends within its container.
+async function expectSettingsSelectsWithinTheirContainers(page) {
+  const selects = await page.evaluate(() =>
+    [...document.querySelectorAll('#settingsContainer select')]
+      .filter((select) => select.getClientRects().length > 0)
+      .map((select) => {
+        const parent = select.parentElement;
+        const p = getComputedStyle(parent);
+        const contentRight = parent.getBoundingClientRect().right - parseFloat(p.borderRightWidth) - parseFloat(p.paddingRight);
+        return {
+          id: select.id,
+          marginRight: select.getBoundingClientRect().right + parseFloat(getComputedStyle(select).marginRight),
+          contentRight,
+        };
+      }));
+  expect(selects.length).toBeGreaterThan(0);
+  for (const { id, marginRight, contentRight } of selects) expect(marginRight, id).toBeLessThanOrEqual(contentRight);
 }
 
 const ROUND_VIEWS = [
@@ -156,6 +190,9 @@ async function startTheTournament(page, name) {
   await expect(page.locator('.round-header .left')).toHaveText('Round 1');
 }
 
+// Twenty characters, the most Start accepts, of the widest letters.
+const wideName = (i) => (i % 2 ? 'M' : 'W').repeat(19) + String.fromCharCode(65 + i);
+
 test.describe('Phone layout', () => {
   test('the page declares a device-width viewport and leaves zoom enabled', async ({ page }) => {
     await page.goto('/');
@@ -179,94 +216,159 @@ test.describe('Phone layout', () => {
     test('the page is laid out at the device width', async ({ page }) => {
       await page.goto('/');
       await expect(page.locator('#playerInputsContainer input').first()).toBeVisible();
-      expect(await page.evaluate(() => document.documentElement.clientWidth)).toBe(390);
+      expect(await layoutWidth(page)).toBe(390);
       await expectNoSidewaysScroll(page);
     });
   });
 
-  test.describe('at 390x844', () => {
-    test.use({ viewport: PHONE });
+  for (const width of PHONE_WIDTHS) {
+    test.describe(`at ${width}x844`, () => {
+      test.use({ viewport: { width, height: PHONE.height } });
 
-    for (const format of ['americano', 'mexicano']) {
-      test(`the ${format} setup view of 24 players fits the screen width`, async ({ page }) => {
+      for (const format of ['americano', 'mexicano']) {
+        test(`the ${format} setup view of 24 players fits the screen width`, async ({ page }) => {
+          await page.goto('/');
+          await chooseTheTournament(page, format === 'mexicano'
+            ? { format, players: 24, courts: 6 }
+            : { format, schedule: '24p23r.js', courts: 6 });
+          await expect(page.locator('#playerInputsContainer input')).toHaveCount(24);
+          await expectNoSidewaysScroll(page);
+          await expectAllWithinTheScreenWidth(page,
+            '#header, #tournamentTitle, #siteName, #settingsContainer, #settingsContainer input, ' +
+            '#settingsContainer select, #settingsContainer button');
+          await expectSettingsSelectsWithinTheirContainers(page);
+        });
+      }
+
+      test('the setup view fits the screen width with a long-named saved tournament', async ({ page }) => {
+        page.on('dialog', (dialog) => dialog.accept());
+        const longName = 'The Annual Midsummer Padel Turrar Charity Invitational 2026';
         await page.goto('/');
-        await chooseTheTournament(page, format === 'mexicano'
-          ? { format, players: 24, courts: 6 }
-          : { format, schedule: '24p23r.js', courts: 6 });
-        await expect(page.locator('#playerInputsContainer input')).toHaveCount(24);
+        await startTheTournament(page, longName);
+        await page.click('#saveTournamentBtn');
+        // New Tournament (saving the current one) returns to the setup view.
+        await page.click('#newTournamentBtn');
+        await expect(page.locator('#startTournamentBtn')).toBeVisible();
+        await expect(page.locator('#savedTournamentSelect option', { hasText: longName })).toHaveCount(1);
         await expectNoSidewaysScroll(page);
         await expectAllWithinTheScreenWidth(page,
-          '#header, #tournamentTitle, #siteName, #settingsContainer, #settingsContainer input, ' +
-          '#settingsContainer select, #settingsContainer button');
+          '#settingsContainer, .saved-tournaments-container, #savedTournamentSelect, ' +
+          '#loadTournamentBtn, #deleteTournamentBtn');
+        await expectSettingsSelectsWithinTheirContainers(page);
       });
-    }
 
-    test('the setup view fits the screen width with a long-named saved tournament', async ({ page }) => {
-      page.on('dialog', (dialog) => dialog.accept());
-      const longName = 'The Annual Midsummer Padel Turrar Charity Invitational 2026';
-      await page.goto('/');
-      await startTheTournament(page, longName);
-      await page.click('#saveTournamentBtn');
-      // New Tournament (saving the current one) returns to the setup view.
-      await page.click('#newTournamentBtn');
-      await expect(page.locator('#startTournamentBtn')).toBeVisible();
-      await expect(page.locator('#savedTournamentSelect option', { hasText: longName })).toHaveCount(1);
-      await expectNoSidewaysScroll(page);
-      await expectAllWithinTheScreenWidth(page,
-        '#settingsContainer, .saved-tournaments-container, #savedTournamentSelect, ' +
-        '#loadTournamentBtn, #deleteTournamentBtn');
-    });
-
-    test('a score error shows below the inputs and covers neither of them', async ({ page }) => {
-      await page.goto('/');
-      await startTheTournament(page, 'Error Cup');
-      for (const width of [390, 320]) {
-        await page.setViewportSize({ width, height: PHONE.height });
+      test('a score error shows below the inputs, inside the court, and covers neither input', async ({ page }) => {
+        await page.goto('/');
+        await startTheTournament(page, 'Error Cup');
         const match = page.locator('.matches-container .match').first();
         await match.locator('.result-overlay-left input').fill('99');
         await expect(match.locator('.error-message')).toHaveText(/must be a whole number/);
         await expectScoreInputsInsideTheirCourtsAndUncovered(page);
         const error = await match.locator('.error-message').boundingBox();
         const right = await match.locator('.result-overlay-right input').boundingBox();
+        const court = await match.locator('.court').boundingBox();
         expect(error.y).toBeGreaterThanOrEqual(right.y + right.height);
+        expect(error.x).toBeGreaterThanOrEqual(court.x);
+        expect(error.x + error.width).toBeLessThanOrEqual(court.x + court.width);
         await expectNoSidewaysScroll(page);
-        await match.locator('.result-overlay-left input').fill('');
-      }
-    });
+      });
 
-    test('the round header keeps every button label on one line', async ({ page }) => {
-      await page.goto('/');
-      await chooseTheTournament(page, { format: 'mexicano', players: 24, courts: 6 });
-      await startTheTournament(page, 'Header Cup');
-      await expect(page.locator('#generateNextRoundBtn')).toBeVisible();
-      await expectRoundHeaderButtonsOnOneLine(page);
-      await expectAllWithinTheScreenWidth(page, '.round-header, .round-header button');
-    });
+      test('the round header keeps every button label on one line, the buttons apart, from round 1 on', async ({ page }) => {
+        // Americano round 2: PREVIOUS ROUND and NEXT ROUND.
+        await page.goto('/');
+        await startTheTournament(page, 'Header Cup');
+        await page.getByRole('button', { name: 'NEXT ROUND', exact: true }).click();
+        await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+        await expectRoundHeaderButtonsOnOneLineAndApart(page);
+        await expectAllWithinTheScreenWidth(page, '.round-header, .round-header button');
 
-    test('long unbroken player and court names wrap inside the court', async ({ page }) => {
-      // Start accepts player names of up to 20 characters; court names take 30.
-      const longPlayer = 'ABCDEFGHIJKLMNOPQRST';
-      const longCourt = 'CentreCourtSponsoredByAVeryLon';
-      await page.goto('/');
-      await chooseTheTournament(page, { format: 'americano', schedule: '8p7r.js', courts: 2 });
-      await page.fill('#playerInput_0', longPlayer);
-      await page.fill('#courtNameInput_1', longCourt);
-      await startTheTournament(page, 'Long Names Cup');
-      await expect(page.locator('.matches-container .court-label', { hasText: longCourt })).toHaveCount(1);
-      await expect(page.locator('.matches-container .team', { hasText: longPlayer })).toHaveCount(1);
-      await expectNoSidewaysScroll(page);
-      await expectAllWithinTheScreenWidth(page,
-        '.matches-container .court, .matches-container .team, .matches-container .court-label, ' +
-        '.scoreboard-container');
-      // Each name stays inside its own box: no text spills out of it.
-      const spills = await page.evaluate(() =>
-        [...document.querySelectorAll('.matches-container .team, .matches-container .court-label, .scoreboard-container td')]
-          .filter((el) => el.scrollWidth > el.clientWidth)
-          .map((el) => el.textContent));
-      expect(spills).toEqual([]);
-      await expectScoreInputsInsideTheirCourtsAndUncovered(page);
-      await expect(await pointsOf(page, longPlayer)).toHaveText('0');
+        // Mexicano round 1 (GENERATE NEXT ROUND) and round 2 (PREVIOUS ROUND too).
+        page.on('dialog', (dialog) => dialog.accept());
+        await page.click('#newTournamentBtn');
+        await chooseTheTournament(page, { format: 'mexicano', players: 12, courts: 3 });
+        await startTheTournament(page, 'Header Cup Mexicano');
+        await expectRoundHeaderButtonsOnOneLineAndApart(page);
+        const matches = page.locator('.matches-container .match');
+        for (let i = 0; i < 3; i++) await matches.nth(i).locator('.result-overlay-left input').fill('12');
+        await page.click('#generateNextRoundBtn');
+        await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+        await expect(page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true })).toBeVisible();
+        await expectRoundHeaderButtonsOnOneLineAndApart(page);
+        await expectAllWithinTheScreenWidth(page, '.round-header, .round-header button');
+      });
+
+      test('team labels of the widest names never cover the score inputs, as started or restored', async ({ page, context }) => {
+        await page.goto('/');
+        await chooseTheTournament(page, { format: 'americano', schedule: '8p7r.js', courts: 2 });
+        for (let i = 0; i < 8; i++) await page.fill(`#playerInput_${i}`, wideName(i));
+        await startTheTournament(page, 'Wide Names Cup');
+        await expect(page.locator('.matches-container .team').first()).toContainText(/[WM]{19}/);
+        await expectNoSidewaysScroll(page);
+        expect(await expectScoreInputsInsideTheirCourtsAndUncovered(page)).toBe(4);
+
+        // A stored state may hold names of up to 30 characters (the inputs' limit).
+        let state = await page.evaluate((key) => localStorage.getItem(key), STATE_KEY);
+        for (let i = 0; i < 8; i++) state = state.split(wideName(i)).join(wideName(i) + (i % 2 ? 'M' : 'W').repeat(10));
+        await page.close();
+        const restored = await context.newPage();
+        await restored.addInitScript(({ key, json }) => {
+          if (!sessionStorage.getItem('planted')) {
+            localStorage.setItem(key, json);
+            sessionStorage.setItem('planted', '1');
+          }
+        }, { key: STATE_KEY, json: state });
+        await restored.goto('/');
+        await expect(restored.getByRole('cell', { name: wideName(0) + 'W'.repeat(10), exact: true })).toHaveCount(1);
+        await expectNoSidewaysScroll(restored);
+        expect(await expectScoreInputsInsideTheirCourtsAndUncovered(restored)).toBe(4);
+      });
+
+      test('long unbroken names stay inside their boxes: player names wrap, a court name is cut with an ellipsis', async ({ page }) => {
+        const longTitle = 'TheAnnualMidsummerPadelTurrarCharityInvitationalTournament2026';
+        const longCourt = 'W'.repeat(30); // the court name input's limit, too wide for any court
+        await page.goto('/');
+        await chooseTheTournament(page, { format: 'americano', schedule: '8p7r.js', courts: 2 });
+        for (let i = 0; i < 8; i++) await page.fill(`#playerInput_${i}`, wideName(i));
+        await page.fill('#courtNameInput_1', longCourt);
+        await startTheTournament(page, longTitle);
+        await expect(page.locator('#tournamentTitle')).toHaveText(longTitle);
+        await expect(page.locator('.matches-container .court-label', { hasText: longCourt })).toHaveCount(1);
+        await expectNoSidewaysScroll(page);
+        await expectAllWithinTheScreenWidth(page,
+          '#header, #tournamentTitle, .matches-container .court, .matches-container .team, ' +
+          '.matches-container .court-label, .scoreboard-container');
+        const boxes = await page.evaluate(() => {
+          const scoreboard = document.querySelector('.scoreboard-container');
+          const label = document.querySelector('.matches-container .court-label');
+          const court = label.closest('.court').getBoundingClientRect();
+          const l = label.getBoundingClientRect();
+          return {
+            // The scoreboard's table fits inside it: its names wrap.
+            scoreboard: { scrollWidth: scoreboard.scrollWidth, clientWidth: scoreboard.clientWidth },
+            // A team label's words fit its width.
+            teamSpills: [...document.querySelectorAll('.matches-container .team')]
+              .filter((t) => t.scrollWidth > t.clientWidth).map((t) => t.textContent),
+            // The court name stays inside its court, ellipsized where it is cut.
+            label: {
+              inside: l.left >= court.left && l.right <= court.right,
+              cut: label.scrollWidth > label.clientWidth,
+              textOverflow: getComputedStyle(label).textOverflow,
+            },
+          };
+        });
+        expect(boxes.scoreboard.scrollWidth).toBeLessThanOrEqual(boxes.scoreboard.clientWidth);
+        expect(boxes.teamSpills).toEqual([]);
+        expect(boxes.label.inside).toBe(true);
+        expect(boxes.label.cut).toBe(true);
+        expect(boxes.label.textOverflow).toBe('ellipsis');
+        await expectScoreInputsInsideTheirCourtsAndUncovered(page);
+        await expect(await pointsOf(page, wideName(0))).toHaveText('0');
+      });
     });
+  }
+
+  test.describe('at 480x844', () => {
+    test.use({ viewport: { width: 480, height: PHONE.height } });
 
     test('a court has its desktop size when the screen allows it', async ({ page }) => {
       await page.setViewportSize(DESKTOP);
@@ -277,7 +379,7 @@ test.describe('Phone layout', () => {
         inner: [court.clientWidth, court.clientHeight],
       }));
       const desktop = await size();
-      await page.setViewportSize(PHONE);
+      await page.setViewportSize({ width: 480, height: PHONE.height });
       expect(await size()).toEqual(desktop);
     });
   });
