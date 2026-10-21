@@ -84,6 +84,8 @@ This document outlines the functional and non-functional requirements for the Pa
 - The application auto-saves state (e.g., before unload) so that in the event of a reload or crash, the tournament can be resumed without data loss.
 - All user-entered configurations (format, points total, tournament name, player names, court names, scores) must be persistently stored in the browser.
 - If an auto-save fails, a warning stays visible at the top of the page until a later auto-save succeeds; that save stores the whole state, including the changes made in the meantime.
+- While the warning is shown, a failed save is retried without waiting for a further change: when the user returns to the page, and when the site's storage changes in another tab (space may have been freed). A retry that succeeds clears the warning; one that fails changes nothing. While saving works, nothing is retried.
+- While the warning is shown, leaving or reloading the page first tries the save once more; if that fails too, the browser asks the user to confirm leaving, since the changes made since the last successful save would be lost. Otherwise the page is left without a prompt.
 
 ### 3. Responsiveness and Adaptability
 - The layout adapts dynamically:

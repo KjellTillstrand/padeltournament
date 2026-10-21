@@ -225,12 +225,16 @@
     let uncheckedTournamentName = null;
     // The text of the auto-save warning (see reportAutoSave). It states only what
     // is known: the changes are not being saved now, and the next auto-save that
-    // works saves the whole state, the changes made meanwhile included. It names
-    // no cause (a failed write may be full or blocked storage, or a state that
-    // cannot be serialized) and points at no in-app action: the only way the app
-    // frees storage, Delete Tournament, also resets the running tournament.
+    // works saves the whole state, the changes made meanwhile included. That save
+    // needs no action from the Organizer: a failed save is retried on returning to
+    // the page and when another tab changes this origin's storage, as well as by
+    // the next change that is saved (retryFailedAutoSave). It claims no more: the
+    // warning stays until a save has worked, so while it shows, nothing is saved.
+    // It names no cause (a failed write may be full or blocked storage, or a state
+    // that cannot be serialized) and points at no in-app action: the only way the
+    // app frees storage, Delete Tournament, also resets the running tournament.
     const AUTO_SAVE_WARNING = "Scores and other changes are not being saved in this browser right now. " +
-      "Keep this page open: the next change you make saves everything, as soon as saving works again.";
+      "Keep this page open: once saving works again, everything is saved automatically and this warning disappears.";
 
     // Tournament format. Americano plays a precomputed schedule. Mexicano is set up by
     // player count and played one round at a time: round 1 is a seeded random draw,
@@ -392,7 +396,8 @@
     // outcome does, so a save that keeps failing is announced once, not per save.
     // It reads only bindings declared above the early migrateLegacyStorage() call
     // (autoSaveFailing, AUTO_SAVE_WARNING) and an element that precedes this script.
-    // DEFERRED: AB#91 (retry a failed save without a change; warn before leaving)
+    // While it is shown, a failed save is retried without a change, and leaving
+    // the page asks first (see retryFailedAutoSave and the beforeunload handler).
     function reportAutoSave(saved) {
       if (autoSaveFailing === !saved) return; // no change of outcome
       autoSaveFailing = !saved;
@@ -2397,9 +2402,30 @@
     document.getElementById("loadTournamentBtn").addEventListener("click", loadTournament);
     document.getElementById("deleteTournamentBtn").addEventListener("click", deleteTournament);
 
-    // Auto-save state before unload (to handle crashes/reloads).
-    window.addEventListener("beforeunload", function () {
+    // Auto-save state before unload (to handle crashes/reloads). If that save
+    // fails too (the auto-save warning is shown), the changes made since the last
+    // save that worked would be lost, so the browser asks the Organizer to confirm
+    // leaving. When it works, or nothing has failed, the page is left without a prompt.
+    window.addEventListener("beforeunload", function (event) {
       saveTournamentState();
+      if (autoSaveFailing) {
+        event.preventDefault();
+        event.returnValue = true; // legacy: older browsers (e.g. Chrome < 119) prompt only on a non-empty returnValue
+      }
+    });
+
+    // While the auto-save warning is shown, retry the save without waiting for the
+    // Organizer's next change: when this origin's storage changes in another tab
+    // (space may have been freed), and when the Organizer comes back to this page
+    // (storage may have been freed or unblocked meanwhile). A retry that works
+    // clears the warning; one that fails changes nothing (see reportAutoSave).
+    // While saving works, these events do nothing.
+    function retryFailedAutoSave() {
+      if (autoSaveFailing) saveTournamentState();
+    }
+    window.addEventListener("storage", retryFailedAutoSave);
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible") retryFailedAutoSave();
     });
 
     // Randomize players on tournament start.
