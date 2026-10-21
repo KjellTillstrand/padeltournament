@@ -214,6 +214,15 @@
     let currentRoundIndex = 0; // 0-indexed
     let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
     let autoSaveFailing = false; // whether the last auto-save of the state failed (see reportAutoSave)
+    // The name the running tournament started under when Start could not check
+    // it against the saved tournaments (getUniqueTournamentName), or null: it may
+    // be a saved tournament's name. While the name input holds this name, Save
+    // and Delete check it before they write the saved list (checkedTournamentName);
+    // any other name the Organizer types is saved and deleted by name, as usual.
+    // Set by Start; cleared by a Start that read the list, by Load, by dropping
+    // the tournament held (resetTournamentMemory: New Tournament, Delete) and once
+    // the name is checked (adoptCheckedTournamentName).
+    let uncheckedTournamentName = null;
     // The text of the auto-save warning (see reportAutoSave). It states only what
     // is known: the changes are not being saved now, and the next auto-save that
     // works saves the whole state, the changes made meanwhile included. It names
@@ -566,6 +575,7 @@
       currentSchedule = null;
       currentRoundIndex = 0;
       mexicanoSeed = null;
+      uncheckedTournamentName = null;
       clearPlayerNameDrafts();
     }
 
@@ -582,15 +592,15 @@
     // threw. So such a state can still be recovered by hand from the backup, unless
     // it is longer than MAX_BACKUP_LENGTH (logged, not backed up) or the backup
     // write fails (logged); neither blocks the fallback. One generation only: each
-    // backup overwrites the last, except that with nothing stored (null) the last
-    // backup is kept.
+    // backup overwrites the last, except that with nothing stored (null) or an
+    // empty stored string, which holds nothing to recover, the last backup is kept.
     // Only the stored state is backed up: an unusable saved tournament is skipped
     // and dropped from storage, with no backup, the next time the saved list is
     // written. A reset the Organizer chose (New Tournament, another schedule) is no
     // fallback and backs nothing up.
-    // DEFERRED: AB#90 (an empty stored string still overwrites an earlier backup)
     function backupStoredState(raw) {
-      if (raw === null) return;
+      // DEFERRED: AB#102 (contentless stored state must not overwrite the backup)
+      if (raw === null || raw === "") return;
       if (raw.length > MAX_BACKUP_LENGTH) {
         console.warn("Not backing up a stored tournament state longer than " + MAX_BACKUP_LENGTH +
           " characters:", STATE_BACKUP_KEY, raw.length);
@@ -716,7 +726,10 @@
     // Returns whether the tournament was stored.
     function saveTournament() {
       if (!currentSchedule) return false;
-      const tournamentName = document.getElementById("tournamentName").value.trim() || "Unnamed Tournament";
+      const typedName = document.getElementById("tournamentName").value.trim() || "Unnamed Tournament";
+      const tournamentName = checkedTournamentName(typedName);
+      // DEFERRED: AB#104 (the rename is adopted before the write and stays if the write fails)
+      adoptCheckedTournamentName(typedName, tournamentName);
       const savedTournament = {
         tournamentName: tournamentName,
         schedule: currentSchedule,
@@ -748,6 +761,7 @@
       if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
         const selectedTournament = savedTournaments[selectedIndex];
         abandonPendingState(); // the loaded tournament replaces the one held
+        uncheckedTournamentName = null; // its name is the saved tournament's own
         currentSchedule = selectedTournament.schedule;
         // Tournaments saved before round position was tracked (or with a corrupted
         // index) carry none/an invalid value: fall back to round 0.
@@ -778,14 +792,23 @@
       }
     }
 
-    // Delete tournament.
+    // Delete tournament. The confirmation names the save that will be deleted:
+    // the name typed or, for the name that went unchecked at Start, the unique
+    // name it is checked to (checkedTournamentName). That rename is applied only
+    // once the Organizer confirms, so a cancelled Delete changes nothing.
+    // Accepted multi-tab risk (localStorage has no compare-and-set): another tab
+    // may save under the checked name while the confirmation is open; that save
+    // is then the one deleted.
     function deleteTournament() {
-      const tournamentName = document.getElementById("tournamentName").value.trim();
-      if (!tournamentName) {
+      const typedName = document.getElementById("tournamentName").value.trim();
+      if (!typedName) {
         alert("No tournament name provided.");
         return;
       }
+      const tournamentName = checkedTournamentName(typedName);
+      // DEFERRED: AB#104 (Delete of an unchecked name reports a delete nothing matched; adopting before the reset is a redundant write)
       if (confirm(`Are you sure you want to delete "${tournamentName}"? Your secret sauce will vanish forever!`)) {
+        adoptCheckedTournamentName(typedName, tournamentName);
         let savedTournaments = readSavedTournaments();
         savedTournaments = savedTournaments.filter(t => t.tournamentName !== tournamentName);
         writeAppValue(SAVED_TOURNAMENTS_KEY, savedTournaments);
@@ -795,8 +818,73 @@
       }
     }
 
+    // Start's name: { name, checked }. name is baseName, or, when a saved
+    // tournament already has that name, baseName with the first free "-<n>"
+    // suffix (uniqueNameAmong). When storage refuses the saved list's read, with
+    // whatever error (a DOMException with blocked site data; a TypeError with
+    // storage disabled, where localStorage is null), the name is not checked:
+    // name is baseName and checked is false (logged). Start must not fail for it,
+    // and nothing is written from it; the tournament starts, its auto-save fails
+    // and the auto-save warning shows. Start then keeps the name as
+    // uncheckedTournamentName, and Save and Delete check it before they write the
+    // saved list (checkedTournamentName), so neither replaces nor deletes an older
+    // saved tournament of that name once storage works again. Only the read of
+    // storage is caught: an error past it, in the migration lookup or the copy
+    // layer (readSavedTournamentsFrom: pendingMigrationFor,
+    // copySavedTournamentList), is a bug, no storage refusal, and is thrown: it
+    // must never switch the check off. (An unparsable list throws nothing:
+    // parseStoredJson logs it and the list reads as empty.)
+    // Accepted residual risk: the unchecked name is held in memory only. Once
+    // storage works again the auto-save stores that name, so after a reload (or
+    // in another tab) before a Save or Delete has checked it, the name is taken
+    // for a checked one: Save may then replace, and Delete delete, a saved
+    // tournament of that name.
     function getUniqueTournamentName(baseName) {
-      let savedTournaments = readSavedTournaments();
+      let raw;
+      // DEFERRED: AB#104 (any error accessing storage counts as a refusal; consider narrowing)
+      try {
+        raw = localStorage.getItem(SAVED_TOURNAMENTS_KEY);
+      } catch (err) {
+        console.warn("Could not read the saved tournaments; the tournament name is not checked against them:", err);
+        return { name: baseName, checked: false };
+      }
+      return { name: uniqueNameAmong(baseName, readSavedTournamentsFrom(raw)), checked: true };
+    }
+
+    // The name Save or Delete is to write the saved list under, given typedName,
+    // the name the name input holds: typedName, unless it is the name that went
+    // unchecked at Start (uncheckedTournamentName). That one is checked now, as
+    // Start would have: the result is the unique name (uniqueNameAmong), so that
+    // neither replaces nor deletes an older saved tournament of the same name.
+    // Neither the app's tournament state nor the saved list is changed here: the
+    // action applies the result once it goes ahead (adoptCheckedTournamentName),
+    // so an action the Organizer cancels leaves both as they were. (The list's
+    // read, as every list read does, may drop a stale pending saved-list
+    // migration once the key holds a value: pendingMigrationFor.) Storage that
+    // still refuses the saved list throws here, as the list's read in Save and
+    // Delete would, and the name stays unchecked.
+    // DEFERRED: AB#104 (Save and Delete read the saved list twice: here and for their write)
+    function checkedTournamentName(typedName) {
+      if (typedName !== uncheckedTournamentName) return typedName;
+      return uniqueNameAmong(typedName, readSavedTournaments());
+    }
+
+    // Apply checkedTournamentName(typedName), checkedName, as the action goes
+    // ahead: the unchecked name is checked from now on, and the tournament is
+    // renamed to the unique name (the name input, the title and the stored state).
+    function adoptCheckedTournamentName(typedName, checkedName) {
+      if (typedName !== uncheckedTournamentName) return;
+      uncheckedTournamentName = null;
+      if (checkedName !== typedName) {
+        document.getElementById("tournamentName").value = checkedName;
+        document.getElementById("tournamentTitle").textContent = checkedName;
+        saveTournamentState();
+      }
+    }
+
+    // baseName, or, when one of savedTournaments already has that name, baseName
+    // with the first free "-<n>" suffix.
+    function uniqueNameAmong(baseName, savedTournaments) {
       let usedNames = new Set(savedTournaments.map(t => t.tournamentName));
       if (!usedNames.has(baseName)) return baseName;
 
@@ -825,8 +913,9 @@
       }
 
       // Generate unique tournament name and update input.
-      tournamentName = getUniqueTournamentName(tournamentName);
-      document.getElementById("tournamentName").value = tournamentName;
+      const startName = getUniqueTournamentName(tournamentName);
+      // DEFERRED: AB#103 (aborted Start leaves a renamed name input)
+      document.getElementById("tournamentName").value = startName.name;
 
       if (tournamentFormat === "mexicano") {
         if (!startMexicano()) return;
@@ -841,6 +930,7 @@
 
       // Now proceed to start the tournament.
       tournamentStarted = true;
+      uncheckedTournamentName = startName.checked ? null : startName.name;
       currentRoundIndex = 0;
       disableSettings();
       document.getElementById("settingsContainer").style.display = "none";
@@ -1300,9 +1390,19 @@
     // (unavailable) throws: a saved list that could not be read must not be taken
     // for an empty one, which Save would then overwrite. (Only the load path,
     // which reads the stored state once, readRawStoredState, turns an unreadable
-    // value into "nothing stored".)
+    // value into "nothing stored", and Start's name check, which writes nothing
+    // from the list, a storage read that throws into "name not checked":
+    // getUniqueTournamentName.)
+    // DEFERRED: AB#101 (Save/Load/Delete/New Tournament with storage fully blocked)
     function readSavedTournaments() {
-      const raw = localStorage.getItem(SAVED_TOURNAMENTS_KEY);
+      return readSavedTournamentsFrom(localStorage.getItem(SAVED_TOURNAMENTS_KEY));
+    }
+
+    // The usable saved tournaments given raw, the saved list just read from
+    // storage (see readSavedTournaments). Reads no storage itself, but is not free
+    // of side effects: pendingMigrationFor may drop a stale pending saved-list
+    // migration (when raw holds a value).
+    function readSavedTournamentsFrom(raw) {
       const migration = pendingMigrationFor(SAVED_TOURNAMENTS_KEY, raw);
       return copySavedTournamentList(migration ? migration.raw : raw);
     }

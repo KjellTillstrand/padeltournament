@@ -369,43 +369,58 @@ test.describe('Malformed or hostile persisted state', () => {
   // is used to plant them because it keeps "__proto__" as an own key, whereas
   // Object.assign would invoke the __proto__ setter and JSON.stringify would
   // then drop it. A copy that spread `...round` would keep sitOuts/rest/extra,
-  // and the key allowlist check below catches that. The "Nobody" check is
-  // belt-and-braces only: at 10 players setByes writes an own byes, so an
-  // inherited one never shows, and the read-back cannot see an own __proto__.
-  // DEFERRED: AB#90 (assert on the raw stored text; a 12-player variant)
-  test('A 10-player tournament state with unknown keys restores with the true resting players and stores none of the keys', async ({ page, context }) => {
-    const errors = collectErrors(page);
-    // Given a sound running 10-player tournament whose schedule and rounds carry unknown keys.
-    const state = await captureARealTournamentState(context, { schedule: '10p10r.js' });
-    const expected = restingIn(state.schedule, state.schedule.rounds[0]);
-    expect(expected).toHaveLength(2);
-    const HOSTILE = '{"__proto__":{"byes":["Nobody"],"x":1},"sitOuts":{"__proto__":{"x":1}},"rest":["constructor"],"extra":1}';
-    state.schedule = { ...state.schedule, ...JSON.parse(HOSTILE) };
-    state.schedule.rounds = state.schedule.rounds.map((r) => ({ ...r, ...JSON.parse(HOSTILE) }));
-    const raw = JSON.stringify(state);
-    // the planted text really has an own "__proto__" on the schedule and on every round
-    const reparsed = JSON.parse(raw);
-    expect(Object.getOwnPropertyNames(reparsed.schedule)).toContain('__proto__');
-    expect(reparsed.schedule.rounds.every((r) => Object.getOwnPropertyNames(r).includes('__proto__'))).toBe(true);
-    await plantStorage(page, { [STATE_KEY]: raw });
+  // and the key allowlist check below catches that; the raw stored text is
+  // checked too, as reading it back through the page cannot show an own
+  // "__proto__". At 10 players setByes writes an own byes, so an inherited one
+  // could never show; at 12 nobody rests and no byes is written, so a round
+  // that inherited the planted one would show "Nobody" resting.
+  const UNKNOWN_KEYS = [
+    // schedule, players, players resting in round 1, the keys of a stored round
+    ['10p10r.js', 10, 2, ['byes', 'matches', 'roundNumber']],
+    ['12p11r.js', 12, 0, ['matches', 'roundNumber']],
+  ];
+  for (const [schedule, players, resting, roundKeys] of UNKNOWN_KEYS) {
+    test(`A ${players}-player tournament state with unknown keys restores with the true resting players and stores none of the keys`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      // Given a sound running tournament whose schedule and rounds carry unknown keys.
+      const state = await captureARealTournamentState(context, { schedule });
+      expect(state.schedule.players).toHaveLength(players);
+      const expected = restingIn(state.schedule, state.schedule.rounds[0]);
+      expect(expected).toHaveLength(resting);
+      const HOSTILE = '{"__proto__":{"byes":["Nobody"],"x":1},"sitOuts":{"__proto__":{"x":1}},"rest":["constructor"],"extra":1}';
+      state.schedule = { ...state.schedule, ...JSON.parse(HOSTILE) };
+      state.schedule.rounds = state.schedule.rounds.map((r) => ({ ...r, ...JSON.parse(HOSTILE) }));
+      const raw = JSON.stringify(state);
+      // the planted text really has an own "__proto__" on the schedule and on every round
+      const reparsed = JSON.parse(raw);
+      expect(Object.getOwnPropertyNames(reparsed.schedule)).toContain('__proto__');
+      expect(reparsed.schedule.rounds.every((r) => Object.getOwnPropertyNames(r).includes('__proto__'))).toBe(true);
+      await plantStorage(page, { [STATE_KEY]: raw });
 
-    // When the app loads.
-    await page.goto('/');
+      // When the app loads.
+      await page.goto('/');
 
-    // Then the tournament is restored showing the true resting players,
-    await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
-    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-    expect(await restingOnScreen(page)).toEqual(expected);
-    await expect(page.locator('body')).not.toContainText('Nobody');
-    // what it stores back carries none of the unknown keys,
-    const stored = await storedJson(page, STATE_KEY);
-    const keysOf = (o) => Object.getOwnPropertyNames(o).sort();
-    expect(keysOf(stored.schedule)).toEqual(['players', 'rounds']);
-    for (const round of stored.schedule.rounds) expect(keysOf(round)).toEqual(['byes', 'matches', 'roundNumber']);
-    // and nothing leaked onto the page's object prototype.
-    expect(await page.evaluate(() => ({}).x)).toBeUndefined();
-    expect(errors).toEqual([]);
-  });
+      // Then the tournament is restored showing the true resting players,
+      await expect(page.locator('#tournamentTitle')).toHaveText('Base Cup');
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('.scoreboard-container table tr')).toHaveCount(players + 1);
+      expect(await restingOnScreen(page)).toEqual(expected);
+      await expect(page.locator('body')).not.toContainText('Nobody');
+      // what it stores back carries none of the unknown keys,
+      const stored = await storedJson(page, STATE_KEY);
+      const keysOf = (o) => Object.getOwnPropertyNames(o).sort();
+      expect(keysOf(stored.schedule)).toEqual(['players', 'rounds']);
+      for (const round of stored.schedule.rounds) expect(keysOf(round)).toEqual(roundKeys);
+      // not even in the raw stored text,
+      const storedText = await page.evaluate((key) => localStorage.getItem(key), STATE_KEY);
+      for (const planted of ['"__proto__":', '"sitOuts":', '"rest":', '"extra":', '"x":', 'Nobody']) {
+        expect(storedText).not.toContain(planted);
+      }
+      // and nothing leaked onto the page's object prototype.
+      expect(await page.evaluate(() => ({}).x)).toBeUndefined();
+      expect(errors).toEqual([]);
+    });
+  }
 
   test('A 12-player tournament state with planted byes rests nobody', async ({ page, context }) => {
     const errors = collectErrors(page);
@@ -930,7 +945,7 @@ test.describe('Malformed or hostile persisted state', () => {
   });
 
   // --- Round trip: the checks are never stricter than the app's own writers ---
-  test('Anything the app itself can write survives a reload', async ({ page }) => {
+  test('R-STATE-PERSIST: Anything the app itself can write survives a reload', async ({ page }) => {
     const errors = collectErrors(page);
     collectDialogs(page);
     const longName = 'T'.repeat(200);
@@ -1457,6 +1472,42 @@ test.describe('Malformed or hostile persisted state', () => {
     // None of them is valid at 24: each says why, and nobody is credited.
     await expectErrorsOnScreen(page, ['Sum must equal 24', 'Sum must equal 24', 'Please fill in both scores']);
     expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    expect(errors).toEqual([]);
+  });
+
+  // The inference counts only pairs the score rule can read (isScoreDigits): a
+  // side of 1000 characters is never a score, however its digits add up. Here
+  // the only pair is 20 and 12 zero-padded to 1000 characters each, which as
+  // numbers would sum to 32.
+  test('R-STATE-PERSIST, R-POINT-POOLS: a legacy state whose only pair summing to 32 is zero-padded to 1000 characters restores at 24', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    // Given a legacy state (no stored total) whose only result is that pair,
+    const state = await captureARealTournamentState(context);
+    delete state.totalPoints;
+    const padded = { left: '0'.repeat(998) + '20', right: '0'.repeat(998) + '12' };
+    expect([padded.left.length, padded.right.length]).toEqual([1000, 1000]);
+    plantResults(state.schedule, [padded]);
+    await plantStorage(page, { [STATE_KEY]: JSON.stringify(state) });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then it resumes at 24, not 32,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
+    // the pair is shown with its error and credited to nobody,
+    await expectErrorsOnScreen(page, ['whole number from 0 to 24', '', '']);
+    expect(await scoreboardPointsSorted(page)).toEqual(Array(12).fill(0));
+    // and is stored back byte-for-byte, with the total of 24.
+    const stored = await storedJson(page, STATE_KEY);
+    expect(stored.totalPoints).toBe(24);
+    expect(stored.schedule.rounds[0].matches[0].result).toEqual(padded);
+
+    // And a score on another match completes to 24.
+    const second = page.locator('.result-overlay-container').nth(1);
+    await second.locator('.result-overlay-left input').fill('15');
+    await expect(second.locator('.result-overlay-right input')).toHaveValue('9');
+    await expect(second.locator('.error-message')).toHaveText('');
     expect(errors).toEqual([]);
   });
 
@@ -2266,6 +2317,13 @@ test.describe('Malformed or hostile persisted state', () => {
           expect(stored).toEqual({ left: storedBack, right: '12' });
         }
       }
+
+      // And the match can be scored again.
+      const first = page.locator('.result-overlay-container').first();
+      await first.locator('.result-overlay-left input').fill('3');
+      await expect(first.locator('.result-overlay-right input')).toHaveValue('21');
+      await expect(first.locator('.error-message')).toHaveText('');
+      expect((await storedResults(page))[0]).toEqual({ left: '3', right: '21' });
       expect(errors).toEqual([]);
     });
   }
@@ -2584,6 +2642,23 @@ test.describe('Malformed or hostile persisted state', () => {
     // and the rescue is logged as the one error.
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('console.error: Could not restore the saved tournament');
+  });
+
+  test('R-STATE-PERSIST: an empty stored state falls back to a fresh setup and keeps the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given a stored state that is an empty string, and a backup from earlier.
+    await plantStorageOnce(page, { [STATE_KEY]: '', [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented and the empty value is dropped,
+    await expectAFreshSetup(page);
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    // and, an empty value holding nothing to recover, the earlier backup is kept.
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(PREVIOUS_BACKUP);
+    await expectATournamentCanStart(page, 'Recovered Cup');
+    expect(errors).toEqual([]);
   });
 
   // A stored state longer than the backup limit is dropped without a backup;
@@ -3949,6 +4024,431 @@ test.describe('A visible warning when the auto-save fails', () => {
       .toEqual({ left: '10', right: '14' });
     await expectNoWarning(page);
     expect(errors).toEqual([]);
+  });
+
+  // Site data blocked: the browser refuses every call on the storage, or the
+  // storage object itself (as Chromium does when a site's data is blocked).
+  // Either refusal is a DOMException SecurityError, as real Chromium and Firefox
+  // throw with a site's data blocked. Or storage is disabled: window.localStorage
+  // is null (Firefox with dom.storage.enabled=false), so every use of it throws a
+  // TypeError. window.liftStorageRefusal() lifts it again in the page, as when
+  // the Organizer unblocks the site's data.
+  const refuseEveryStorageCall = () => {
+    const originals = {};
+    for (const method of ['getItem', 'setItem', 'removeItem', 'key', 'clear']) {
+      originals[method] = Storage.prototype[method];
+      Storage.prototype[method] = function () { throw new DOMException('The operation is insecure.', 'SecurityError'); };
+    }
+    window.liftStorageRefusal = () => Object.assign(Storage.prototype, originals);
+  };
+  const refuseTheStorageObject = () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() { throw new DOMException('Access is denied for this document.', 'SecurityError'); },
+    });
+    window.liftStorageRefusal = () => {
+      if (original) Object.defineProperty(window, 'localStorage', original);
+      else delete window.localStorage;
+    };
+  };
+  const disableTheStorage = () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    Object.defineProperty(window, 'localStorage', { configurable: true, get() { return null; } });
+    window.liftStorageRefusal = () => {
+      if (original) Object.defineProperty(window, 'localStorage', original);
+      else delete window.localStorage;
+    };
+  };
+  // What reading storage in the page then gives: a refusal names its
+  // DOMException, disabled storage is null.
+  const probeTheStorage = (page) => page.evaluate(() => {
+    try {
+      if (localStorage === null) return 'null';
+      localStorage.getItem('probe');
+      return 'readable';
+    } catch (err) {
+      return err instanceof DOMException ? err.name : `not a DOMException: ${err}`;
+    }
+  });
+  const BLOCKED_STARTS = [
+    ['every storage call is refused', refuseEveryStorageCall, 'SecurityError', 'Americano'],
+    ['the storage object itself is refused', refuseTheStorageObject, 'SecurityError', 'Americano'],
+    ['storage is disabled (localStorage is null)', disableTheStorage, 'null', 'Americano'],
+    ['every storage call is refused', refuseEveryStorageCall, 'SecurityError', 'Mexicano'],
+  ];
+  for (const [description, block, probed, format] of BLOCKED_STARTS) {
+    test(`R-STATE-PERSIST: when ${description}, a tournament (${format}) still starts and the auto-save warning shows`, async ({ page }) => {
+      const errors = collectErrors(page);
+      const dialogs = collectDialogs(page);
+      await page.addInitScript(block);
+      // Given the browser refuses all storage,
+      await page.goto('/');
+      expect(await probeTheStorage(page)).toBe(probed);
+      await expect(page.locator('#settingsContainer')).toBeVisible();
+      if (format === 'Mexicano') await page.selectOption('#formatSelect', 'mexicano');
+
+      // when the Organizer starts a tournament,
+      await startTournament(page, 'Blocked Cup');
+
+      // then the tournament starts, under the name given (no saved list to clash with),
+      await expect(page.locator('#tournamentTitle')).toHaveText('Blocked Cup');
+      await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup');
+      await expect(page.locator('#settingsContainer')).toBeHidden();
+      await expect(page.locator('.court')).toHaveCount(3);
+      await expect(page.locator('.scoreboard-container table tr')).toHaveCount(13);
+      // the warning that progress is not being saved is shown,
+      await expectTheWarning(page);
+      // and the tournament plays on.
+      await leftScore(page, 0).fill('15');
+      await expect(rightScore(page, 0)).toHaveValue('9');
+      await expectTheWarning(page);
+      // Nothing threw and nothing alerted: the errors logged are the load's, the
+      // two legacy migrations and the saved-tournament list, none of which can read.
+      expect(dialogs).toEqual([]);
+      expect(errors).toEqual([
+        expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
+        expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
+        expect.stringContaining('console.error: Could not list the saved tournaments'),
+      ]);
+    });
+  }
+
+  // A tournament the app saves under name, and again under each of moreNames,
+  // on a page of its own (the saved list is shared by every page of the
+  // origin), and the saved list as it then stands.
+  async function saveATournamentAs(context, name, ...moreNames) {
+    const donor = await context.newPage();
+    donor.on('dialog', (dialog) => dialog.accept());
+    await donor.goto('/');
+    await startTournament(donor, name);
+    await leftScore(donor, 0).fill('10');
+    await donor.click('#saveTournamentBtn');
+    await expect.poll(() => storedRaw(donor, SAVED_TOURNAMENTS_KEY)).not.toBeNull();
+    if (moreNames.length > 0) await donor.click('#toggleSettingsBtn'); // the name is among the settings
+    for (const [i, more] of moreNames.entries()) {
+      await donor.fill('#tournamentName', more);
+      await donor.click('#saveTournamentBtn');
+      await expect.poll(async () => (await storedJson(donor, SAVED_TOURNAMENTS_KEY)).length).toBe(i + 2);
+    }
+    const savedList = await storedJson(donor, SAVED_TOURNAMENTS_KEY);
+    await donor.close();
+    expect(savedList.map((t) => t.tournamentName)).toEqual([name, ...moreNames]);
+    return savedList;
+  }
+
+  // The errors logged by a page loaded with storage refused: the load's, which
+  // could not read storage (the two legacy migrations and the saved-tournament list).
+  // DEFERRED: AB#104 (use it in place of the inlined arrays; share liftStorageRefusal)
+  const LOAD_ERRORS_WITH_STORAGE_REFUSED = [
+    expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
+    expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
+    expect.stringContaining('console.error: Could not list the saved tournaments'),
+  ];
+
+  // A tournament started as name while the browser refused all storage (block),
+  // so Start could not check the name against the saved tournaments; storage then
+  // works again.
+  async function startUncheckedThenRecover(page, name, block = refuseEveryStorageCall) {
+    await page.addInitScript(block);
+    await page.goto('/');
+    await startTournament(page, name);
+    await expect(page.locator('#tournamentName')).toHaveValue(name);
+    await expectTheWarning(page);
+    await page.evaluate(() => window.liftStorageRefusal());
+  }
+
+  // A saved tournament as the app writes it back whenever it rewrites the saved
+  // list: its schedule keeps only the players and the rounds.
+  const asRewritten = (entry) =>
+    ({ ...entry, schedule: { players: entry.schedule.players, rounds: entry.schedule.rounds } });
+
+  // Start could not check the name against the saved tournaments (storage
+  // refused), so the tournament runs under the name of an older saved one. Once
+  // storage works again, a write to the saved list, which matches by name,
+  // checks the name first and renames the tournament to the unique name: the
+  // older save is never replaced nor deleted.
+  const UNCHECKED_NAME_WRITES = [
+    ['Save', refuseEveryStorageCall, 'every storage call was refused'],
+    ['Save', refuseTheStorageObject, 'the storage object itself was refused'],
+    ['Save', disableTheStorage, 'storage was disabled (localStorage was null)'],
+    ['Delete', refuseEveryStorageCall, 'every storage call was refused'],
+    ['New Tournament, saving first', refuseEveryStorageCall, 'every storage call was refused'],
+  ];
+  for (const [action, block, description] of UNCHECKED_NAME_WRITES) {
+    test(`R-NAME-UNIQUE, R-TOURNAMENT-STORE: when ${description} at Start, ${action} once storage works again keeps the older save of the same name`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      const dialogs = collectDialogs(page);
+      // Given a saved tournament "Blocked Cup",
+      const olderList = await saveATournamentAs(context, 'Blocked Cup');
+      // and a tournament of that name started while the browser refused all storage,
+      await page.addInitScript(block);
+      await page.goto('/');
+      await startTournament(page, 'Blocked Cup');
+      await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup');
+      await expectTheWarning(page);
+      // when storage works again
+      await page.evaluate(() => window.liftStorageRefusal());
+      expect(await storedJson(page, SAVED_TOURNAMENTS_KEY)).toEqual(olderList);
+
+      // and the Organizer uses the action,
+      if (action === 'Save') {
+        await page.click('#saveTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(1);
+        expect(dialogs).toEqual(['Tournament saved!']);
+      } else if (action === 'Delete') {
+        await page.click('#toggleSettingsBtn'); // Delete is among the settings
+        await page.click('#deleteTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(2);
+      } else {
+        await page.click('#newTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(3);
+        expect(dialogs).toEqual([
+          'Do you want to save the current tournament before creating a new one?',
+          'Tournament saved!',
+          'Ready for a new tournament!',
+        ]);
+      }
+
+      // then the older save of that name is kept unchanged,
+      const savedList = await storedJson(page, SAVED_TOURNAMENTS_KEY);
+      expect(savedList[0]).toEqual(asRewritten(olderList[0]));
+      if (action === 'Delete') {
+        // and the delete removed nothing else (the running tournament was never
+        // saved): it was asked for, and reported, under the unique name.
+        expect(savedList).toHaveLength(1);
+        expect(dialogs[0]).toContain('Are you sure you want to delete "Blocked Cup-1"?');
+        expect(dialogs[1]).toBe('Tournament "Blocked Cup-1" deleted!');
+      } else {
+        // and the running tournament is saved beside it, under the unique name.
+        expect(savedList.map((t) => t.tournamentName)).toEqual(['Blocked Cup', 'Blocked Cup-1']);
+        expect(savedList[1].schedule).not.toEqual(olderList[0].schedule);
+      }
+      if (action === 'Save') {
+        // The running tournament now carries the unique name, on screen and stored,
+        await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup-1');
+        await expect(page.locator('#tournamentTitle')).toHaveText('Blocked Cup-1');
+        expect((await storedJson(page, STATE_KEY)).tournamentName).toBe('Blocked Cup-1');
+        // and, its name checked now, a second Save replaces its own save only.
+        await page.click('#saveTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(2);
+        expect(dialogs[1]).toBe('Tournament saved!');
+        const resaved = await storedJson(page, SAVED_TOURNAMENTS_KEY);
+        expect(resaved.map((t) => t.tournamentName)).toEqual(['Blocked Cup', 'Blocked Cup-1']);
+        expect(resaved[0]).toEqual(asRewritten(olderList[0]));
+      }
+      // The errors logged are the load's, which could not read storage.
+      expect(errors).toEqual([
+        expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
+        expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
+        expect.stringContaining('console.error: Could not list the saved tournaments'),
+      ]);
+    });
+  }
+
+  // Only an error from storage itself (reading the saved list's key) lets Start
+  // go on with the name unchecked. An error past that read, in the migration
+  // lookup or the copy layer (pendingMigrationFor, copySavedTournamentList), is
+  // a bug, not a storage refusal, and must never switch the check off: here the
+  // copy layer throws a TypeError, as a null storage does at the read. (An
+  // unparsable list throws nothing: parseStoredJson logs it and the list reads
+  // as empty.)
+  // DEFERRED: AB#104 (retag R-STATE-PERSIST; weak for R-NAME-UNIQUE)
+  test('R-NAME-UNIQUE: an error in the saved list\'s copy layer stops Start rather than skipping the name check', async ({ page }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given readable storage, and a copy layer for the saved list that fails,
+    await page.goto('/');
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    expect(await probeTheStorage(page)).toBe('readable');
+    await page.evaluate(() => {
+      window.copySavedTournamentList = () => { throw new TypeError('not a storage refusal'); };
+    });
+
+    // when the Organizer starts a tournament,
+    await page.fill('#tournamentName', 'Bug Cup');
+    await page.click('#startTournamentBtn');
+
+    // then the error surfaces and the tournament does not start.
+    await expect.poll(() => errors.length).toBe(1);
+    expect(errors).toEqual([expect.stringContaining('not a storage refusal')]);
+    expect(errors[0]).toMatch(/^pageerror: /);
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+    await expect(page.locator('.round-header')).toHaveCount(0);
+    expect(dialogs).toEqual([]);
+  });
+
+  // The safeguard is bound to the name that went unchecked at Start: once the
+  // Organizer has typed another name, Save replaces, and Delete deletes, the
+  // saved tournament of that name, as for any tournament.
+  const RETYPED_NAME_WRITES = [
+    ['Save', 'R-TOURNAMENT-STORE, R-NAME-UNIQUE', 'replaces'],
+    ['Delete', 'R-TOURNAMENT-STORE', 'deletes'],
+  ];
+  for (const [action, tags, outcome] of RETYPED_NAME_WRITES) {
+    test(`${tags}: after an unchecked Start and storage working again, ${action} under another saved name the Organizer typed ${outcome} that save`, async ({ page, context }) => {
+      const errors = collectErrors(page);
+      const dialogs = collectDialogs(page);
+      // Given saved tournaments "Blocked Cup" and "Old Cup",
+      const olderList = await saveATournamentAs(context, 'Blocked Cup', 'Old Cup');
+      // and a tournament "Blocked Cup" started while storage was refused, which works again,
+      await startUncheckedThenRecover(page, 'Blocked Cup');
+      // when the Organizer types the other saved name, "Old Cup",
+      await page.click('#toggleSettingsBtn'); // the name is among the settings
+      await page.fill('#tournamentName', 'Old Cup');
+      await expect(page.locator('#tournamentTitle')).toHaveText('Old Cup');
+
+      // and uses the action,
+      if (action === 'Save') {
+        await page.click('#saveTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(1);
+        // then the running tournament replaces the save "Old Cup", under that name,
+        expect(dialogs).toEqual(['Tournament saved!']);
+        const savedList = await storedJson(page, SAVED_TOURNAMENTS_KEY);
+        expect(savedList.map((t) => t.tournamentName)).toEqual(['Blocked Cup', 'Old Cup']);
+        expect(savedList[0]).toEqual(asRewritten(olderList[0]));
+        expect(savedList[1].schedule).not.toEqual(olderList[1].schedule);
+        await expect(page.locator('#tournamentName')).toHaveValue('Old Cup');
+        await expect(page.locator('#tournamentTitle')).toHaveText('Old Cup');
+        // and once the Organizer types the unchecked name back, it is checked:
+        // a Save keeps the older "Blocked Cup" and saves under the unique name.
+        await page.fill('#tournamentName', 'Blocked Cup');
+        await page.click('#saveTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(2);
+        expect(dialogs[1]).toBe('Tournament saved!');
+        await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup-1');
+        const resaved = await storedJson(page, SAVED_TOURNAMENTS_KEY);
+        expect(resaved.map((t) => t.tournamentName)).toEqual(['Blocked Cup', 'Old Cup', 'Blocked Cup-1']);
+        expect(resaved[0]).toEqual(asRewritten(olderList[0]));
+      } else {
+        await page.click('#deleteTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(2);
+        // then the save "Old Cup" is deleted, as asked and reported, and "Blocked Cup" kept.
+        expect(dialogs).toEqual([
+          'Are you sure you want to delete "Old Cup"? Your secret sauce will vanish forever!',
+          'Tournament "Old Cup" deleted!',
+        ]);
+        expect(await storedJson(page, SAVED_TOURNAMENTS_KEY)).toEqual([asRewritten(olderList[0])]);
+      }
+      expect(errors).toEqual(LOAD_ERRORS_WITH_STORAGE_REFUSED);
+    });
+  }
+
+  // Delete names, in its confirmation, what it will delete: for an unchecked
+  // name, the unique name it is checked to. A Delete the Organizer cancels
+  // changes nothing: the rename is applied only once Delete goes ahead.
+  test('R-TOURNAMENT-STORE, R-NAME-UNIQUE: after an unchecked Start, a cancelled Delete leaves the name, the title and the stored state unchanged', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = [];
+    page.on('dialog', (dialog) => {
+      dialogs.push(dialog.message());
+      if (dialog.type() === 'confirm') dialog.dismiss();
+      else dialog.accept();
+    });
+    // Given a saved tournament "Blocked Cup",
+    const olderList = await saveATournamentAs(context, 'Blocked Cup');
+    // and a tournament of that name started while storage was refused, which works again,
+    await startUncheckedThenRecover(page, 'Blocked Cup');
+    await page.click('#toggleSettingsBtn'); // Delete is among the settings
+    const storedState = await storedRaw(page, STATE_KEY);
+    const storedList = await storedRaw(page, SAVED_TOURNAMENTS_KEY);
+
+    // when the Organizer clicks Delete and cancels it,
+    await page.click('#deleteTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(1);
+
+    // then the confirmation named the save it would delete, under the unique name,
+    expect(dialogs).toEqual(['Are you sure you want to delete "Blocked Cup-1"? Your secret sauce will vanish forever!']);
+    // and nothing changed: the name, the title, the stored state and the saved list,
+    await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Blocked Cup');
+    expect(await storedRaw(page, STATE_KEY)).toBe(storedState);
+    expect(await storedRaw(page, SAVED_TOURNAMENTS_KEY)).toBe(storedList);
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    // and the name is still checked before a write: a Save keeps the older save.
+    await page.click('#saveTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(2);
+    expect(dialogs[1]).toBe('Tournament saved!');
+    await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup-1');
+    const savedList = await storedJson(page, SAVED_TOURNAMENTS_KEY);
+    expect(savedList.map((t) => t.tournamentName)).toEqual(['Blocked Cup', 'Blocked Cup-1']);
+    expect(savedList[0]).toEqual(asRewritten(olderList[0]));
+    expect(errors).toEqual(LOAD_ERRORS_WITH_STORAGE_REFUSED);
+  });
+
+  // Load replaces the running tournament with a saved one, whose name is its
+  // own: the name that went unchecked at Start is no longer held. (The list to
+  // load from is only shown once a Save under another name has read it.)
+  test('R-TOURNAMENT-STORE: after an unchecked Start, a loaded tournament of the same name saves over its own entry', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given a saved tournament "Blocked Cup",
+    const olderList = await saveATournamentAs(context, 'Blocked Cup');
+    // a tournament of that name started while storage was refused, which works again,
+    await startUncheckedThenRecover(page, 'Blocked Cup');
+    // and saved under another name, which lists the saved tournaments,
+    await page.click('#toggleSettingsBtn');
+    await page.fill('#tournamentName', 'Other Cup');
+    await page.click('#saveTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(1);
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(2);
+    // when the Organizer loads the saved "Blocked Cup",
+    await page.selectOption('#savedTournamentSelect', '0');
+    await page.click('#loadTournamentBtn');
+    await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup');
+
+    // and saves it,
+    await page.click('#saveTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(2);
+
+    // then it replaces its own entry, under its own name, with no "-1" copy.
+    expect(dialogs).toEqual(['Tournament saved!', 'Tournament saved!']);
+    await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Blocked Cup');
+    const savedList = await storedJson(page, SAVED_TOURNAMENTS_KEY);
+    expect(savedList.map((t) => t.tournamentName)).toEqual(['Blocked Cup', 'Other Cup']);
+    expect(savedList[0].schedule).toEqual(asRewritten(olderList[0]).schedule);
+    expect(errors).toEqual(LOAD_ERRORS_WITH_STORAGE_REFUSED);
+  });
+
+  // A Save while storage still refuses the saved list cannot check the name: it
+  // fails (the read throws) and changes nothing, so the name stays unchecked.
+  test('R-NAME-UNIQUE, R-TOURNAMENT-STORE: a Save still refused after an unchecked Start fails, and the Save once storage works keeps the older save', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given a saved tournament "Blocked Cup",
+    const olderList = await saveATournamentAs(context, 'Blocked Cup');
+    // and a tournament of that name started while the browser refuses all storage,
+    await page.addInitScript(refuseEveryStorageCall);
+    await page.goto('/');
+    await startTournament(page, 'Blocked Cup');
+    await expectTheWarning(page);
+
+    // when the Organizer clicks Save while storage is still refused,
+    await page.click('#saveTournamentBtn');
+    // then the Save fails, saving and renaming nothing;
+    await expect.poll(() => errors.length).toBe(4);
+    expect(errors).toEqual([...LOAD_ERRORS_WITH_STORAGE_REFUSED, 'pageerror: The operation is insecure.']);
+    expect(dialogs).toEqual([]);
+    await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Blocked Cup');
+
+    // when storage works again and the Organizer clicks Save,
+    await page.evaluate(() => window.liftStorageRefusal());
+    expect(await storedJson(page, SAVED_TOURNAMENTS_KEY)).toEqual(olderList);
+    await page.click('#saveTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(1);
+
+    // then the name is checked now: the older save is kept and the running
+    // tournament saved beside it, under the unique name.
+    expect(dialogs).toEqual(['Tournament saved!']);
+    await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup-1');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Blocked Cup-1');
+    const savedList = await storedJson(page, SAVED_TOURNAMENTS_KEY);
+    expect(savedList.map((t) => t.tournamentName)).toEqual(['Blocked Cup', 'Blocked Cup-1']);
+    expect(savedList[0]).toEqual(asRewritten(olderList[0]));
+    expect(errors).toHaveLength(4);
   });
 
   test('The Save button reports its own outcome, apart from the auto-save warning', async ({ page }) => {
