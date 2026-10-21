@@ -728,6 +728,7 @@
       if (!currentSchedule) return false;
       const typedName = document.getElementById("tournamentName").value.trim() || "Unnamed Tournament";
       const tournamentName = checkedTournamentName(typedName);
+      // DEFERRED: AB#104 (the rename is adopted before the write and stays if the write fails)
       adoptCheckedTournamentName(typedName, tournamentName);
       const savedTournament = {
         tournamentName: tournamentName,
@@ -805,6 +806,7 @@
         return;
       }
       const tournamentName = checkedTournamentName(typedName);
+      // DEFERRED: AB#104 (Delete of an unchecked name reports a delete nothing matched; adopting before the reset is a redundant write)
       if (confirm(`Are you sure you want to delete "${tournamentName}"? Your secret sauce will vanish forever!`)) {
         adoptCheckedTournamentName(typedName, tournamentName);
         let savedTournaments = readSavedTournaments();
@@ -827,9 +829,11 @@
     // uncheckedTournamentName, and Save and Delete check it before they write the
     // saved list (checkedTournamentName), so neither replaces nor deletes an older
     // saved tournament of that name once storage works again. Only the read of
-    // storage is caught: an error past it, in parsing the list, the migration
-    // lookup or the copy layer (readSavedTournamentsFrom), is a bug, no storage
-    // refusal, and is thrown: it must never switch the check off.
+    // storage is caught: an error past it, in the migration lookup or the copy
+    // layer (readSavedTournamentsFrom: pendingMigrationFor,
+    // copySavedTournamentList), is a bug, no storage refusal, and is thrown: it
+    // must never switch the check off. (An unparsable list throws nothing:
+    // parseStoredJson logs it and the list reads as empty.)
     // Accepted residual risk: the unchecked name is held in memory only. Once
     // storage works again the auto-save stores that name, so after a reload (or
     // in another tab) before a Save or Delete has checked it, the name is taken
@@ -837,6 +841,7 @@
     // tournament of that name.
     function getUniqueTournamentName(baseName) {
       let raw;
+      // DEFERRED: AB#104 (any error accessing storage counts as a refusal; consider narrowing)
       try {
         raw = localStorage.getItem(SAVED_TOURNAMENTS_KEY);
       } catch (err) {
@@ -851,10 +856,14 @@
     // unchecked at Start (uncheckedTournamentName). That one is checked now, as
     // Start would have: the result is the unique name (uniqueNameAmong), so that
     // neither replaces nor deletes an older saved tournament of the same name.
-    // Nothing is changed here: the action applies the result once it goes ahead
-    // (adoptCheckedTournamentName), so an action the Organizer cancels has no side
-    // effects. Storage that still refuses the saved list throws here, as the
-    // list's read in Save and Delete would, and the name stays unchecked.
+    // Neither the app's tournament state nor the saved list is changed here: the
+    // action applies the result once it goes ahead (adoptCheckedTournamentName),
+    // so an action the Organizer cancels leaves both as they were. (The list's
+    // read, as every list read does, may drop a stale pending saved-list
+    // migration once the key holds a value: pendingMigrationFor.) Storage that
+    // still refuses the saved list throws here, as the list's read in Save and
+    // Delete would, and the name stays unchecked.
+    // DEFERRED: AB#104 (Save and Delete read the saved list twice: here and for their write)
     function checkedTournamentName(typedName) {
       if (typedName !== uncheckedTournamentName) return typedName;
       return uniqueNameAmong(typedName, readSavedTournaments());
@@ -1390,7 +1399,9 @@
     }
 
     // The usable saved tournaments given raw, the saved list just read from
-    // storage (see readSavedTournaments). Reads no storage itself.
+    // storage (see readSavedTournaments). Reads no storage itself, but is not free
+    // of side effects: pendingMigrationFor may drop a stale pending saved-list
+    // migration (when raw holds a value).
     function readSavedTournamentsFrom(raw) {
       const migration = pendingMigrationFor(SAVED_TOURNAMENTS_KEY, raw);
       return copySavedTournamentList(migration ? migration.raw : raw);

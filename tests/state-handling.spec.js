@@ -4139,6 +4139,7 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   // The errors logged by a page loaded with storage refused: the load's, which
   // could not read storage (the two legacy migrations and the saved-tournament list).
+  // DEFERRED: AB#104 (use it in place of the inlined arrays; share liftStorageRefusal)
   const LOAD_ERRORS_WITH_STORAGE_REFUSED = [
     expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
     expect.stringContaining('console.error: Could not migrate a legacy localStorage value'),
@@ -4246,10 +4247,13 @@ test.describe('A visible warning when the auto-save fails', () => {
   }
 
   // Only an error from storage itself (reading the saved list's key) lets Start
-  // go on with the name unchecked. An error past that read, in parsing the list,
-  // the migration lookup or the copy layer, is a bug, not a storage refusal, and
-  // must never switch the check off: here the copy layer throws a TypeError, as
-  // a null storage does at the read.
+  // go on with the name unchecked. An error past that read, in the migration
+  // lookup or the copy layer (pendingMigrationFor, copySavedTournamentList), is
+  // a bug, not a storage refusal, and must never switch the check off: here the
+  // copy layer throws a TypeError, as a null storage does at the read. (An
+  // unparsable list throws nothing: parseStoredJson logs it and the list reads
+  // as empty.)
+  // DEFERRED: AB#104 (retag R-STATE-PERSIST; weak for R-NAME-UNIQUE)
   test('R-NAME-UNIQUE: an error in the saved list\'s copy layer stops Start rather than skipping the name check', async ({ page }) => {
     const errors = collectErrors(page);
     const dialogs = collectDialogs(page);
