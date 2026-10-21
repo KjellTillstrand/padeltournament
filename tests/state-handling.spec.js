@@ -3945,10 +3945,12 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   // Retrying a failed save. Once storage works again, the page is not told: it
   // saves nothing until it has a reason to try. While the warning is shown it
-  // tries when another tab changes this origin's storage (other than the state's
-  // own keys) and when the Organizer returns to the page, without waiting for a
-  // further change; such a retry waits a second, and the triggers arriving
-  // meanwhile join it. It also tries, at once, when the page is hidden or left.
+  // tries when another tab frees some of this origin's storage (removes or
+  // shortens a value other than the state's own) and when the Organizer returns
+  // to the page, without waiting for a further change; such a retry waits a
+  // second, the triggers arriving meanwhile join it, and any other save cancels
+  // it. It also tries, at once, when the page is hidden or left (once per way of
+  // leaving).
   const RETRY_DELAY_MS = 1000;
 
   // A tournament whose auto-save has failed: a score entered and refused, the
@@ -4238,6 +4240,130 @@ test.describe('A visible warning when the auto-save fails', () => {
     // and its own warning stays: its score is still not saved.
     await expectTheWarning(page);
     await expect(leftScore(page, 0)).toHaveValue('10');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-STATE-PERSIST: another tab shortening a value retries the failed save; adding, growing or rewriting one at its size does not', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    await refuseStateWritesOnDemand(page);
+    await page.goto('/');
+    // Another app on this shared origin holds a value.
+    await page.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'x'.repeat(100)));
+    // Given a failed auto-save is being announced, and storage is freed (so a
+    // retry here would work),
+    const storedBefore = await failASave(page, 'Shrink Cup');
+    await freeStorageQuietly(page, storedBefore);
+    const attempts = await stateWriteAttempts(page);
+    await page.evaluate(() => {
+      window.storageEventsSeen = 0;
+      window.addEventListener('storage', () => { window.storageEventsSeen++; });
+    });
+
+    // when another tab adds a value, rewrites one at its size and grows it,
+    const other = await anotherTab(context);
+    await other.evaluate(() => {
+      localStorage.setItem('another-app-new-key', 'x');
+      localStorage.setItem('another-app-on-this-origin', 'y'.repeat(100));
+      localStorage.setItem('another-app-on-this-origin', 'z'.repeat(200));
+    });
+    await expect.poll(() => page.evaluate(() => window.storageEventsSeen)).toBe(3);
+    // then none of these frees room, so none retries: past the delay nothing
+    // was tried and the warning stays,
+    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    expect(await stateWriteAttempts(page)).toBe(attempts);
+    expect(await storedRaw(page, STATE_KEY)).toBe(storedBefore);
+    await expectTheWarning(page);
+
+    // and when it then shortens the value, the Organizer changing nothing,
+    await other.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'z'));
+    // then the warning is no longer shown,
+    await expectNoWarning(page);
+    await other.close();
+    // and progress is saved: the score entered while saving failed is stored and restored.
+    await expectTheScoreSavedAndRestored(page);
+    expect(errors).toEqual([]);
+  });
+
+  test('A save made while a retry is pending cancels the retry, which would only repeat it', async ({ page }) => {
+    const errors = collectErrors(page);
+    await refuseStateWritesOnDemand(page);
+    await page.goto('/');
+    // Given storage still refuses the state and the warning is shown,
+    await failASave(page, 'Cancel Cup');
+    const refused = await refusedStateWrites(page);
+
+    // when a retry is pending (a return to the window) and the Organizer enters
+    // a score before it runs,
+    await page.evaluate(() => window.dispatchEvent(new FocusEvent('focus')));
+    await expectARefusedSave(page, () => leftScore(page, 1).fill('20'));
+    // then that save was tried, and the pending retry is not: past its delay,
+    // the score's save is the only attempt.
+    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    expect(await refusedStateWrites(page)).toBe(refused + 1);
+
+    // And when a retry is pending and the page is hidden before it runs, the
+    // save on hiding is tried at once and the retry is not.
+    await page.evaluate(() => {
+      window.dispatchEvent(new FocusEvent('focus'));
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+      delete document.visibilityState;
+    });
+    expect(await refusedStateWrites(page)).toBe(refused + 2);
+    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    expect(await refusedStateWrites(page)).toBe(refused + 2);
+    await expectTheWarning(page);
+    await expect(rightScore(page, 1)).toHaveValue('4');
+    expect(errors).toEqual([]);
+  });
+
+  test('One way of leaving tries the save once while saves fail, not again on each of its events', async ({ page }) => {
+    const errors = collectErrors(page);
+    await refuseStateWritesOnDemand(page);
+    await page.goto('/');
+    // Given storage still refuses the state and the warning is shown,
+    await failASave(page, 'Unload Cup');
+    const attempts = await stateWriteAttempts(page);
+    const hide = () => page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    const show = () => page.evaluate(() => {
+      delete document.visibilityState;
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    // when the page is closed on a desktop browser (beforeunload, then hidden,
+    // then pagehide),
+    const prompted = await page.evaluate(() => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    await hide();
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false })));
+    // then the save was tried once, on beforeunload, which asked for the prompt.
+    expect(prompted).toBe(true);
+    expect(await stateWriteAttempts(page)).toBe(attempts + 1);
+
+    // When the Organizer stays, comes back to the page and switches away again,
+    // the switch tries the save anew, at once (cancelling the retry the return set up).
+    await show();
+    await hide();
+    expect(await stateWriteAttempts(page)).toBe(attempts + 2);
+    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    expect(await stateWriteAttempts(page)).toBe(attempts + 2);
+
+    // When the page is shown again from the cache and then left as many mobile
+    // browsers do (pagehide, then hidden), the save is tried once more, once.
+    await page.evaluate(() => {
+      delete document.visibilityState;
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    });
+    await hide();
+    expect(await stateWriteAttempts(page)).toBe(attempts + 3);
+    await expectTheWarning(page);
     expect(errors).toEqual([]);
   });
 

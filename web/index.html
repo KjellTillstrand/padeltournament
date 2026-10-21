@@ -214,6 +214,8 @@
     let currentRoundIndex = 0; // 0-indexed
     let courtNames = []; // custom court names, index 0 = court 1; empty = use the default name
     let autoSaveFailing = false; // whether the last auto-save of the state failed (see reportAutoSave)
+    let autoSaveRetryTimer = null; // the pending retry of a failed auto-save, if any (see retryFailedAutoSave)
+    let leavingSaveTried = false; // whether the latest save was tried on leaving the page (see saveOnLeaving)
     // The name the running tournament started under when Start could not check
     // it against the saved tournaments (getUniqueTournamentName), or null: it may
     // be a saved tournament's name. While the name input holds this name, Save
@@ -227,9 +229,9 @@
     // is known: the changes are not being saved now, and the next auto-save that
     // works saves the whole state, the changes made meanwhile included. It names
     // the triggers the Organizer controls: the next change that saves, and
-    // returning to the page (retryFailedAutoSave; a storage change in another
-    // tab retries too). It claims no more: the warning stays until a save has
-    // worked, so while it shows, nothing is saved.
+    // returning to the page (retryFailedAutoSave; another tab freeing storage
+    // retries too, see storageChangeMayFreeRoom). It claims no more: the warning
+    // stays until a save has worked, so while it shows, nothing is saved.
     // It names no cause (a failed write may be full or blocked storage, or a state
     // that cannot be serialized) and points at no in-app action: the only way the
     // app frees storage, Delete Tournament, also resets the running tournament.
@@ -337,6 +339,7 @@
     migrateLegacyStorage();
 
     // Update header when tournament name changes.
+    // DEFERRED: AB#105 (the rename is not auto-saved on input; the leave prompt covers only a shown warning, so a rename after storage fills can be lost without a prompt)
     document.getElementById("tournamentName").addEventListener("input", function () {
       document.getElementById("tournamentTitle").textContent = this.value || "Tournament Title";
     });
@@ -351,6 +354,10 @@
     function saveTournamentState() {
       if (!initialRestoreBegun) return;
       if (!initialRestoreDone && pendingMigrations[STATE_KEY]) return;
+      // This is now the latest attempt: a pending retry would only repeat it, and
+      // leaving the page tries again after it (see retryFailedAutoSave, saveOnLeaving).
+      cancelAutoSaveRetry();
+      leavingSaveTried = false;
       const state = {
         schedule: currentSchedule,
         currentRoundIndex: currentRoundIndex,
@@ -397,7 +404,8 @@
     // It reads only bindings declared above the early migrateLegacyStorage() call
     // (autoSaveFailing, AUTO_SAVE_WARNING) and an element that precedes this script.
     // While it is shown, a failed save is retried without a change, and leaving
-    // the page asks first (see retryFailedAutoSave and the beforeunload handler).
+    // the page tries again and may ask first (see retryFailedAutoSave, saveOnLeaving
+    // and the beforeunload handler).
     function reportAutoSave(saved) {
       if (autoSaveFailing === !saved) return; // no change of outcome
       autoSaveFailing = !saved;
@@ -2413,6 +2421,7 @@
     window.addEventListener("beforeunload", function (event) {
       const warningShown = autoSaveFailing;
       saveTournamentState();
+      leavingSaveTried = true; // the hide and pagehide that follow need not repeat it
       if (warningShown && autoSaveFailing) {
         event.preventDefault();
         event.returnValue = true; // legacy: older browsers (e.g. Chrome < 119) prompt only on a non-empty returnValue
@@ -2420,53 +2429,83 @@
     });
 
     // While the auto-save warning is shown, retry the save without waiting for the
-    // Organizer's next change: when this origin's storage changes in another tab
-    // (space may have been freed), and when the Organizer comes back to this page
-    // (storage may have been freed or unblocked meanwhile). A retry that works
-    // clears the warning; one that fails changes nothing (see reportAutoSave).
-    // While saving works, these events do nothing.
+    // Organizer's next change: when the Organizer comes back to this page (visible
+    // again, the window focused, or the page restored from the back/forward
+    // cache: storage may have been freed or unblocked meanwhile), and when another
+    // tab's storage change can have made room (see storageChangeMayFreeRoom). A
+    // retry that works clears the warning; one that fails changes nothing (see
+    // reportAutoSave). While saving works, these events do nothing.
     // The retry waits AUTO_SAVE_RETRY_DELAY_MS, and the triggers arriving meanwhile
-    // join it: at most one retry is pending at a time, so no pattern of events
-    // (another app on this origin writing on every keystroke, two failing tabs
-    // answering each other's writes) can drive a loop of saves.
-    // A storage event for the state's own keys is no trigger: it frees no room
-    // here, and answering it would at once write this tab's state over the one
-    // another tab has just saved or removed. Nor is the migrated marker's: a
-    // failing save of a pending legacy state writes and removes it, so two
-    // failing tabs would answer each other forever.
-    // Accepted multi-tab risk (localStorage has no compare-and-set): a retry on
-    // returning to this page (or on a storage event for another key) still writes
-    // this tab's state over a newer one another tab has saved meanwhile, as any
-    // save from a tab left open with older state already does.
+    // join it: at most one retry is pending at a time, so these events never drive
+    // more than one save attempt per second, whatever another tab writes. Any
+    // other save (a change, or leaving the page) cancels a pending retry, which
+    // would only repeat it.
+    // Accepted multi-tab risk (localStorage has no compare-and-set): a save
+    // writes this tab's whole state, so a retry can overwrite a newer state
+    // another tab has saved, or undo its removal of the state (Delete Tournament,
+    // New Tournament). The storage filter stops only the direct trigger: an event
+    // for the state's own keys. A retry still follows another tab's companion
+    // write that frees room (Delete shrinks the saved list, a finished migration
+    // removes the legacy value), or the Organizer's return to this tab, as any
+    // save from a tab left open with older state already could. What AB#91 adds:
+    // a tab can now write without the Organizer changing anything in it, on
+    // returning to it, on a freeing storage event while it is in the background
+    // (after the delay), and on being hidden or left (at once, with no delay).
     const AUTO_SAVE_RETRY_DELAY_MS = 1000;
-    let autoSaveRetryPending = false;
     function retryFailedAutoSave() {
-      if (!autoSaveFailing || autoSaveRetryPending) return;
-      autoSaveRetryPending = true;
-      setTimeout(function () {
-        autoSaveRetryPending = false;
+      if (!autoSaveFailing || autoSaveRetryTimer !== null) return;
+      autoSaveRetryTimer = setTimeout(function () {
+        autoSaveRetryTimer = null;
         if (autoSaveFailing) saveTournamentState();
       }, AUTO_SAVE_RETRY_DELAY_MS);
     }
+    function cancelAutoSaveRetry() {
+      if (autoSaveRetryTimer === null) return;
+      clearTimeout(autoSaveRetryTimer);
+      autoSaveRetryTimer = null;
+    }
+    // Whether another tab's storage change can have made room for this tab's
+    // state: storage cleared, a key removed, or a value made shorter. A key added,
+    // grown or rewritten at its size frees nothing. The state's own keys never
+    // count: a removed or shorter state is another tab's Delete, New Tournament or
+    // newer save, which a retry would at once undo (resurrecting a deleted
+    // tournament) or overwrite. And a failing save of a pending legacy state
+    // writes and then removes the migrated marker, so two failing tabs answering
+    // each other's marker would retry for as long as both fail.
+    function storageChangeMayFreeRoom(event) {
+      if (event.key === STATE_KEY || event.key === STATE_MIGRATED_KEY) return false;
+      return event.key === null || event.newValue === null ||
+        (event.oldValue !== null && event.newValue.length < event.oldValue.length);
+    }
     window.addEventListener("storage", function (event) {
-      if (event.key === STATE_KEY || event.key === STATE_MIGRATED_KEY) return;
-      retryFailedAutoSave();
+      if (storageChangeMayFreeRoom(event)) retryFailedAutoSave();
     });
     window.addEventListener("focus", retryFailedAutoSave);
     window.addEventListener("pageshow", function (event) {
+      leavingSaveTried = false; // the page is shown again: leaving it later saves anew
       if (event.persisted) retryFailedAutoSave(); // back to the page from the back/forward cache
     });
     // Leaving the page (switching away, or the page being hidden for good) while
     // saves fail: try once more, at once, as the page may be frozen or discarded
-    // next and many mobile browsers never fire beforeunload. No prompt here.
-    function saveOnHideWhileFailing() {
-      if (autoSaveFailing) saveTournamentState();
+    // next and many mobile browsers never fire beforeunload. No prompt here. One
+    // way of leaving fires several events (beforeunload, then hidden and
+    // pagehide): only the first tries, until the page is shown again or another
+    // save runs (leavingSaveTried). Until then nothing has been saved since that
+    // attempt, so a repeat would write the same state.
+    function saveOnLeaving() {
+      if (!autoSaveFailing || leavingSaveTried) return;
+      saveTournamentState();
+      leavingSaveTried = true;
     }
     document.addEventListener("visibilitychange", function () {
-      if (document.visibilityState === "visible") retryFailedAutoSave();
-      else saveOnHideWhileFailing();
+      if (document.visibilityState === "visible") {
+        leavingSaveTried = false;
+        retryFailedAutoSave();
+      } else {
+        saveOnLeaving();
+      }
     });
-    window.addEventListener("pagehide", saveOnHideWhileFailing);
+    window.addEventListener("pagehide", saveOnLeaving);
 
     // Randomize players on tournament start.
     function updatePlayerNamesFromInputs() {
