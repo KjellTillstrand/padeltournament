@@ -323,7 +323,7 @@ test.describe('Phone layout', () => {
         expect(await expectScoreInputsInsideTheirCourtsAndUncovered(restored)).toBe(4);
       });
 
-      test('long unbroken names stay inside their boxes: player names wrap, a court name is cut with an ellipsis', async ({ page }) => {
+      test('long unbroken names in the title, team labels and scoreboard wrap, and a court label cuts one with an ellipsis', async ({ page }) => {
         const longTitle = 'TheAnnualMidsummerPadelTurrarCharityInvitationalTournament2026';
         const longCourt = 'W'.repeat(30); // the court name input's limit, too wide for any court
         await page.goto('/');
@@ -363,6 +363,90 @@ test.describe('Phone layout', () => {
         expect(boxes.label.textOverflow).toBe('ellipsis');
         await expectScoreInputsInsideTheirCourtsAndUncovered(page);
         await expect(await pointsOf(page, wideName(0))).toHaveText('0');
+      });
+
+      test('the resting players strip wraps a long unbroken name', async ({ page }) => {
+        // Nine players of the widest 20-character names: whoever rests has one.
+        const names = Array.from({ length: 9 }, (_, i) => 'W'.repeat(19) + String.fromCharCode(65 + i));
+        await page.goto('/');
+        await chooseTheTournament(page, { format: 'americano', schedule: '9p9r.js', courts: 2 });
+        for (const [i, name] of names.entries()) await page.fill(`#playerInput_${i}`, name);
+        await startTheTournament(page, 'Resting Cup');
+        const strip = page.locator('.resting-players');
+        await expect(strip).toContainText(/W{19}[A-I]/);
+        await expectNoSidewaysScroll(page);
+        await expectAllWithinTheScreenWidth(page, '.resting-players');
+        expect(await strip.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+      });
+
+      test('the Mexicano status line wraps a long unbroken court name', async ({ page }) => {
+        const longCourt = 'W'.repeat(30); // the court name input's limit
+        await page.goto('/');
+        await chooseTheTournament(page, { format: 'mexicano', players: 12, courts: 3 });
+        await page.fill('#courtNameInput_1', longCourt);
+        await startTheTournament(page, 'Status Cup');
+        await expect(page.locator('#nextRoundStatus')).toContainText(longCourt);
+        await expectNoSidewaysScroll(page);
+        await expectAllWithinTheScreenWidth(page, '#nextRoundStatus');
+        expect(await page.locator('#nextRoundStatus').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+      });
+    });
+  }
+
+  // Save and New Tournament stay put from round to round, so a tap that went
+  // to NEXT ROUND or PREVIOUS ROUND in one round never lands on them in the
+  // next (New Tournament's dialog can discard the tournament).
+  for (const width of [320, 360, 390, 412, 430]) {
+    test.describe(`at ${width}x844`, () => {
+      test.use({ viewport: { width, height: PHONE.height } });
+
+      // The page position of Save and New Tournament, and the screen box of a
+      // button, as a finger meets it.
+      const saveAndNewOnThePage = (page) => page.evaluate(() =>
+        ['#saveTournamentBtn', '#newTournamentBtn'].map((selector) => {
+          const r = document.querySelector(selector).getBoundingClientRect();
+          return [r.left + window.scrollX, r.top + window.scrollY, r.width, r.height].map(Math.round);
+        }));
+      const intersects = (a, b) =>
+        a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+      async function expectSaveAndNewClearOf(page, tapped) {
+        for (const id of ['#saveTournamentBtn', '#newTournamentBtn']) {
+          const box = await page.locator(id).boundingBox();
+          expect(intersects(box, tapped), `${id} clear of the button just tapped`).toBe(false);
+        }
+      }
+
+      test('Save and New Tournament keep their place in every round, clear of where NEXT and PREVIOUS were', async ({ page }) => {
+        // Americano, 12 players: 11 rounds.
+        await page.goto('/');
+        await startTheTournament(page, 'Tap Cup');
+        const roundOne = await saveAndNewOnThePage(page);
+        for (let round = 2; round <= 11; round++) {
+          const next = page.getByRole('button', { name: 'NEXT ROUND', exact: true });
+          const tapped = await next.boundingBox();
+          await next.click();
+          await expect(page.locator('.round-header .left')).toHaveText('Round ' + round);
+          expect(await saveAndNewOnThePage(page), 'round ' + round).toEqual(roundOne);
+          await expectSaveAndNewClearOf(page, tapped);
+        }
+        await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
+
+        // Mexicano: back from round 2 to round 1.
+        page.on('dialog', (dialog) => dialog.accept());
+        await page.click('#newTournamentBtn');
+        await chooseTheTournament(page, { format: 'mexicano', players: 12, courts: 3 });
+        await startTheTournament(page, 'Tap Cup Mexicano');
+        const matches = page.locator('.matches-container .match');
+        for (let i = 0; i < 3; i++) await matches.nth(i).locator('.result-overlay-left input').fill('12');
+        await page.click('#generateNextRoundBtn');
+        await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+        const roundTwo = await saveAndNewOnThePage(page);
+        const previous = page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true });
+        const tapped = await previous.boundingBox();
+        await previous.click();
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+        expect(await saveAndNewOnThePage(page)).toEqual(roundTwo);
+        await expectSaveAndNewClearOf(page, tapped);
       });
     });
   }
