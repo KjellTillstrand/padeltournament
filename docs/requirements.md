@@ -46,7 +46,7 @@ This document outlines the functional and non-functional requirements for the Pa
 ### 5. Tournament Workflow
 - **Start Tournament:**  
   - When starting the tournament, the application validates that a tournament name is provided (and auto-generates a unique name if necessary).
-  - Player names are randomized if needed.
+  - In Americano, the player names are randomized when the tournament starts: they are shuffled onto the schedule's player positions. Mexicano does not shuffle the names; its randomness is the round-1 draw (see Mexicano Round Lifecycle below).
   - The settings are disabled and hidden from view once the tournament starts.
 - **Round Navigation:**  
   - The interface displays the current round along with navigation controls.
@@ -58,13 +58,13 @@ This document outlines the functional and non-functional requirements for the Pa
   - Each match has score input fields for each team. When a score is entered for one team, the corresponding team’s score is automatically calculated based on the selected global total.
 - **Mexicano Round Lifecycle:**  
   - Rounds are generated one at a time. Round 1 is a random draw, made once when the tournament starts.
-  - Every later round is paired from the standings after the latest round (see §6): the fielded players are grouped in fours by rank (1st-4th, 5th-8th, ...), and within each group 1st and 4th play against 2nd and 3rd. Court 1 holds the top group.
+  - Every later round is paired from the standings after the latest round (see §6): the fielded players are grouped in fours by rank (1st-4th, 5th-8th, ...), and within each group 1st and 4th play against 2nd and 3rd. Court 1 holds the top group. Players who share a placement are taken in player-list order (in Mexicano, the order of the player-name inputs), which is the order the standings list them in.
   - At a count that is not a multiple of 4, the resting players are chosen before the groups are formed. In round 1 nobody has rested yet, so the players drawn last in the random draw rest. From round 2 on, the players with the fewest rests so far sit the round out; among equally rested players the lowest-ranked rests first.
   - "GENERATE NEXT ROUND" is offered on the latest round and works only once every match in it has a complete, valid score (the two scores sum to the points total). Until then the app names the courts still waiting for a score and marks them.
   - Generating the next round locks the scores of every earlier round: they remain viewable through round navigation but can no longer be edited. Generating asks the Organizer to confirm the scores it locks: it first shows every match of the round with both teams and their scores, and nothing is generated until the Organizer confirms. A Mexicano tournament stops at 128 rounds: once the 128th round is reached, no further round can be generated.
   - Americano is unaffected: every round's scores stay editable.
 - **Tournament Control Functions:**  
-  - The user can save, load, and delete tournaments via provided controls.
+  - The user can save, load, and delete tournaments: "Save Tournament" is in the round header; loading and deleting a saved tournament are in the settings panel (reopened during play with the "Tournament Settings" button).
   - The "New Tournament" function offers an option to save the current tournament before clearing the state for a new setup.
 
 ### 6. Standings and Tiebreak
@@ -72,7 +72,8 @@ This document outlines the functional and non-functional requirements for the Pa
 - When exactly two players are level on points, the one who scored more points across the games where they were on opposing teams ranks higher.
 - Two level players who never opposed each other, or whose mutual games are also level, share the same placement. A tie between three or more players is always shared.
 - Shared placements follow standard competition ranking: players sharing a placement repeat it and the next placement is skipped (1, 1, 3).
-- Mexicano pairs each new round by these same standings.
+- Players who share a placement are listed in player-list order: the standings are sorted by points with a stable sort, so tied players keep the order of the player list.
+- Mexicano pairs each new round by these same standings, in the order they list the players, so players sharing a placement are taken in player-list order for pairing.
 
 ## Non-Functional Requirements
 
