@@ -569,8 +569,9 @@ test.describe('R-TIEBREAK-H2H: Head-to-head tiebreak, then shared placement', ()
 // redraw timer fires only when a test runs the clock: no keystroke can be slow
 // enough to let it fire in between, whatever the machine's speed.
 // Any test that fills a partial score (one more digit could still make it a
-// valid score: 1-2 out of 16-24, 1-3 out of 32) and then reads the standings
-// must leave the input (blur) or poll: the redraw is still pending.
+// valid score: 1 out of 16, 1-2 out of 21-24, 1-3 out of 32, or an emptied
+// input) and then reads the standings must leave the input (blur) or poll: the
+// redraw is still pending.
 const CLOCK_START = new Date('2026-01-01T10:00:00Z');
 
 const InstallThePageClock = async (actor) => {
@@ -846,5 +847,44 @@ test.describe('Mexicano pairing right after a score is typed', () => {
     ]);
     // and the standings shown are that ranking.
     expect((await organizer.asksFor(Standings)).map(({ player }) => player)).toEqual(ranking);
+  });
+
+  test('a refused Generate activated without leaving the score input shows the standings with the score typed', async ({ page }) => {
+    const organizer = theOrganizer(page);
+    const names = ['Ana', 'Ben', 'Cal', 'Dan', 'Eva', 'Fay', 'Gil', 'Hux'];
+
+    // Given an 8-player Mexicano tournament on its first round, the page clock
+    // paused, its first game still missing a score,
+    await organizer.attemptsTo(InstallThePageClock);
+    await page.goto('/');
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+    await organizer.attemptsTo(PauseThePageClock);
+    await page.selectOption('#formatSelect', 'mexicano');
+    await page.selectOption('#playerCountSelect', '8');
+    for (const [index, name] of names.entries()) await organizer.attemptsTo(NameAPlayer(index, name));
+    await organizer.attemptsTo(StartTheTournament('Mexicano Refused'));
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    const second = page.locator('.matches-container .match').nth(1);
+    const [left, right] = await second.evaluate((m) => [m.dataset.teamLeft.split(','), m.dataset.teamRight.split(',')]);
+
+    // and "1" typed into the second game's score (1-23), its redraw pending.
+    await second.locator('.result-overlay-left input').focus();
+    await page.keyboard.type('1');
+    await expect(second.locator('.result-overlay-right input')).toHaveValue('23');
+    await expect(second.locator('.result-overlay-left input')).toBeFocused();
+
+    // When "Generate next round" is activated without focus leaving the input
+    // (as a tap on some touch browsers does), no time passing on the page.
+    await page.locator('#generateNextRoundBtn').evaluate((button) => button.click());
+    await expect(second.locator('.result-overlay-left input')).toBeFocused();
+
+    // Then it is refused, saying which court still waits for a score,
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#nextRoundStatus')).toHaveText(/^Waiting for a valid score on: /);
+    // and the standings show the 1-23 result at once.
+    const points = Object.fromEntries((await organizer.asksFor(Standings)).map(({ player, points: p }) => [player, p]));
+    for (const player of right) expect(points[player], player).toBe(23);
+    for (const player of left) expect(points[player], player).toBe(1);
   });
 });

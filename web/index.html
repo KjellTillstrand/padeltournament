@@ -775,6 +775,9 @@
       const selectedIndex = parseInt(dropdown.value, 10);
       if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
         const selectedTournament = savedTournaments[selectedIndex];
+        // Drop the replaced tournament's pending redraw before anything else, so a
+        // throw before displayRound (which would replace it) cannot leave it alive.
+        cancelStandingsRedraw();
         abandonPendingState(); // the loaded tournament replaces the one held
         uncheckedTournamentName = null; // its name is the saved tournament's own
         currentSchedule = selectedTournament.schedule;
@@ -2082,6 +2085,10 @@
     // is never natively disabled, so click, Enter and Space all land here.
     function generateNextRound() {
       if (!isMexicanoPlay()) return;
+      // Draw a pending standings redraw first: a tap that does not move focus off
+      // the score input (no blur, as on some touch browsers) would otherwise leave
+      // the standings stale on the refused path, which redraws nothing.
+      flushStandingsRedraw();
       const rounds = currentSchedule.rounds;
       if (matchesMissingAScore().length > 0 || rounds.length >= MAX_ROUNDS) {
         // Refused: say why again, though nothing changed.
@@ -2263,10 +2270,12 @@
     // and nothing reads the drawn standings: Mexicano pairs by computeStandings,
     // which reads the recorded results. A pending redraw is drawn at once when the
     // entry ends (the score input's change or blur, or an entry no further digit
-    // can turn into another score), replaced by any other redraw (displayRound on
-    // round navigation, a generated round or a loaded tournament: see
-    // updateAllScoreboards), and dropped when no scoreboard is left to redraw (see
-    // resetTournamentMemory, loadScheduleFromModule and displayRound).
+    // can turn into another score) and when "Generate next round" is activated
+    // (generateNextRound), replaced by any other redraw (displayRound on round
+    // navigation, a generated round or a loaded tournament: see
+    // updateAllScoreboards), and dropped with the tournament or scoreboard it was
+    // for (see resetTournamentMemory, loadTournament, loadScheduleFromModule and
+    // displayRound).
     // 300 ms, the top of the range decided for it (150-300 ms), to leave the most
     // room for a slow second digit (typing on a phone keyboard may well be
     // slower than on a desktop one); the wait is felt only after a lone first
