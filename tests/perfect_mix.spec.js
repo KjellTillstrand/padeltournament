@@ -1,23 +1,9 @@
 const { test, expect } = require('@playwright/test');
-const fs = require('fs');
-const path = require('path');
+const { loadScheduleData } = require('./schedule-data.js');
 
 // R-PERFECT-MIX: every shipped full-length schedule is a whist tournament —
 // over all rounds each pair of players partners exactly once and opposes
 // exactly twice. These checks read the schedule data directly; no page needed.
-
-const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
-
-// Read a schedule module as pure data, never executing it: the file must be
-// exactly `window.schedule<name> = ` followed by a JSON document. JSON.parse
-// rejects anything else (embedded or trailing code), so a table that is code
-// rather than data fails here.
-function loadSchedule(name) {
-  const source = fs.readFileSync(path.join(SCHEDULE_DIR, `${name}.js`), 'utf8');
-  const prefix = `window.schedule${name} = `;
-  expect(source.startsWith(prefix), `${name}.js starts with "${prefix}"`).toBe(true);
-  return JSON.parse(source.slice(prefix.length));
-}
 
 // Count partner and opponent meetings for every unordered pair of players.
 function meetingCounts(schedule) {
@@ -63,7 +49,7 @@ test.describe('Perfect-mix schedules', () => {
   for (const { players: n, rounds } of SIZES) {
     test(`R-PERFECT-MIX: ${n}-player schedule partners once and opposes twice`, () => {
       const name = `${n}p${rounds}r`;
-      const schedule = loadSchedule(name);
+      const schedule = loadScheduleData(name);
       expect(schedule, `window.schedule${name} is defined`).toBeTruthy();
 
       // Shape: player labels, round count, courts per round, full attendance.
@@ -91,7 +77,7 @@ test.describe('Perfect-mix schedules', () => {
 
     test(`R-PERFECT-MIX: ${n}-player schedule puts every player on every court`, () => {
       const name = `${n}p${rounds}r`;
-      const schedule = loadSchedule(name);
+      const schedule = loadScheduleData(name);
       const missed = [];
       for (const player of schedule.players) {
         for (let court = 1; court <= n / 4; court++) {

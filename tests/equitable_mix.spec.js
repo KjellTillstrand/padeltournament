@@ -1,6 +1,7 @@
 const { test, expect } = require('@playwright/test');
-const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
+const { loadScheduleData } = require('./schedule-data.js');
 
 // R-EQUITABLE-MIX: the scheduling engine (scheduler/engine) produces an
 // equitable schedule for any player and round count — no repeated partners,
@@ -9,7 +10,6 @@ const path = require('path');
 // engine directly and count meetings from its output; no page needed.
 
 const ENGINE_DIR = path.join(__dirname, '..', 'scheduler', 'engine');
-const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 
 let generateSchedule;
 let defaultSeed;
@@ -18,11 +18,11 @@ let rest;
 let feasibility;
 let exhaustive;
 test.beforeAll(async () => {
-  ({ generateSchedule, defaultSeed } = await import(path.join(ENGINE_DIR, 'index.mjs')));
-  ({ searchSchedule } = await import(path.join(ENGINE_DIR, 'search.mjs')));
-  rest = await import(path.join(ENGINE_DIR, 'rest.mjs'));
-  feasibility = await import(path.join(ENGINE_DIR, 'feasibility.mjs'));
-  ({ exhaustive } = await import(path.join(ENGINE_DIR, 'prove-infeasible.mjs')));
+  ({ generateSchedule, defaultSeed } = await import(pathToFileURL(path.join(ENGINE_DIR, 'index.mjs')).href));
+  ({ searchSchedule } = await import(pathToFileURL(path.join(ENGINE_DIR, 'search.mjs')).href));
+  rest = await import(pathToFileURL(path.join(ENGINE_DIR, 'rest.mjs')).href);
+  feasibility = await import(pathToFileURL(path.join(ENGINE_DIR, 'feasibility.mjs')).href);
+  ({ exhaustive } = await import(pathToFileURL(path.join(ENGINE_DIR, 'prove-infeasible.mjs')).href));
 });
 
 // Structural check: every round seats each player exactly once, on courts
@@ -429,14 +429,10 @@ test.describe('Equitable schedules for any length', () => {
     // first base round).
     for (const n of [8, 12, 16, 20, 24]) {
       const name = `${n}p${n - 1}r`;
-      const source = fs.readFileSync(path.join(SCHEDULE_DIR, `${name}.js`), 'utf8');
-      const prefix = `window.schedule${name} = `;
-      expect(source.startsWith(prefix), `${name}.js starts with "${prefix}"`).toBe(true);
+      const shipped = loadScheduleData(name);
       const { equity, ...table } = generateSchedule({ players: n, rounds: n - 1 });
       expect(equity.optimal, `${name}: equity.optimal`).toBe(true);
-      expect(table, `${name}: engine output equals the shipped table`).toEqual(
-        JSON.parse(source.slice(prefix.length))
-      );
+      expect(table, `${name}: engine output equals the shipped table`).toEqual(shipped);
     }
   });
 
