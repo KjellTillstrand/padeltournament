@@ -505,6 +505,10 @@ test.describe('Malformed or hostile persisted state', () => {
     const confirmation = page.locator('#generateConfirmation');
     await page.click('#generateNextRoundBtn');
     await expect(confirmation).toBeVisible();
+    // A click on Confirm is taken only once the scores have been on screen for
+    // the app's guard time: wait it out.
+    await page.waitForFunction(
+      () => performance.now() - generateConfirmationShownAt >= CONFIRM_ACTIVATION_GUARD_MS, null, { polling: 50 });
     await confirmation.getByRole('button', { name: 'Confirm and generate', exact: true }).click();
     await expect(confirmation).toBeHidden();
   }
@@ -542,6 +546,7 @@ test.describe('Malformed or hostile persisted state', () => {
     // The next round is not offered (aria-disabled, AB#70), and a click generates nothing.
     await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'true');
     await page.locator('#generateNextRoundBtn').click({ force: true });
+    await expect(page.locator('#generateConfirmation')).toBeHidden(); // refused: nothing to confirm (AB#95)
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
     // Round 1 stays viewable and locked.
@@ -2356,6 +2361,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expectErrorsOnScreen(page, ['whole number from 0 to 24', '']);
     await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'true');
     await page.locator('#generateNextRoundBtn').click({ force: true });
+    await expect(page.locator('#generateConfirmation')).toBeHidden(); // refused: nothing to confirm (AB#95)
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
     // until the Organizer enters a real score on that court.

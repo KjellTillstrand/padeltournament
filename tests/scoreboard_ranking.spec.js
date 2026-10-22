@@ -608,11 +608,14 @@ const TheStoredResultOfTheFirstMatch = (roundIndex) => async (actor) => {
 };
 
 // Mexicano "Generate next round": it asks to confirm the scores it locks (AB#95),
-// and the Organizer confirms.
+// and the Organizer confirms. A click on Confirm is taken only once the scores
+// have been on screen for the app's guard time; the page clock is paused here,
+// so that time is let pass on it.
 const GenerateTheNextRound = async (actor) => {
   const confirmation = actor.page.locator('#generateConfirmation');
   await actor.page.locator('#generateNextRoundBtn').click();
   await expect(confirmation).toBeVisible();
+  await actor.attemptsTo(LetTimePass(await actor.page.evaluate(() => CONFIRM_ACTIVATION_GUARD_MS)));
   await confirmation.getByRole('button', { name: 'Confirm and generate', exact: true }).click();
   await expect(confirmation).toBeHidden();
 };
@@ -856,7 +859,8 @@ test.describe('Mexicano pairing right after a score is typed', () => {
     // When the Organizer types "1" into the second game's score, completing the
     // round at 1-23, and at once generates the next round, confirming the scores
     // it locks. (This guards the requirement end to end, whatever the means: the
-    // pairing reads the recorded results, and the click leaves the input first.)
+    // pairing reads the recorded results, and activating Generate draws any
+    // pending standings redraw before the confirmation opens: requestNextRound.)
     await page.locator('.result-overlay-left input').nth(1).focus();
     await page.keyboard.type('1');
     await expect(page.locator('.result-overlay-right input').nth(1)).toHaveValue('23');

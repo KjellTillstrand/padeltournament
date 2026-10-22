@@ -222,7 +222,12 @@
     <!-- Focused on open: the scores are to be read before either button is used. -->
     <h2 id="generateConfirmationTitle" tabindex="-1"></h2>
     <p id="generateConfirmationText"></p>
-    <ul id="generateConfirmationScores"></ul>
+    <!-- Says when the scores changed while it was open (see
+         confirmGenerateNextRound). A live region inside the dialog: the page
+         behind it, #nextRoundAnnouncement included, is inert while it is open. -->
+    <p id="generateConfirmationChanged" class="confirm-changed" role="status"></p>
+    <!-- role="list": list-style none drops the list role in WebKit (VoiceOver). -->
+    <ul id="generateConfirmationScores" role="list"></ul>
     <div class="dialog-buttons">
       <button type="button" id="generateConfirmationBack">Back to scores</button>
       <button type="button" id="generateConfirmationConfirm">Confirm and generate</button>
@@ -2122,12 +2127,14 @@
     }
 
     // The latest round as generating would lock it (each match's court, teams and
-    // recorded result), as text to compare: see confirmGenerateNextRound.
+    // recorded result, and the points pool they are scored to), as text to
+    // compare: see confirmGenerateNextRound.
     function latestRoundAsLocked() {
       const rounds = currentSchedule.rounds;
       const latest = rounds[rounds.length - 1];
       return JSON.stringify({
         rounds: rounds.length,
+        pool: totalPoints,
         matches: latest.matches.map(match => ({ court: match.court, teams: match.teams, result: match.result }))
       });
     }
@@ -2135,6 +2142,12 @@
     // What the open confirmation shows ({ schedule, locked }), or null when it is
     // closed.
     let generateConfirmationShows = null;
+    // A pointer activation of Confirm this soon after the confirmation shows its
+    // scores is not taken: the second click or tap of a double one on Generate
+    // can land on Confirm, drawn where Generate was, before anything was read.
+    const CONFIRM_ACTIVATION_GUARD_MS = 500;
+    let generateConfirmationShownAt = 0; // performance.now() when the scores were last shown
+    const SCORES_CHANGED_TEXT = "The scores changed since you asked. Check them and confirm again.";
 
     // Ask before generating (AB#95). Score entry completes the other side from
     // the first digit, so the "1" typed on the way to "12" makes the match a
@@ -2149,16 +2162,25 @@
     function openGenerateConfirmation() {
       const dialog = document.getElementById("generateConfirmation");
       if (dialog.open) return;
+      document.getElementById("generateConfirmationChanged").textContent = "";
+      showTheScoresToConfirm();
+      dialog.returnValue = "";
+      dialog.showModal();
+      document.getElementById("generateConfirmationTitle").focus();
+    }
+
+    // Fill the confirmation with the latest round's scores as they are now, and
+    // remember what it shows and when.
+    function showTheScoresToConfirm() {
       const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
-      const title = document.getElementById("generateConfirmationTitle");
-      title.textContent = "Lock the scores of round " + latest.roundNumber + "?";
+      document.getElementById("generateConfirmationTitle").textContent =
+        "Lock the scores of round " + latest.roundNumber + "?";
       document.getElementById("generateConfirmationText").textContent =
         "Generating round " + (latest.roundNumber + 1) + " locks these scores: " +
         "its pairings are made from them, and they can no longer be changed.";
       // Court and player names are user input: textContent only.
       const items = latest.matches.map(match => {
         const item = document.createElement("li");
-        item.dataset.court = match.court;
         const court = document.createElement("span");
         court.className = "confirm-court";
         court.textContent = getCourtName(match.court);
@@ -2185,26 +2207,49 @@
       });
       document.getElementById("generateConfirmationScores").replaceChildren(...items);
       generateConfirmationShows = { schedule: currentSchedule, locked: latestRoundAsLocked() };
-      dialog.returnValue = "";
-      dialog.showModal();
-      title.focus();
+      generateConfirmationShownAt = performance.now();
     }
 
-    // Confirmed: generate, locking exactly the scores shown. Nothing the Organizer
-    // does can change them while the confirmation is open (the page is inert),
-    // but script can (an input event dispatched from it is not stopped by
-    // inert): if what would be locked is no longer what was shown, nothing is
-    // generated and the Organizer is back on the Generate button to ask again.
-    function confirmGenerateNextRound() {
+    // Confirm activated: generate, locking exactly the scores shown.
+    function confirmGenerateNextRound(event) {
+      // Not a confirmation: the second click of a double click (detail 2 and
+      // up), or a click or tap within CONFIRM_ACTIVATION_GUARD_MS of the scores
+      // being shown. A keyboard activation (detail 0) is taken at once: focus
+      // starts on the heading, so reaching Confirm takes a deliberate Tab.
+      if (event && event.detail > 0 && (event.detail > 1 ||
+        performance.now() - generateConfirmationShownAt < CONFIRM_ACTIVATION_GUARD_MS)) return;
+      const dialog = document.getElementById("generateConfirmation");
       const shows = generateConfirmationShows;
-      generateConfirmationShows = null;
-      document.getElementById("generateConfirmation").close("confirm");
-      if (!shows || shows.schedule !== currentSchedule || !isMexicanoPlay() ||
-        shows.locked !== latestRoundAsLocked()) {
-        focusGenerateControl();
+      const sameTournament = !!shows && shows.schedule === currentSchedule && isMexicanoPlay();
+      if (sameTournament && shows.locked === latestRoundAsLocked()) {
+        generateConfirmationShows = null;
+        dialog.close("confirm");
+        generateNextRound();
         return;
       }
-      generateNextRound();
+      // What would be locked is no longer what was shown. Nothing the Organizer
+      // does can cause this while the confirmation is open (the page is inert),
+      // but script can (an input event dispatched from it is not stopped by
+      // inert). Never generate then: show the scores as they are now and ask
+      // again, saying why,
+      if (sameTournament && !nextRoundRefused()) {
+        showTheScoresToConfirm();
+        const note = document.getElementById("generateConfirmationChanged");
+        // A repeat is a real change of the text (see announceNextRoundState).
+        note.textContent = note.textContent === SCORES_CHANGED_TEXT ? SCORES_CHANGED_TEXT + "\u00A0" : SCORES_CHANGED_TEXT;
+        // and through the page's announcer too (its state key kept), heard where
+        // the inert page behind the confirmation is not hidden from assistive
+        // technology.
+        const announcer = document.getElementById("nextRoundAnnouncement");
+        announceNextRoundState(SCORES_CHANGED_TEXT, announcer.dataset.key || "");
+        document.getElementById("generateConfirmationTitle").focus();
+        return;
+      }
+      // or, when there is no next round to generate any more (a score missing,
+      // another tournament), close it: back on Generate, which says why.
+      generateConfirmationShows = null;
+      dialog.close("changed");
+      updateNextRoundControl(true);
     }
 
     function focusGenerateControl() {
@@ -2212,13 +2257,17 @@
       if (button) button.focus();
     }
 
-    // Back to scores, or Escape: nothing is generated, and focus returns to the
-    // Generate button. (Confirm closes it too, with returnValue "confirm".)
+    // Back to scores, Escape, or scores no longer complete: nothing is generated,
+    // and focus returns to the Generate button. (Confirm closes it with
+    // returnValue "confirm".)
     document.getElementById("generateConfirmationBack").addEventListener("click", function () {
       document.getElementById("generateConfirmation").close("back");
     });
     document.getElementById("generateConfirmationConfirm").addEventListener("click", confirmGenerateNextRound);
     document.getElementById("generateConfirmation").addEventListener("close", function () {
+      // The close event comes after close() returns: by then the confirmation
+      // may be open again (Generate activated at once), and is left as it is.
+      if (this.open) return;
       generateConfirmationShows = null;
       if (this.returnValue !== "confirm") focusGenerateControl();
     });

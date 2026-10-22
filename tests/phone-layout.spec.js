@@ -195,8 +195,15 @@ async function askForTheNextRound(page) {
   await page.click('#generateNextRoundBtn');
   await expect(page.locator('#generateConfirmation')).toBeVisible();
 }
+// A click on Confirm is taken only once the scores have been on screen for the
+// app's guard time (no confirming by a double tap on Generate): wait it out.
+async function letTheConfirmGuardPass(page) {
+  await page.waitForFunction(
+    () => performance.now() - generateConfirmationShownAt >= CONFIRM_ACTIVATION_GUARD_MS, null, { polling: 50 });
+}
 async function generateTheNextRound(page) {
   await askForTheNextRound(page);
+  await letTheConfirmGuardPass(page);
   await page.getByRole('button', { name: 'Confirm and generate', exact: true }).click();
   await expect(page.locator('#generateConfirmation')).toBeHidden();
 }
@@ -425,6 +432,7 @@ test.describe('Phone layout', () => {
         const confirm = page.getByRole('button', { name: 'Confirm and generate', exact: true });
         await confirm.scrollIntoViewIfNeeded();
         await expect(confirm).toBeInViewport();
+        await letTheConfirmGuardPass(page);
         await confirm.click();
         await expect(page.locator('.round-header .left')).toHaveText('Round 2');
       });
