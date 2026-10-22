@@ -2145,6 +2145,7 @@
     // A click or tap on Confirm made this soon after the confirmation shows its
     // scores is not taken: the second click or tap of a double one on Generate
     // can land on Confirm, drawn where Generate was, before anything was read.
+    // DEFERRED: AB#113 (guard paths without a pinning test, feedback on a held-back click)
     const CONFIRM_ACTIVATION_GUARD_MS = 500;
     // performance.now() when the scores were last shown: the clock of event.timeStamp.
     let generateConfirmationShownAt = 0;
