@@ -258,7 +258,8 @@ body {
 }
 .matches-container {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    /* min(): a column narrower than 300px (a phone) holds one court that fits it. */
+    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
     gap: 20px;
 }
 
@@ -358,4 +359,125 @@ body {
   
   .header-text {
     text-align: left;
+    /* May shrink below its longest word, which then breaks rather than
+       pushing the page wider than the screen. */
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
+
+/* Phones (AB#92): the setup and round views fit the screen width, so they need
+   no sideways scrolling, and every court's score inputs are on screen and
+   uncovered. tests/phone-layout.spec.js checks this at 320-430px wide, with
+   the long and unbroken names it names; it is not a proof for every content. */
+@media (max-width: 600px) {
+    /* DEFERRED: AB#107 (landscape, banner over focused input, tap targets,
+       and the desktop score-error layout) */
+    body {
+        margin: 10px;
+    }
+    #header.header-with-logo {
+        gap: 12px;
+        padding: 12px;
+    }
+    #siteLogo {
+        height: 80px;
+    }
+    #tournamentTitle {
+        font-size: 2em;
+    }
+    #siteName {
+        font-size: 1.1em;
+    }
+    /* A select is as wide as its longest option (a saved tournament's name can
+       be long): never wider than the settings panel, its right margin included. */
+    #settingsContainer select {
+        max-width: 100%;
+    }
+    #settingsContainer .global-controls select {
+        max-width: calc(100% - 10px); /* its margin-right is 10px */
+    }
+    /* The round header's parts (title, round buttons, Save/New) take their
+       natural width, so a part that does not fit beside the others wraps to a
+       row of its own instead of squeezing its button labels. Within a part, the
+       buttons wrap whole, with space between them on every side. */
+    .round-header {
+        flex-wrap: wrap;
+        row-gap: 10px;
+    }
+    .round-header .left,
+    .round-header .center,
+    .round-header .right {
+        flex: 1 1 auto;
+    }
+    .round-header .center,
+    .round-header .right {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 10px;
+    }
+    .round-header .center {
+        justify-content: center;
+    }
+    /* Save and New Tournament take the header's first row, alone: their place
+       never depends on the round's navigation buttons, so a tap that went to
+       NEXT ROUND or PREVIOUS ROUND in one round cannot land on them in the next. */
+    .round-header .right {
+        justify-content: flex-end;
+        order: -1;
+        flex-basis: 100%;
+    }
+    .round-header .center button,
+    .round-header .right button {
+        margin: 0;
+        white-space: nowrap;
+    }
+    /* One column: the courts on top (the scores are entered there), the
+       scoreboard below them, both the full width. */
+    .round-body {
+        flex-direction: column-reverse;
+    }
+    .scoreboard-container {
+        flex: none;
+    }
+    /* A court fills the column, up to its desktop size (330px inside its
+       border); the same box model as on desktop. */
+    .court {
+        width: auto;
+        max-width: 330px;
+    }
+    /* Phones only; the desktop score-error layout is deferred to AB#107.
+       The score overlay keeps its padding inside the court, and a score error
+       takes a row of its own below the two inputs, so neither input moves out
+       of its team's half. */
+    .result-overlay-container {
+        box-sizing: border-box;
+        flex-wrap: wrap;
+    }
+    .result-overlay-container .error-message {
+        flex-basis: 100%;
+    }
+    /* Long unbroken names wrap inside their team label, scoreboard cell, the
+       resting players' strip and the Mexicano status line (which names courts). */
+    .team,
+    .scoreboard-container td,
+    .resting-players,
+    .round-status {
+        overflow-wrap: anywhere;
+    }
+    /* A team label grows upwards from the bottom of the court: at most four
+       lines (the rest ellipsized; the scoreboard shows every name in full), so
+       it stays below the score inputs. The court's labels and centre line never
+       take a tap: one that reaches them goes to what lies beneath. */
+    .team {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 4;
+        line-clamp: 4;
+        overflow: hidden;
+    }
+    .team,
+    .court-label,
+    .center-line {
+        pointer-events: none;
+    }
+}
