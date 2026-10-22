@@ -1,6 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const fs = require('fs');
-const path = require('path');
+const { loadScheduleData } = require('./schedule-data.js');
 
 // R-SPACED-MIX: the shipped full-length schedules spread repeat encounters
 // across the tournament — with 4 or more courts no pair opposes in two
@@ -13,17 +12,6 @@ const path = require('path');
 // schedule data directly and count meetings themselves; no page needed.
 
 const { adjacentRepeatBound, zeroBackToBackRequired } = require('../scheduler/whist-generate.js');
-
-const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
-
-// Read a schedule module as pure data, never executing it: the file must be
-// exactly `window.schedule<name> = ` followed by a JSON document.
-function loadSchedule(name) {
-  const source = fs.readFileSync(path.join(SCHEDULE_DIR, `${name}.js`), 'utf8');
-  const prefix = `window.schedule${name} = `;
-  expect(source.startsWith(prefix), `${name}.js starts with "${prefix}"`).toBe(true);
-  return JSON.parse(source.slice(prefix.length));
-}
 
 const pairKey = (a, b) =>
   a.localeCompare(b, 'en', { numeric: true }) < 0 ? `${a}-${b}` : `${b}-${a}`;
@@ -197,7 +185,7 @@ function permutations(n) {
 
 test.describe('Spaced-mix schedules', () => {
   test(`R-SPACED-MIX: 8-player schedule has exactly the minimum ${EIGHT.minimumAdjacentRepeats} adjacent repeat encounters, none back-to-back`, () => {
-    const schedule = loadSchedule('8p7r');
+    const schedule = loadScheduleData('8p7r');
     expect(schedule.rounds).toHaveLength(EIGHT.rounds);
     schedule.rounds.forEach((round, r) => expect(round.roundNumber).toBe(r + 1));
     expect(backToBackOppositions(schedule), 'pairs opposing in consecutive rounds').toEqual([]);
@@ -250,7 +238,7 @@ test.describe('Spaced-mix schedules', () => {
     });
 
     expect(keys.size, 'the enumerated designs are distinct').toBe(designs.length);
-    expect(keys.has(designKey(loadSchedule('8p7r'))), 'the shipped table is one of them').toBe(true);
+    expect(keys.has(designKey(loadScheduleData('8p7r'))), 'the shipped table is one of them').toBe(true);
     expect(fewestAdjacent, 'fewest adjacent repeats over every design and order').toBe(
       EIGHT.minimumAdjacentRepeats
     );
@@ -265,7 +253,7 @@ test.describe('Spaced-mix schedules', () => {
   });
 
   test(`R-SPACED-MIX: 12-player schedule has exactly the minimum ${TWELVE.minimumAdjacentRepeats} adjacent repeat encounters`, () => {
-    const schedule = loadSchedule('12p11r');
+    const schedule = loadScheduleData('12p11r');
     expect(schedule.rounds).toHaveLength(TWELVE.rounds);
     schedule.rounds.forEach((round, r) => expect(round.roundNumber).toBe(r + 1));
     const backToBack = backToBackOppositions(schedule);
@@ -281,14 +269,14 @@ test.describe('Spaced-mix schedules', () => {
     const name = `${n}p${rounds}r`;
 
     test(`R-SPACED-MIX: ${n}-player schedule never has a pair oppose in consecutive rounds`, () => {
-      const schedule = loadSchedule(name);
+      const schedule = loadScheduleData(name);
       expect(schedule.rounds).toHaveLength(rounds);
       schedule.rounds.forEach((round, r) => expect(round.roundNumber).toBe(r + 1));
       expect(backToBackOppositions(schedule), 'pairs opposing in consecutive rounds').toEqual([]);
     });
 
     test(`R-SPACED-MIX: ${n}-player schedule never has partners oppose each other in the round before or after`, () => {
-      const schedule = loadSchedule(name);
+      const schedule = loadScheduleData(name);
       expect(schedule.rounds).toHaveLength(rounds);
       expect(partnerNextToOpposition(schedule), 'partners opposing in an adjacent round').toEqual([]);
     });
@@ -298,7 +286,7 @@ test.describe('Spaced-mix schedules', () => {
     const name = `${n}p${rounds}r`;
 
     test(`R-SPACED-MIX: ${n}-player schedule keeps the perfect mix and every player on every court`, () => {
-      const schedule = loadSchedule(name);
+      const schedule = loadScheduleData(name);
       expect(schedule.playerCount).toBe(n);
       expect(schedule.totalRounds).toBe(rounds);
       const players = Array.from({ length: n }, (_, i) => `P${i + 1}`);
