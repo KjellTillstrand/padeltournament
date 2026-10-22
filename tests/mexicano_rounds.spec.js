@@ -1391,14 +1391,13 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
 
     // Then nothing is generated (what would be locked is no longer what was
     // shown): the confirmation stays open, now showing the scores as they are,
-    // and says they changed (in it, and through the page's announcer),
+    // and says in its own status line that they changed,
     await expect(theConfirmation(page)).toBeVisible();
     await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
     expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
     expect((await organizer.asksFor(TheScoresToBeLocked))[1].slice(2, 4)).toEqual(['12', '12']);
-    const changed = 'The scores changed since you asked. Check them and confirm again.';
-    await expect(page.locator('#generateConfirmationChanged')).toHaveText(changed);
-    await expect(theAnnouncement(page)).toHaveText(changed);
+    await expect(page.locator('#generateConfirmationChanged')).toHaveText(
+      'The scores changed since you asked. Check them and confirm again.');
     await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
     // and confirming those locks them.
     await organizer.attemptsTo(ConfirmTheScores);
@@ -1466,6 +1465,12 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y).id, point)).toBe('generateConfirmationConfirm');
     await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
     expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+    // Focus is back on the heading, not on the Confirm button the press may
+    // have focused, so a later Enter confirms nothing either.
+    await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(theConfirmation(page)).toBeVisible();
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
 
     // When the confirmation is opened again and a single click reaches Confirm
     // at once (the tap that opened it repeated, in the same moment),
@@ -1485,6 +1490,32 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     await confirm.click();
     await expect(theConfirmation(page)).toBeHidden();
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: Going back and asking again at once leaves the new confirmation working', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 8-player round and its confirmation open,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Again Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]));
+    await organizer.attemptsTo(AskForTheNextRound);
+
+    // When the Organizer goes back and asks again in the same moment (the close
+    // event of going back arrives only after the confirmation is open again),
+    await page.evaluate(() => {
+      document.getElementById('generateConfirmationBack').click();
+      document.getElementById('generateNextRoundBtn').click();
+    });
+    await expect(theConfirmation(page)).toBeVisible();
+
+    // Then that late close event leaves the new confirmation as it is: focus
+    // stays in it, and confirming generates the next round.
+    await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
+    await organizer.attemptsTo(ConfirmTheScores);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(2);
     expect(errors).toEqual([]);
   });
 

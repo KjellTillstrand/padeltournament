@@ -2142,11 +2142,12 @@
     // What the open confirmation shows ({ schedule, locked }), or null when it is
     // closed.
     let generateConfirmationShows = null;
-    // A pointer activation of Confirm this soon after the confirmation shows its
+    // A click or tap on Confirm made this soon after the confirmation shows its
     // scores is not taken: the second click or tap of a double one on Generate
     // can land on Confirm, drawn where Generate was, before anything was read.
     const CONFIRM_ACTIVATION_GUARD_MS = 500;
-    let generateConfirmationShownAt = 0; // performance.now() when the scores were last shown
+    // performance.now() when the scores were last shown: the clock of event.timeStamp.
+    let generateConfirmationShownAt = 0;
     const SCORES_CHANGED_TEXT = "The scores changed since you asked. Check them and confirm again.";
 
     // Ask before generating (AB#95). Score entry completes the other side from
@@ -2212,13 +2213,21 @@
 
     // Confirm activated: generate, locking exactly the scores shown.
     function confirmGenerateNextRound(event) {
-      // Not a confirmation: the second click of a double click (detail 2 and
-      // up), or a click or tap within CONFIRM_ACTIVATION_GUARD_MS of the scores
-      // being shown. A keyboard activation (detail 0) is taken at once: focus
-      // starts on the heading, so reaching Confirm takes a deliberate Tab.
-      if (event && event.detail > 0 && (event.detail > 1 ||
-        performance.now() - generateConfirmationShownAt < CONFIRM_ACTIVATION_GUARD_MS)) return;
       const dialog = document.getElementById("generateConfirmation");
+      if (!dialog.open) return;
+      const title = document.getElementById("generateConfirmationTitle");
+      // Not a confirmation: a click or tap (detail 1 and up) made within
+      // CONFIRM_ACTIVATION_GUARD_MS of the scores being shown, by the time of the
+      // input itself (event.timeStamp), so a tap queued behind a slow opening is
+      // judged by when it was made. Focus goes back to the heading, or a later
+      // Enter would confirm from the Confirm button the press focused. A keyboard
+      // activation (detail 0) is taken at once: focus starts on the heading, so
+      // reaching Confirm takes a deliberate Tab.
+      if (event && event.detail > 0 &&
+        event.timeStamp - generateConfirmationShownAt < CONFIRM_ACTIVATION_GUARD_MS) {
+        title.focus();
+        return;
+      }
       const shows = generateConfirmationShows;
       const sameTournament = !!shows && shows.schedule === currentSchedule && isMexicanoPlay();
       if (sameTournament && shows.locked === latestRoundAsLocked()) {
@@ -2227,26 +2236,21 @@
         generateNextRound();
         return;
       }
-      // What would be locked is no longer what was shown. Nothing the Organizer
-      // does can cause this while the confirmation is open (the page is inert),
-      // but script can (an input event dispatched from it is not stopped by
-      // inert). Never generate then: show the scores as they are now and ask
-      // again, saying why,
+      // What would be locked is no longer what was shown: never generate then.
+      // The Organizer cannot cause this while the confirmation is open (the page
+      // behind it is inert), but script can (inert stops no dispatched event).
+      // While a next round can still be generated, show the scores as they are
+      // now and say, in the confirmation's own status line, that they changed;
+      // otherwise (a score missing, another tournament) close it and go back to
+      // Generate, which says why.
       if (sameTournament && !nextRoundRefused()) {
         showTheScoresToConfirm();
         const note = document.getElementById("generateConfirmationChanged");
         // A repeat is a real change of the text (see announceNextRoundState).
         note.textContent = note.textContent === SCORES_CHANGED_TEXT ? SCORES_CHANGED_TEXT + "\u00A0" : SCORES_CHANGED_TEXT;
-        // and through the page's announcer too (its state key kept), heard where
-        // the inert page behind the confirmation is not hidden from assistive
-        // technology.
-        const announcer = document.getElementById("nextRoundAnnouncement");
-        announceNextRoundState(SCORES_CHANGED_TEXT, announcer.dataset.key || "");
-        document.getElementById("generateConfirmationTitle").focus();
+        title.focus();
         return;
       }
-      // or, when there is no next round to generate any more (a score missing,
-      // another tournament), close it: back on Generate, which says why.
       generateConfirmationShows = null;
       dialog.close("changed");
       updateNextRoundControl(true);

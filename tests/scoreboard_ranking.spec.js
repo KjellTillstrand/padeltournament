@@ -615,7 +615,7 @@ const GenerateTheNextRound = async (actor) => {
   const confirmation = actor.page.locator('#generateConfirmation');
   await actor.page.locator('#generateNextRoundBtn').click();
   await expect(confirmation).toBeVisible();
-  await actor.attemptsTo(LetTimePass(await actor.page.evaluate(() => CONFIRM_ACTIVATION_GUARD_MS)));
+  await actor.attemptsTo(LetTimePass(await actor.page.evaluate(() => CONFIRM_ACTIVATION_GUARD_MS + 1)));
   await confirmation.getByRole('button', { name: 'Confirm and generate', exact: true }).click();
   await expect(confirmation).toBeHidden();
 };
