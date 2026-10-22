@@ -585,6 +585,7 @@
     // (a new setup starts from the default names).
     function resetTournamentMemory() {
       abandonPendingState();
+      cancelStandingsRedraw(); // a redraw pending for the dropped tournament
       tournamentStarted = false;
       currentSchedule = null;
       currentRoundIndex = 0;
@@ -775,6 +776,7 @@
       if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
         const selectedTournament = savedTournaments[selectedIndex];
         abandonPendingState(); // the loaded tournament replaces the one held
+        cancelStandingsRedraw(); // and so does its own redraw (displayRound below)
         uncheckedTournamentName = null; // its name is the saved tournament's own
         currentSchedule = selectedTournament.schedule;
         // Tournaments saved before round position was tracked (or with a corrupted
@@ -1733,11 +1735,24 @@
       } else {
         match.result = { left: '', right: '' };
       }
-      function validate() {
+      // Whether typing more digits after the input's entry could still make it
+      // another valid score: "1" may become "12" out of 24, and an emptied input
+      // any score ("0" too: zero-padding is accepted, see isScoreDigits). An entry
+      // no digit can extend ("12" or "3" out of 24, an invalid one) is complete.
+      function mayStillBecomeAnotherScore(input) {
+        if (input.validity.badInput) return false;
+        if (input.value === '') return true;
+        const score = parseScore(input.value, total);
+        return score !== null && score * 10 <= total;
+      }
+      function validate(source) {
         showScoreError();
         // An invalid entry stays visible (with its error) but is not recorded.
         match.result = recordedResult(leftInput.value, rightInput.value, total);
-        updateAllScoreboards();
+        // Only the standings wait while the entry may still change (see
+        // STANDINGS_REDRAW_DELAY_MS); a complete one is drawn at once.
+        if (mayStillBecomeAnotherScore(source)) scheduleStandingsRedraw();
+        else updateAllScoreboards();
         updateNextRoundControl();
         saveTournamentState();
       }
@@ -1746,10 +1761,15 @@
       function onEdit(source, target) {
         if (isRoundLocked(roundIndex)) return;
         updateOpposite(source, target);
-        validate();
+        validate(source);
       }
       leftInput.addEventListener('input', function () { onEdit(leftInput, rightInput); });
       rightInput.addEventListener('input', function () { onEdit(rightInput, leftInput); });
+      // Leaving a score input ends the entry: its standings are drawn at once.
+      [leftInput, rightInput].forEach(input => {
+        input.addEventListener('change', flushStandingsRedraw);
+        input.addEventListener('blur', flushStandingsRedraw);
+      });
       return overlayContainer;
     }
 
@@ -2060,6 +2080,10 @@
     // is never natively disabled, so click, Enter and Space all land here.
     function generateNextRound() {
       if (!isMexicanoPlay()) return;
+      // The standings on screen show every score entered so far, whether a round is
+      // generated or refused. (Generation itself reads computeStandings, never the
+      // drawn standings, so a pending redraw cannot change the pairing.)
+      flushStandingsRedraw();
       const rounds = currentSchedule.rounds;
       if (matchesMissingAScore().length > 0 || rounds.length >= MAX_ROUNDS) {
         // Refused: say why again, though nothing changed.
@@ -2150,7 +2174,6 @@
     // Empty when there is no such round, so no caller reads past the schedule. A
     // loaded schedule asked for a round it lacks is a bug (every restore path
     // normalises the round index), so that case is warned about, not hidden.
-    // DEFERRED: AB#93 (drop the now-redundant currentSchedule checks below)
     function computeStandings(roundIndex) {
       if (!scheduledRound(roundIndex)) {
         if (currentSchedule) console.warn("No standings: round index " + roundIndex + " is not a round of the loaded schedule.");
@@ -2158,7 +2181,7 @@
       }
       // No prototype, so a player named "__proto__" is scored like any other.
       const scores = Object.create(null);
-      if (currentSchedule && currentSchedule.players) {
+      if (currentSchedule.players) {
         currentSchedule.players.forEach(player => { scores[player] = 0; });
       }
       const playedMatches = [];
@@ -2180,7 +2203,7 @@
       // Built in player-list order (not by enumerating `scores`, which would list
       // integer-like names such as "10" first), so the stable sort keeps tied
       // players in player-list order.
-      const players = currentSchedule && currentSchedule.players ? currentSchedule.players : [];
+      const players = currentSchedule.players ? currentSchedule.players : [];
       const scoreArray = players.map(player => ({ player: player, score: scores[player] }));
       scoreArray.sort((a, b) => b.score - a.score);
       rankStandings(scoreArray, playedMatches);
@@ -2193,8 +2216,10 @@
     // still go on to save (no control takes effect before the initial restore,
     // which loads a schedule: see initialRestoreBegun). It does not clamp to
     // another round: displayRound shows "Round data not available." for such an
-    // index, with no scoreboard on screen.
+    // index, with no scoreboard on screen. It draws the results as they are now,
+    // so it replaces a pending redraw (see scheduleStandingsRedraw).
     function updateAllScoreboards() {
+      cancelStandingsRedraw();
       const scoreArray = computeStandings(currentRoundIndex);
       const round = scheduledRound(currentRoundIndex);
       if (!round) return;
@@ -2229,6 +2254,47 @@
         });
         scoreboardContainer.replaceChildren(table);
       }
+    }
+
+    // While a score is being typed, the standings are redrawn only once typing
+    // pauses for STANDINGS_REDRAW_DELAY_MS (AB#93). Score entry completes the other
+    // side from a single digit, so the "1" typed on the way to "12" is a whole
+    // result (1-23) for an instant: drawn at once, it would briefly reorder the
+    // standings for every score from 10 up. Only the drawing waits. The result is
+    // recorded, checked and saved at once (see createResultOverlay's validate),
+    // and nothing reads the drawn standings: Mexicano pairs by computeStandings,
+    // which reads the recorded results. A pending redraw is drawn at once when the
+    // entry ends (the score input's change or blur, or an entry no further digit
+    // can turn into another score), replaced by any other redraw (displayRound on
+    // round navigation, a generated round or a loaded tournament: see
+    // updateAllScoreboards), and dropped with the tournament it was for (see
+    // resetTournamentMemory, loadTournament and loadScheduleFromModule).
+    // 300 ms, the top of the range decided for it (150-300 ms): a second digit
+    // typed on a phone keyboard often comes more than 200 ms after the first, and
+    // the wait is felt only after a lone first digit (see mayStillBecomeAnotherScore).
+    const STANDINGS_REDRAW_DELAY_MS = 300;
+    let standingsRedrawTimer = null; // the pending standings redraw, if any
+
+    // Redraw the standings once typing has paused for STANDINGS_REDRAW_DELAY_MS;
+    // each call restarts the wait.
+    function scheduleStandingsRedraw() {
+      cancelStandingsRedraw();
+      standingsRedrawTimer = setTimeout(function () {
+        standingsRedrawTimer = null;
+        updateAllScoreboards();
+      }, STANDINGS_REDRAW_DELAY_MS);
+    }
+
+    // Draw a pending standings redraw now; nothing when none is pending.
+    function flushStandingsRedraw() {
+      if (standingsRedrawTimer !== null) updateAllScoreboards();
+    }
+
+    // Drop a pending standings redraw without drawing it.
+    function cancelStandingsRedraw() {
+      if (standingsRedrawTimer === null) return;
+      clearTimeout(standingsRedrawTimer);
+      standingsRedrawTimer = null;
     }
 
     // Orders tied players and assigns each standings entry its placement, in place.
@@ -2323,6 +2389,7 @@
         return;
       }
       abandonPendingState(); // the new schedule replaces the tournament held
+      cancelStandingsRedraw(); // its round leaves the screen (below)
       currentSchedule = schedule;
       storeDefaultPlayerNames(currentSchedule.players);
       setByes(currentSchedule);
