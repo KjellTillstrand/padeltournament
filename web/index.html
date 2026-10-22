@@ -1869,7 +1869,8 @@
       headerLeft.className = "left";
       headerLeft.textContent = "Round " + round.roundNumber;
       // A heading, focusable from script only: focus lands here after "Generate
-      // next round" replaces the button that had it.
+      // next round", or a round step the new round has no button for, replaces
+      // the button that had it (focusRoundHeading).
       headerLeft.setAttribute("role", "heading");
       headerLeft.setAttribute("aria-level", "2");
       headerLeft.tabIndex = -1;
@@ -1880,20 +1881,18 @@
       if (roundIndex > 0) {
         const prevBtn = document.createElement("button");
         prevBtn.innerHTML = "PREVIOUS ROUND"; // left arrow
+        prevBtn.dataset.roundStep = "previous";
         prevBtn.addEventListener("click", function () {
-          currentRoundIndex--;
-          displayRound(currentRoundIndex);
-          saveTournamentState();
+          goToRound(currentRoundIndex - 1, prevBtn);
         });
         headerCenter.appendChild(prevBtn);
       }
       if (roundIndex < currentSchedule.rounds.length - 1) {
         const nextBtn = document.createElement("button");
         nextBtn.innerHTML = "NEXT ROUND"; // right arrow
+        nextBtn.dataset.roundStep = "next";
         nextBtn.addEventListener("click", function () {
-          currentRoundIndex++;
-          displayRound(currentRoundIndex);
-          saveTournamentState();
+          goToRound(currentRoundIndex + 1, nextBtn);
         });
         headerCenter.appendChild(nextBtn);
       }
@@ -2044,7 +2043,6 @@
 
     // A tournament that is replaced (new, deleted, loaded) takes its last
     // announcement with it: the next one's first state is announced.
-    // DEFERRED: AB#94 (no regression test yet for clearing on New, Delete and Load)
     function clearNextRoundAnnouncement() {
       const announcer = document.getElementById("nextRoundAnnouncement");
       if (announcer.textContent !== "") announcer.textContent = "";
@@ -2115,14 +2113,38 @@
       setByes(currentSchedule);
       currentRoundIndex = rounds.length - 1;
       displayRound(currentRoundIndex);
-      // The re-render replaced the focused button: focus the new round's heading,
-      // found by its round number. (displayRound has already saved once; the
-      // save below is a second write of the same state.)
-      const roundNumber = String(rounds[currentRoundIndex].roundNumber);
+      // The re-render replaced the focused button: focus the new round's heading.
+      // (displayRound has already saved once; the save below is a second write
+      // of the same state.)
+      focusRoundHeading();
+      saveTournamentState();
+    }
+
+    // Focus the shown round's heading, found by its round number.
+    function focusRoundHeading() {
+      const roundNumber = String(currentSchedule.rounds[currentRoundIndex].roundNumber);
       const heading = document.querySelector(
         '#tournamentContainer .round[data-round="' + CSS.escape(roundNumber) + '"] .round-header .left');
       if (heading) heading.focus();
+    }
+
+    // Step to another round by its PREVIOUS or NEXT `button`. The re-render
+    // replaces the button, and focus on it would fall to the page. So if it had
+    // focus when activated (Enter or Space, or assistive technology), focus the
+    // same step's button in the new round, or the round's heading where there is
+    // none (no PREVIOUS on the first round, no NEXT on the last). Focus anywhere
+    // else, as a click or tap that does not focus the button leaves it (Safari),
+    // is never moved. A click that does focus it (Chromium, Firefox) keeps focus
+    // there the same way, still with no focus ring: no keyboard was used.
+    function goToRound(roundIndex, button) {
+      const hadFocus = document.activeElement === button;
+      currentRoundIndex = roundIndex;
+      displayRound(currentRoundIndex);
       saveTournamentState();
+      if (!hadFocus) return;
+      const same = document.querySelector(
+        '#tournamentContainer .round-header [data-round-step="' + button.dataset.roundStep + '"]');
+      if (same) same.focus(); else focusRoundHeading();
     }
 
     // Start a Mexicano tournament: read the named players (as Americano does: a
