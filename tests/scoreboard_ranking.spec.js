@@ -103,8 +103,9 @@ const GREY = 'rgb(238, 238, 238)';
 
 // Seeds the stored tournament before any app script runs, then opens the app on
 // the final round, so the standings cover every game. The players, in player-list
-// order, default to PLAYERS.
-const ResumeACompletedTournament = (rounds, players = PLAYERS) => async (actor) => {
+// order, default to PLAYERS; extraState adds fields to the stored state (such as
+// totalPoints).
+const ResumeACompletedTournament = (rounds, players = PLAYERS, extraState = {}) => async (actor) => {
   const state = {
     schedule: {
       players: players,
@@ -124,6 +125,7 @@ const ResumeACompletedTournament = (rounds, players = PLAYERS) => async (actor) 
     tournamentName: 'Tiebreak',
     courtNames: [],
     format: 'americano',
+    ...extraState,
   };
   await actor.page.addInitScript(({ key, seed }) => {
     localStorage.setItem(key, seed);
@@ -566,6 +568,9 @@ test.describe('R-TIEBREAK-H2H: Head-to-head tiebreak, then shared placement', ()
 // ends. These tests pause the page's clock (Playwright's fake timers), so the
 // redraw timer fires only when a test runs the clock: no keystroke can be slow
 // enough to let it fire in between, whatever the machine's speed.
+// Any test that fills a partial score (one more digit could still make it a
+// valid score: 1-2 out of 16-24, 1-3 out of 32) and then reads the standings
+// must leave the input (blur) or poll: the redraw is still pending.
 const CLOCK_START = new Date('2026-01-01T10:00:00Z');
 
 const InstallThePageClock = async (actor) => {
@@ -709,7 +714,9 @@ test.describe('The standings while a score is typed', () => {
     await organizer.attemptsTo(TypeTheFirstLeftScore('1'));
 
     // When the Organizer goes back to round 2 and forward to round 3 again, no
-    // time passing on the page.
+    // time passing on the page. (This guards the requirement end to end, by
+    // whatever means the app keeps the standings current: leaving the input,
+    // or the round's own redraw.)
     await page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true }).click();
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     // (Round 2's standings cover rounds 1 and 2 only.)
@@ -722,6 +729,69 @@ test.describe('The standings while a score is typed', () => {
     expect(await organizer.asksFor(Standings)).toEqual(RANKED_WITH_1_23);
     await organizer.attemptsTo(LetTimePass(2 * await organizer.asksFor(TheRedrawDelay)));
     expect(await organizer.asksFor(Standings)).toEqual(RANKED_WITH_1_23);
+  });
+});
+
+// Which typed entries make the standings wait, by points total: one that one more
+// digit could still turn into another valid score waits (an emptied input too);
+// any other is drawn at once, 0 included. One unscored round, so the game typed
+// into (Ada & Bo vs Cy & Di) decides the standings alone.
+const ONE_ROUND_UNSCORED = [[[['Ada', 'Bo'], ['Cy', 'Di']], [['Ed', 'Flo'], ['Gus', 'Hal']]]];
+const ALL_LEVEL = PLAYERS.map((player) => `${player} 0`);
+const REDRAW_CASES = [
+  // [points total, keys typed into the left score, left score, whether the standings wait]
+  [16, '2', 2, false],
+  [21, '2', 2, true],
+  [21, '3', 3, false],
+  [24, '0', 0, false],
+  [32, '3', 3, true],
+];
+
+test.describe('Which typed scores make the standings wait', () => {
+  for (const [total, keys, left, waits] of REDRAW_CASES) {
+    test(`out of ${total}, "${keys}" ${waits ? 'waits for the redraw delay' : 'is drawn at once'}`, async ({ page }) => {
+      const organizer = theOrganizer(page);
+      await organizer.attemptsTo(InstallThePageClock);
+      await organizer.attemptsTo(ResumeACompletedTournament(ONE_ROUND_UNSCORED, PLAYERS, { totalPoints: total }));
+      await organizer.attemptsTo(PauseThePageClock);
+      await organizer.attemptsTo(WatchTheDrawnStandings);
+      expect(await organizer.asksFor(TheDrawnStandings)).toEqual([ALL_LEVEL]);
+
+      // When the Organizer types the score, no time passing on the page.
+      await organizer.attemptsTo(TypeTheFirstLeftScore(keys));
+      await expect(page.locator('.result-overlay-right input').first()).toHaveValue(String(total - left));
+
+      // Then the standings with that result are drawn at once, or only once the
+      // redraw delay has passed.
+      const withResult = expect.arrayContaining([`Ada ${left}`, `Bo ${left}`, `Cy ${total - left}`, `Di ${total - left}`]);
+      if (waits) {
+        expect(await organizer.asksFor(TheDrawnStandings)).toEqual([ALL_LEVEL]);
+        await organizer.attemptsTo(LetTimePass(await organizer.asksFor(TheRedrawDelay)));
+      }
+      expect(await organizer.asksFor(TheDrawnStandings)).toEqual([ALL_LEVEL, withResult]);
+    });
+  }
+
+  test('clearing a score waits for the redraw delay', async ({ page }) => {
+    const organizer = theOrganizer(page);
+    await organizer.attemptsTo(InstallThePageClock);
+    await organizer.attemptsTo(ResumeACompletedTournament(ONE_ROUND_UNSCORED, PLAYERS, { totalPoints: 24 }));
+    await organizer.attemptsTo(PauseThePageClock);
+    await organizer.attemptsTo(WatchTheDrawnStandings);
+
+    // Given a 5-19 result typed (complete, so drawn at once),
+    await organizer.attemptsTo(TypeTheFirstLeftScore('5'));
+    const withResult = expect.arrayContaining(['Ada 5', 'Cy 19']);
+    expect(await organizer.asksFor(TheDrawnStandings)).toEqual([ALL_LEVEL, withResult]);
+
+    // When the Organizer clears it, no time passing on the page,
+    await page.keyboard.press('Backspace');
+    await expect(page.locator('.result-overlay-right input').first()).toHaveValue('');
+
+    // Then the standings keep the result until the redraw delay has passed.
+    expect(await organizer.asksFor(TheDrawnStandings)).toEqual([ALL_LEVEL, withResult]);
+    await organizer.attemptsTo(LetTimePass(await organizer.asksFor(TheRedrawDelay)));
+    expect(await organizer.asksFor(TheDrawnStandings)).toEqual([ALL_LEVEL, withResult, ALL_LEVEL]);
   });
 });
 
@@ -752,7 +822,9 @@ test.describe('Mexicano pairing right after a score is typed', () => {
     await expect(page.locator('.result-overlay-right input').nth(0)).toHaveValue('4');
 
     // When the Organizer types "1" into the second game's score, completing the
-    // round at 1-23, and at once generates the next round.
+    // round at 1-23, and at once generates the next round. (This guards the
+    // requirement end to end, whatever the means: the pairing reads the recorded
+    // results, and the click leaves the input first.)
     await page.locator('.result-overlay-left input').nth(1).focus();
     await page.keyboard.type('1');
     await expect(page.locator('.result-overlay-right input').nth(1)).toHaveValue('23');

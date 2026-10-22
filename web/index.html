@@ -776,7 +776,6 @@
       if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
         const selectedTournament = savedTournaments[selectedIndex];
         abandonPendingState(); // the loaded tournament replaces the one held
-        cancelStandingsRedraw(); // and so does its own redraw (displayRound below)
         uncheckedTournamentName = null; // its name is the saved tournament's own
         currentSchedule = selectedTournament.schedule;
         // Tournaments saved before round position was tracked (or with a corrupted
@@ -1737,13 +1736,15 @@
       }
       // Whether typing more digits after the input's entry could still make it
       // another valid score: "1" may become "12" out of 24, and an emptied input
-      // any score ("0" too: zero-padding is accepted, see isScoreDigits). An entry
-      // no digit can extend ("12" or "3" out of 24, an invalid one) is complete.
+      // any score. An entry no digit can extend ("12" or "3" out of 24, an invalid
+      // one) is complete, and so is 0: a 0-24 result is common, typing "05" on
+      // purpose is not (zero-padding is accepted, see isScoreDigits, so "05"
+      // still works; its standings are just drawn twice).
       function mayStillBecomeAnotherScore(input) {
         if (input.validity.badInput) return false;
         if (input.value === '') return true;
         const score = parseScore(input.value, total);
-        return score !== null && score * 10 <= total;
+        return score !== null && score > 0 && score * 10 <= total;
       }
       function validate(source) {
         showScoreError();
@@ -1846,6 +1847,7 @@
       const container = document.getElementById("tournamentContainer");
       container.innerHTML = "";
       if (!currentSchedule || !currentSchedule.rounds || roundIndex < 0 || roundIndex >= currentSchedule.rounds.length) {
+        cancelStandingsRedraw(); // no scoreboard is shown to redraw
         container.textContent = "Round data not available.";
         return;
       }
@@ -2080,10 +2082,6 @@
     // is never natively disabled, so click, Enter and Space all land here.
     function generateNextRound() {
       if (!isMexicanoPlay()) return;
-      // The standings on screen show every score entered so far, whether a round is
-      // generated or refused. (Generation itself reads computeStandings, never the
-      // drawn standings, so a pending redraw cannot change the pairing.)
-      flushStandingsRedraw();
       const rounds = currentSchedule.rounds;
       if (matchesMissingAScore().length > 0 || rounds.length >= MAX_ROUNDS) {
         // Refused: say why again, though nothing changed.
@@ -2267,11 +2265,13 @@
     // entry ends (the score input's change or blur, or an entry no further digit
     // can turn into another score), replaced by any other redraw (displayRound on
     // round navigation, a generated round or a loaded tournament: see
-    // updateAllScoreboards), and dropped with the tournament it was for (see
-    // resetTournamentMemory, loadTournament and loadScheduleFromModule).
-    // 300 ms, the top of the range decided for it (150-300 ms): a second digit
-    // typed on a phone keyboard often comes more than 200 ms after the first, and
-    // the wait is felt only after a lone first digit (see mayStillBecomeAnotherScore).
+    // updateAllScoreboards), and dropped when no scoreboard is left to redraw (see
+    // resetTournamentMemory, loadScheduleFromModule and displayRound).
+    // 300 ms, the top of the range decided for it (150-300 ms), to leave the most
+    // room for a slow second digit (typing on a phone keyboard may well be
+    // slower than on a desktop one); the wait is felt only after a lone first
+    // digit (see mayStillBecomeAnotherScore).
+    // DEFERRED: AB#110 (root cause out of scope here: score entry completes the other side from the first digit)
     const STANDINGS_REDRAW_DELAY_MS = 300;
     let standingsRedrawTimer = null; // the pending standings redraw, if any
 
