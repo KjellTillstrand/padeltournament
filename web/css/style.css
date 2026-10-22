@@ -340,6 +340,81 @@ body {
     margin-top: 5px;
 }
 
+/* Mexicano: the confirmation before generating the next round (AB#95). A
+   native modal dialog: the browser centres it, keeps it inside the viewport
+   (scrolling within it when the round has many courts) and dims the page. */
+#generateConfirmation {
+    box-sizing: border-box;
+    width: 32rem;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 16px;
+}
+#generateConfirmation::backdrop {
+    background-color: rgba(0, 0, 0, 0.5);
+}
+#generateConfirmationTitle {
+    margin: 0 0 10px 0;
+    font-size: 1.3em;
+}
+#generateConfirmationScores {
+    list-style: none;
+    margin: 10px 0;
+    padding: 0;
+}
+#generateConfirmationScores li {
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    padding: 8px;
+    margin-bottom: 8px;
+    /* Long unbroken names wrap instead of widening the dialog. */
+    overflow-wrap: anywhere;
+}
+.confirm-court {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+/* Left team, score, right team: as on the court. */
+.confirm-result {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+}
+.confirm-score {
+    font-size: 1.2em;
+    font-weight: bold;
+    white-space: nowrap;
+}
+.confirm-team-right {
+    text-align: right;
+}
+.dialog-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+}
+.dialog-buttons button {
+    font-size: 1em;
+    padding: 8px 16px;
+    border: 1px solid #006400;
+    border-radius: 6px;
+    cursor: pointer;
+}
+#generateConfirmationBack {
+    background-color: #fff;
+    color: #006400;
+}
+#generateConfirmationConfirm {
+    background-color: #006400; /* Dark green, as the round buttons */
+    color: #fff;
+}
+#generateConfirmationConfirm:hover {
+    background-color: #004d00;
+}
+
 /* Utility Classes */
 .hidden {
     display: none;

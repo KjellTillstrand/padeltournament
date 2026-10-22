@@ -500,6 +500,15 @@ test.describe('Malformed or hostile persisted state', () => {
   }
 
   // --- Started Mexicano tournaments (AB#59) ---
+  // "Generate next round" asks to confirm the scores it locks (AB#95): ask, and confirm.
+  async function generateTheNextRound(page) {
+    const confirmation = page.locator('#generateConfirmation');
+    await page.click('#generateNextRoundBtn');
+    await expect(confirmation).toBeVisible();
+    await confirmation.getByRole('button', { name: 'Confirm and generate', exact: true }).click();
+    await expect(confirmation).toBeHidden();
+  }
+
   // A genuine Mexicano state, taken from the app itself: a 9-player tournament
   // started, its round 1 completed and round 2 generated, so round 1 is locked.
   async function captureARealMexicanoState(context) {
@@ -516,7 +525,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(lefts).toHaveCount(2);
     await lefts.nth(0).fill('20');
     await lefts.nth(1).fill('15');
-    await donor.click('#generateNextRoundBtn');
+    await generateTheNextRound(donor);
     await expect(donor.locator('.round-header .left')).toHaveText('Round 2');
     const state = JSON.parse(await donor.evaluate((key) => localStorage.getItem(key), STATE_KEY));
     await donor.close();
@@ -690,7 +699,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const lefts = page.locator('.matches-container .match .result-overlay-left input');
     await lefts.nth(0).fill('12');
     await lefts.nth(1).fill('12');
-    await page.click('#generateNextRoundBtn');
+    await generateTheNextRound(page);
     await expect(page.locator('.round-header .left')).toHaveText('Round 3');
     const stored = await storedJson(page, STATE_KEY);
     expect(stored.format).toBe('mexicano');

@@ -123,7 +123,9 @@
   <!-- Every control is in #settingsContainer, #toggleSettingsBtn or
        #tournamentContainer. They are inert (no clicks, typing or focus) until the
        initial restore has run (see releaseControls): a choice made while the page
-       is still loading would act on the not-yet-restored default. -->
+       is still loading would act on the not-yet-restored default. (The buttons of
+       #generateConfirmation are the exception: closed, it shows nothing to use
+       until the Generate button in #tournamentContainer opens it.) -->
   <div id="settingsContainer" inert data-inert-until-restored>
     <div class="global-controls">
       <label for="formatSelect">Format:</label>
@@ -209,6 +211,23 @@
        survives round navigation. Visually hidden: the visible line is the
        button's description, #nextRoundStatus, which names courts as they are named now. -->
   <div id="nextRoundAnnouncement" class="visually-hidden" role="status" aria-atomic="true"></div>
+
+  <!-- Mexicano: "Generate next round" asks first (AB#95). It lists the scores
+       generating would lock, as they stand when asked, and nothing is generated
+       until the Organizer confirms (see openGenerateConfirmation). A modal
+       dialog: the page behind it is inert while it is open, so no score can
+       change under it. Outside #tournamentContainer, so no re-render replaces it. -->
+  <dialog id="generateConfirmation" aria-labelledby="generateConfirmationTitle"
+    aria-describedby="generateConfirmationText">
+    <!-- Focused on open: the scores are to be read before either button is used. -->
+    <h2 id="generateConfirmationTitle" tabindex="-1"></h2>
+    <p id="generateConfirmationText"></p>
+    <ul id="generateConfirmationScores"></ul>
+    <div class="dialog-buttons">
+      <button type="button" id="generateConfirmationBack">Back to scores</button>
+      <button type="button" id="generateConfirmationConfirm">Confirm and generate</button>
+    </div>
+  </dialog>
 
   <script>
     let currentSchedule = null;
@@ -1903,7 +1922,7 @@
         generateBtn.id = "generateNextRoundBtn";
         generateBtn.textContent = "GENERATE NEXT ROUND";
         generateBtn.setAttribute("aria-describedby", "nextRoundStatus");
-        generateBtn.addEventListener("click", generateNextRound);
+        generateBtn.addEventListener("click", requestNextRound);
         headerCenter.appendChild(generateBtn);
       }
 
@@ -2001,7 +2020,7 @@
       const missing = matchesMissingAScore();
       const full = currentSchedule.rounds.length >= MAX_ROUNDS;
       // aria-disabled, never disabled: the button stays focusable and its
-      // description reachable. generateNextRound refuses on its own.
+      // description reachable. requestNextRound refuses on its own.
       button.setAttribute("aria-disabled", String(missing.length > 0 || full));
       const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
       const containers = document.querySelectorAll("#tournamentContainer .matches-container > .match");
@@ -2077,19 +2096,141 @@
       };
     }
 
-    // Generate the round after the latest one, from the standings the scoreboard
-    // shows after it, and move to it. Refused while a score is missing (the
-    // missing ones stay indicated) or at the cap: the only guard, as the button
-    // is never natively disabled, so click, Enter and Space all land here.
-    function generateNextRound() {
+    // Whether the next round is refused now: a score is missing from the latest
+    // round, or the tournament has reached MAX_ROUNDS.
+    function nextRoundRefused() {
+      return matchesMissingAScore().length > 0 || currentSchedule.rounds.length >= MAX_ROUNDS;
+    }
+
+    // "Generate next round" activated: click, Enter and Space all land here, as
+    // the button is never natively disabled. Refused while a score is missing
+    // (the missing ones stay indicated) or at the cap; otherwise the Organizer
+    // is asked to confirm the scores generating would lock (AB#95).
+    function requestNextRound() {
       if (!isMexicanoPlay()) return;
       // Draw a pending standings redraw first: a tap that does not move focus off
       // the score input (no blur, as on some touch browsers) would otherwise leave
-      // the standings stale on the refused path, which redraws nothing.
+      // the standings stale on the refused path, which redraws nothing, and
+      // behind the confirmation.
       flushStandingsRedraw();
-      const rounds = currentSchedule.rounds;
-      if (matchesMissingAScore().length > 0 || rounds.length >= MAX_ROUNDS) {
+      if (nextRoundRefused()) {
         // Refused: say why again, though nothing changed.
+        updateNextRoundControl(true);
+        return;
+      }
+      openGenerateConfirmation();
+    }
+
+    // The latest round as generating would lock it (each match's court, teams and
+    // recorded result), as text to compare: see confirmGenerateNextRound.
+    function latestRoundAsLocked() {
+      const rounds = currentSchedule.rounds;
+      const latest = rounds[rounds.length - 1];
+      return JSON.stringify({
+        rounds: rounds.length,
+        matches: latest.matches.map(match => ({ court: match.court, teams: match.teams, result: match.result }))
+      });
+    }
+
+    // What the open confirmation shows ({ schedule, locked }), or null when it is
+    // closed.
+    let generateConfirmationShows = null;
+
+    // Ask before generating (AB#95). Score entry completes the other side from
+    // the first digit, so the "1" typed on the way to "12" makes the match a
+    // complete 1-23 result: generating at that moment would lock it and pair the
+    // next round from it. So the confirmation lists every match of the latest
+    // round with the scores generating would lock, read now (after the standings
+    // flush, see requestNextRound), and nothing is generated until the Organizer
+    // confirms. It is modal: the page behind it is inert, so the scores cannot
+    // change while it is open. Focus goes to its heading, not to a button: the
+    // scores are to be read first, and a held or repeated Enter from the
+    // Generate button can then neither confirm nor go back.
+    function openGenerateConfirmation() {
+      const dialog = document.getElementById("generateConfirmation");
+      if (dialog.open) return;
+      const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
+      const title = document.getElementById("generateConfirmationTitle");
+      title.textContent = "Lock the scores of round " + latest.roundNumber + "?";
+      document.getElementById("generateConfirmationText").textContent =
+        "Generating round " + (latest.roundNumber + 1) + " locks these scores: " +
+        "its pairings are made from them, and they can no longer be changed.";
+      // Court and player names are user input: textContent only.
+      const items = latest.matches.map(match => {
+        const item = document.createElement("li");
+        item.dataset.court = match.court;
+        const court = document.createElement("span");
+        court.className = "confirm-court";
+        court.textContent = getCourtName(match.court);
+        const result = document.createElement("span");
+        result.className = "confirm-result";
+        const teamLeft = document.createElement("span");
+        teamLeft.className = "confirm-team-left";
+        teamLeft.textContent = match.teams[0].join(" & ");
+        const score = document.createElement("span");
+        score.className = "confirm-score";
+        const scoreLeft = document.createElement("span");
+        scoreLeft.className = "confirm-score-left";
+        scoreLeft.textContent = parseScore(match.result.left, totalPoints);
+        const scoreRight = document.createElement("span");
+        scoreRight.className = "confirm-score-right";
+        scoreRight.textContent = parseScore(match.result.right, totalPoints);
+        score.append(scoreLeft, " \u2013 ", scoreRight); // an en dash
+        const teamRight = document.createElement("span");
+        teamRight.className = "confirm-team-right";
+        teamRight.textContent = match.teams[1].join(" & ");
+        result.append(teamLeft, score, teamRight);
+        item.append(court, result);
+        return item;
+      });
+      document.getElementById("generateConfirmationScores").replaceChildren(...items);
+      generateConfirmationShows = { schedule: currentSchedule, locked: latestRoundAsLocked() };
+      dialog.returnValue = "";
+      dialog.showModal();
+      title.focus();
+    }
+
+    // Confirmed: generate, locking exactly the scores shown. Nothing the Organizer
+    // does can change them while the confirmation is open (the page is inert),
+    // but script can (an input event dispatched from it is not stopped by
+    // inert): if what would be locked is no longer what was shown, nothing is
+    // generated and the Organizer is back on the Generate button to ask again.
+    function confirmGenerateNextRound() {
+      const shows = generateConfirmationShows;
+      generateConfirmationShows = null;
+      document.getElementById("generateConfirmation").close("confirm");
+      if (!shows || shows.schedule !== currentSchedule || !isMexicanoPlay() ||
+        shows.locked !== latestRoundAsLocked()) {
+        focusGenerateControl();
+        return;
+      }
+      generateNextRound();
+    }
+
+    function focusGenerateControl() {
+      const button = document.getElementById("generateNextRoundBtn");
+      if (button) button.focus();
+    }
+
+    // Back to scores, or Escape: nothing is generated, and focus returns to the
+    // Generate button. (Confirm closes it too, with returnValue "confirm".)
+    document.getElementById("generateConfirmationBack").addEventListener("click", function () {
+      document.getElementById("generateConfirmation").close("back");
+    });
+    document.getElementById("generateConfirmationConfirm").addEventListener("click", confirmGenerateNextRound);
+    document.getElementById("generateConfirmation").addEventListener("close", function () {
+      generateConfirmationShows = null;
+      if (this.returnValue !== "confirm") focusGenerateControl();
+    });
+
+    // Generate the round after the latest one, from the standings the scoreboard
+    // shows after it, and move to it. Only once the Organizer has confirmed the
+    // scores it locks (see confirmGenerateNextRound); refused, as a last guard,
+    // while a score is missing or at the cap.
+    function generateNextRound() {
+      if (!isMexicanoPlay()) return;
+      const rounds = currentSchedule.rounds;
+      if (nextRoundRefused()) {
         updateNextRoundControl(true);
         return;
       }
@@ -2104,9 +2245,8 @@
       } catch (err) {
         console.warn("Could not generate the next Mexicano round:", err);
         alert("The next round could not be generated.");
-        // Nothing was re-rendered: keep the Organizer on the control they used.
-        const button = document.getElementById("generateNextRoundBtn");
-        if (button) button.focus();
+        // Nothing was re-rendered: put the Organizer back on the Generate button.
+        focusGenerateControl();
         return;
       }
       rounds.push(toScheduleRound(generated));
@@ -2300,7 +2440,7 @@
     // which reads the recorded results. A pending redraw is drawn at once when the
     // entry ends (the score input's change or blur, or an entry no further digit
     // can turn into another score) and when "Generate next round" is activated
-    // (generateNextRound), replaced by any other redraw (displayRound on round
+    // (requestNextRound), replaced by any other redraw (displayRound on round
     // navigation, a generated round or a loaded tournament: see
     // updateAllScoreboards), and dropped with the tournament or scoreboard it was
     // for (see resetTournamentMemory, loadTournament, loadScheduleFromModule and

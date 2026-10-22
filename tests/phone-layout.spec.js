@@ -190,6 +190,17 @@ async function startTheTournament(page, name) {
   await expect(page.locator('.round-header .left')).toHaveText('Round 1');
 }
 
+// Mexicano "Generate next round" asks to confirm the scores it locks (AB#95).
+async function askForTheNextRound(page) {
+  await page.click('#generateNextRoundBtn');
+  await expect(page.locator('#generateConfirmation')).toBeVisible();
+}
+async function generateTheNextRound(page) {
+  await askForTheNextRound(page);
+  await page.getByRole('button', { name: 'Confirm and generate', exact: true }).click();
+  await expect(page.locator('#generateConfirmation')).toBeHidden();
+}
+
 // Twenty characters, the most Start accepts, of the widest letters.
 const wideName = (i) => (i % 2 ? 'M' : 'W').repeat(19) + String.fromCharCode(65 + i);
 
@@ -290,7 +301,7 @@ test.describe('Phone layout', () => {
         await expectRoundHeaderButtonsOnOneLineAndApart(page);
         const matches = page.locator('.matches-container .match');
         for (let i = 0; i < 3; i++) await matches.nth(i).locator('.result-overlay-left input').fill('12');
-        await page.click('#generateNextRoundBtn');
+        await generateTheNextRound(page);
         await expect(page.locator('.round-header .left')).toHaveText('Round 2');
         await expect(page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true })).toBeVisible();
         await expectRoundHeaderButtonsOnOneLineAndApart(page);
@@ -390,6 +401,33 @@ test.describe('Phone layout', () => {
         await expectAllWithinTheScreenWidth(page, '#nextRoundStatus');
         expect(await page.locator('#nextRoundStatus').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
       });
+
+      test('the Mexicano generate confirmation of six courts and the widest names fits the screen width', async ({ page }) => {
+        const longCourt = 'W'.repeat(30); // the court name input's limit
+        await page.goto('/');
+        await chooseTheTournament(page, { format: 'mexicano', players: 24, courts: 6 });
+        for (let i = 0; i < 24; i++) await page.fill(`#playerInput_${i}`, wideName(i));
+        await page.fill('#courtNameInput_1', longCourt);
+        await startTheTournament(page, 'Confirm Cup');
+        const matches = page.locator('.matches-container .match');
+        for (let i = 0; i < 6; i++) await matches.nth(i).locator('.result-overlay-left input').fill('12');
+        await askForTheNextRound(page);
+        const confirmation = page.locator('#generateConfirmation');
+        await expect(confirmation.locator('li')).toHaveCount(6);
+        await expect(confirmation).toContainText(longCourt);
+        await expect(confirmation).toContainText(wideName(0));
+        await expectNoSidewaysScroll(page);
+        await expectAllWithinTheScreenWidth(page,
+          '#generateConfirmation, #generateConfirmation li, #generateConfirmation li span, #generateConfirmation button');
+        // Nothing in it spills sideways (it scrolls, if at all, only downwards),
+        expect(await confirmation.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+        // and Confirm is reachable on the screen.
+        const confirm = page.getByRole('button', { name: 'Confirm and generate', exact: true });
+        await confirm.scrollIntoViewIfNeeded();
+        await expect(confirm).toBeInViewport();
+        await confirm.click();
+        await expect(page.locator('.round-header .left')).toHaveText('Round 2');
+      });
     });
   }
 
@@ -438,7 +476,7 @@ test.describe('Phone layout', () => {
         await startTheTournament(page, 'Tap Cup Mexicano');
         const matches = page.locator('.matches-container .match');
         for (let i = 0; i < 3; i++) await matches.nth(i).locator('.result-overlay-left input').fill('12');
-        await page.click('#generateNextRoundBtn');
+        await generateTheNextRound(page);
         await expect(page.locator('.round-header .left')).toHaveText('Round 2');
         const roundTwo = await saveAndNewOnThePage(page);
         const previous = page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true });
