@@ -21,6 +21,11 @@ const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
 const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
 const NON_LF_TERMINATORS = new RegExp(`[\\r${LINE_SEPARATOR}${PARAGRAPH_SEPARATOR}]`);
+// The assignment every schedule module is made of, after any // header.
+function assignmentPrefix(name) {
+  return `window.schedule${name} = `;
+}
+
 function parseScheduleSource(source, name) {
   if (NON_LF_TERMINATORS.test(source)) {
     throw new Error(`${name}: source contains a CR, U+2028 or U+2029 line terminator`);
@@ -29,7 +34,7 @@ function parseScheduleSource(source, name) {
   let first = 0;
   while (first < lines.length && lines[first].startsWith('//')) first++;
   const body = lines.slice(first).join('\n');
-  const prefix = `window.schedule${name} = `;
+  const prefix = assignmentPrefix(name);
   if (!body.startsWith(prefix)) return undefined;
   return JSON.parse(body.slice(prefix.length));
 }
@@ -39,11 +44,12 @@ function readScheduleSource(name) {
 }
 
 // Parse already-read source under the loader's rules; asserts the payload is a
-// non-null object, so a null or scalar document fails here, with a clear message.
+// plain (non-array) object, so a missing assignment or a null, scalar or array
+// document fails here, with a clear message.
 function loadScheduleSource(source, name) {
   const data = parseScheduleSource(source, name);
-  expect(data, `${name}.js is "window.schedule${name} = <JSON>" after any // header`).toBeDefined();
-  expect(data !== null && typeof data === 'object', `${name}.js payload is a non-null object`).toBe(true);
+  const isPlainObject = data !== undefined && data !== null && typeof data === 'object' && !Array.isArray(data);
+  expect(isPlainObject, `${name}.js is "${assignmentPrefix(name)}<JSON object>" after any // header`).toBe(true);
   return data;
 }
 
@@ -51,4 +57,4 @@ function loadScheduleData(name) {
   return loadScheduleSource(readScheduleSource(name), name);
 }
 
-module.exports = { SCHEDULE_DIR, LINE_SEPARATOR, PARAGRAPH_SEPARATOR, parseScheduleSource, readScheduleSource, loadScheduleSource, loadScheduleData };
+module.exports = { assignmentPrefix, LINE_SEPARATOR, PARAGRAPH_SEPARATOR, parseScheduleSource, readScheduleSource, loadScheduleSource, loadScheduleData };
