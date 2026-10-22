@@ -17,6 +17,7 @@ const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 // header is split on LF only: any other terminator could hide code after a
 // "// header" that this loader would still count as comment. The shipped
 // tables contain none, so such a source is rejected outright.
+// DEFERRED: AB#114 (pin LF line endings for web/schedules)
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
 const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
 const NON_LF_TERMINATORS = new RegExp(`[\\r${LINE_SEPARATOR}${PARAGRAPH_SEPARATOR}]`);
@@ -33,11 +34,21 @@ function parseScheduleSource(source, name) {
   return JSON.parse(body.slice(prefix.length));
 }
 
-function loadScheduleData(name) {
-  const source = fs.readFileSync(path.join(SCHEDULE_DIR, `${name}.js`), 'utf8');
+function readScheduleSource(name) {
+  return fs.readFileSync(path.join(SCHEDULE_DIR, `${name}.js`), 'utf8');
+}
+
+// Parse already-read source under the loader's rules; asserts the payload is a
+// non-null object, so a null or scalar document fails here, with a clear message.
+function loadScheduleSource(source, name) {
   const data = parseScheduleSource(source, name);
   expect(data, `${name}.js is "window.schedule${name} = <JSON>" after any // header`).toBeDefined();
+  expect(data !== null && typeof data === 'object', `${name}.js payload is a non-null object`).toBe(true);
   return data;
 }
 
-module.exports = { SCHEDULE_DIR, LINE_SEPARATOR, PARAGRAPH_SEPARATOR, parseScheduleSource, loadScheduleData };
+function loadScheduleData(name) {
+  return loadScheduleSource(readScheduleSource(name), name);
+}
+
+module.exports = { SCHEDULE_DIR, LINE_SEPARATOR, PARAGRAPH_SEPARATOR, parseScheduleSource, readScheduleSource, loadScheduleSource, loadScheduleData };

@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
-const { SCHEDULE_DIR, LINE_SEPARATOR, PARAGRAPH_SEPARATOR, parseScheduleSource, loadScheduleData } = require('./schedule-data.js');
+const { LINE_SEPARATOR, PARAGRAPH_SEPARATOR, parseScheduleSource, readScheduleSource, loadScheduleSource, loadScheduleData } = require('./schedule-data.js');
 
 // R-SITOUT-PLAY, data side: the shipped sit-out tables, the loader that reads
 // them, the dropdown-to-script wiring and the engine round limit. Node-only
@@ -125,10 +125,10 @@ test.describe('R-SITOUT-PLAY: schedule option to script to global wiring', () =>
       const [, n, r] = m;
       const global = `schedule${n}p${r}r`;
       expect(scriptSrcs, `a <script> tag loads schedules/${value}`).toContain(`schedules/${value}`);
-      const source = fs.readFileSync(path.join(SCHEDULE_DIR, value), 'utf8');
+      const source = readScheduleSource(`${n}p${r}r`);
       const assigned = [...source.matchAll(/^window\.(schedule\w+) = /gm)].map((x) => x[1]);
       expect(assigned, `${value} assigns window.${global}`).toEqual([global]);
-      const data = loadScheduleData(`${n}p${r}r`);
+      const data = loadScheduleSource(source, `${n}p${r}r`);
       expect(data.playerCount, `${value} playerCount`).toBe(Number(n));
       expect(data.totalRounds, `${value} totalRounds`).toBe(Number(r));
     }
