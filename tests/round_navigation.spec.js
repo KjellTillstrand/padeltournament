@@ -222,34 +222,4 @@ test.describe('R-ROUND-NAV: Round navigation', () => {
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 1');
     expect(await organizer.asksFor(AFocusRingIsShown)).toBe(false);
   });
-
-  // @verifies REQ-9
-  test('R-ROUND-NAV: Typing a score keeps focus in the score input while the standings are redrawn', async ({ page }) => {
-    const organizer = theOrganizer(page);
-
-    // Given a tournament in progress at round 2, its standings watched for redraws,
-    await organizer.attemptsTo(StartTheTournament('Nav Typing'), GoToTheNextRound);
-    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
-    await page.evaluate(() => {
-      window.standingsRedraws = 0;
-      new MutationObserver(() => { window.standingsRedraws += 1; })
-        .observe(document.querySelector('.scoreboard-container'), { childList: true });
-    });
-    const score = page.locator('.matches-container .match').first().locator('.result-overlay-left input');
-
-    // When the Organizer types a two-digit score, pausing after the first digit
-    // long enough for the standings to be redrawn,
-    await score.focus();
-    await page.keyboard.type('1');
-    await expect.poll(() => page.evaluate(() => window.standingsRedraws)).toBeGreaterThan(0);
-    // Then focus stays in the score input through the redraw,
-    await expect(score).toBeFocused();
-    // and through the redraw of the completed score.
-    const redraws = await page.evaluate(() => window.standingsRedraws);
-    await page.keyboard.type('6');
-    await expect.poll(() => page.evaluate(() => window.standingsRedraws)).toBeGreaterThan(redraws);
-    await expect(score).toHaveValue('16');
-    await expect(score).toBeFocused();
-    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
-  });
 });

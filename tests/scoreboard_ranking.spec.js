@@ -691,6 +691,27 @@ test.describe('The standings while a score is typed', () => {
   });
 
   // @verifies REQ-12
+  test('R-SCOREBOARD: the standings redrawn while a score is typed leave focus in the score input', async ({ page }) => {
+    const organizer = theOrganizer(page);
+    const score = page.locator('.result-overlay-left input').first();
+
+    // When the Organizer types "1" into a round-3 score and pauses past the
+    // standings' redraw (and anything it may have scheduled),
+    await organizer.attemptsTo(TypeTheFirstLeftScore('1'));
+    await organizer.attemptsTo(LetTimePass(2 * await organizer.asksFor(TheRedrawDelay)));
+    expect(asRows(await organizer.asksFor(Standings))).toEqual(WITH_1_23);
+
+    // Then focus is still in the score input,
+    await expect(score).toBeFocused();
+    // and the next digit lands there: the score completes to 12, its standings
+    // drawn at once, and focus stays.
+    await page.keyboard.type('2');
+    await expect(score).toHaveValue('12');
+    expect(asRows(await organizer.asksFor(Standings))).toEqual(WITH_12_12);
+    await expect(score).toBeFocused();
+  });
+
+  // @verifies REQ-12
   test('R-SCOREBOARD: once the Organizer leaves a score input, the standings rank by its score at once', async ({ page }) => {
     const organizer = theOrganizer(page);
 

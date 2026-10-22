@@ -2120,9 +2120,12 @@
       saveTournamentState();
     }
 
-    // Focus the shown round's heading, found by its round number.
+    // Focus the shown round's heading, found by its round number. Nothing when
+    // no round is shown.
     function focusRoundHeading() {
-      const roundNumber = String(currentSchedule.rounds[currentRoundIndex].roundNumber);
+      const round = currentSchedule?.rounds?.[currentRoundIndex];
+      if (!round) return;
+      const roundNumber = String(round.roundNumber);
       const heading = document.querySelector(
         '#tournamentContainer .round[data-round="' + CSS.escape(roundNumber) + '"] .round-header .left');
       if (heading) heading.focus();
@@ -2130,16 +2133,20 @@
 
     // Step to another round by its PREVIOUS or NEXT `button`. The re-render
     // replaces the button, and focus on it would fall to the page. So if it had
-    // focus when activated (Enter or Space, or assistive technology), focus the
-    // same step's button in the new round, or the round's heading where there is
-    // none (no PREVIOUS on the first round, no NEXT on the last). Focus anywhere
-    // else, as a click or tap that does not focus the button leaves it (Safari),
-    // is never moved. A click that does focus it (Chromium, Firefox) keeps focus
-    // there the same way, still with no focus ring: no keyboard was used.
+    // focus when activated (Enter or Space), focus the same step's button in the
+    // new round, or the round's heading where there is none (no PREVIOUS on the
+    // first round, no NEXT on the last). Not covered: a screen reader activation
+    // with focus left on the page (iOS VoiceOver; macOS VoiceOver unless keyboard
+    // focus follows its cursor). Focus anywhere else, as a click or tap that does
+    // not focus the button leaves it (Safari), is never moved. A click that does
+    // focus it (Chromium, Firefox) keeps focus there the same way, still with no
+    // focus ring: no keyboard was used.
     function goToRound(roundIndex, button) {
       const hadFocus = document.activeElement === button;
       currentRoundIndex = roundIndex;
       displayRound(currentRoundIndex);
+      // displayRound saves too, but not when it has no round to show: the stale
+      // buttons of a New or Delete whose default schedule failed to load.
       saveTournamentState();
       if (!hadFocus) return;
       const same = document.querySelector(
