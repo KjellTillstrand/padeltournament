@@ -500,6 +500,19 @@ test.describe('Malformed or hostile persisted state', () => {
   }
 
   // --- Started Mexicano tournaments (AB#59) ---
+  // "Generate next round" asks to confirm the scores it locks (AB#95): ask, and confirm.
+  async function generateTheNextRound(page) {
+    const confirmation = page.locator('#generateConfirmation');
+    await page.click('#generateNextRoundBtn');
+    await expect(confirmation).toBeVisible();
+    // A click on Confirm is taken only once the scores have been on screen for
+    // the app's guard time: wait it out.
+    await page.waitForFunction(
+      () => performance.now() - generateConfirmationShownAt >= CONFIRM_ACTIVATION_GUARD_MS, null, { polling: 50 });
+    await confirmation.getByRole('button', { name: 'Confirm and generate', exact: true }).click();
+    await expect(confirmation).toBeHidden();
+  }
+
   // A genuine Mexicano state, taken from the app itself: a 9-player tournament
   // started, its round 1 completed and round 2 generated, so round 1 is locked.
   async function captureARealMexicanoState(context) {
@@ -516,7 +529,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expect(lefts).toHaveCount(2);
     await lefts.nth(0).fill('20');
     await lefts.nth(1).fill('15');
-    await donor.click('#generateNextRoundBtn');
+    await generateTheNextRound(donor);
     await expect(donor.locator('.round-header .left')).toHaveText('Round 2');
     const state = JSON.parse(await donor.evaluate((key) => localStorage.getItem(key), STATE_KEY));
     await donor.close();
@@ -533,6 +546,7 @@ test.describe('Malformed or hostile persisted state', () => {
     // The next round is not offered (aria-disabled, AB#70), and a click generates nothing.
     await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'true');
     await page.locator('#generateNextRoundBtn').click({ force: true });
+    await expect(page.locator('#generateConfirmation')).toBeHidden(); // refused: nothing to confirm (AB#95)
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
     // Round 1 stays viewable and locked.
@@ -690,7 +704,7 @@ test.describe('Malformed or hostile persisted state', () => {
     const lefts = page.locator('.matches-container .match .result-overlay-left input');
     await lefts.nth(0).fill('12');
     await lefts.nth(1).fill('12');
-    await page.click('#generateNextRoundBtn');
+    await generateTheNextRound(page);
     await expect(page.locator('.round-header .left')).toHaveText('Round 3');
     const stored = await storedJson(page, STATE_KEY);
     expect(stored.format).toBe('mexicano');
@@ -2347,6 +2361,7 @@ test.describe('Malformed or hostile persisted state', () => {
     await expectErrorsOnScreen(page, ['whole number from 0 to 24', '']);
     await expect(page.locator('#generateNextRoundBtn')).toHaveAttribute('aria-disabled', 'true');
     await page.locator('#generateNextRoundBtn').click({ force: true });
+    await expect(page.locator('#generateConfirmation')).toBeHidden(); // refused: nothing to confirm (AB#95)
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
     await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
     // until the Organizer enters a real score on that court.

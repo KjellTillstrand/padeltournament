@@ -45,8 +45,30 @@ const EnterTheScore = (index, left) => async (actor) => {
 const CompleteTheRound = (lefts) => async (actor) => {
   for (const [index, left] of lefts.entries()) await actor.attemptsTo(EnterTheScore(index, left));
 };
-const GenerateTheNextRound = async (actor) => {
+// Generating asks first (AB#95): the confirmation lists the scores it locks.
+const theConfirmation = (page) => page.getByRole('dialog', { name: /^Lock the scores of round \d+\?$/ });
+const AskForTheNextRound = async (actor) => {
   await actor.page.click('#generateNextRoundBtn');
+  await expect(theConfirmation(actor.page)).toBeVisible();
+};
+// A click on Confirm is not taken within the app's guard time of the scores
+// being shown (a double click on Generate must not confirm unread): wait it out,
+// as a reader does, polled on the page's own performance.now().
+const LetTheConfirmGuardPass = async (actor) => {
+  await actor.page.waitForFunction(
+    () => performance.now() - generateConfirmationShownAt >= CONFIRM_ACTIVATION_GUARD_MS, null, { polling: 50 });
+};
+const ConfirmTheScores = async (actor) => {
+  await actor.attemptsTo(LetTheConfirmGuardPass);
+  await theConfirmation(actor.page).getByRole('button', { name: 'Confirm and generate', exact: true }).click();
+  await expect(theConfirmation(actor.page)).toBeHidden();
+};
+const GoBackToTheScores = async (actor) => {
+  await theConfirmation(actor.page).getByRole('button', { name: 'Back to scores', exact: true }).click();
+  await expect(theConfirmation(actor.page)).toBeHidden();
+};
+const GenerateTheNextRound = async (actor) => {
+  await actor.attemptsTo(AskForTheNextRound, ConfirmTheScores);
 };
 const GoToThePreviousRound = async (actor) => {
   await actor.page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true }).click();
@@ -75,6 +97,24 @@ const TheScoresOnScreen = async (actor) =>
     ]));
 const TheStoredState = async (actor) =>
   actor.page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STATE_KEY);
+// The open confirmation's matches: [court, left team, left score, right score, right team].
+const TheScoresToBeLocked = async (actor) =>
+  theConfirmation(actor.page).locator('li').evaluateAll((items) => items.map((item) => [
+    item.querySelector('.confirm-court').textContent,
+    item.querySelector('.confirm-team-left').textContent,
+    item.querySelector('.confirm-score-left').textContent,
+    item.querySelector('.confirm-score-right').textContent,
+    item.querySelector('.confirm-team-right').textContent,
+  ]));
+// The same, as the round on screen shows it: court labels, teams and score inputs.
+const TheScoresOnTheCourts = async (actor) =>
+  actor.page.locator('.matches-container .match').evaluateAll((matches) => matches.map((m) => [
+    m.querySelector('.court-label').textContent,
+    m.dataset.teamLeft.split(',').join(' & '),
+    m.querySelector('.result-overlay-left input').value,
+    m.querySelector('.result-overlay-right input').value,
+    m.dataset.teamRight.split(',').join(' & '),
+  ]));
 
 // Uncaught exceptions and console errors: none may occur on any Mexicano path.
 function collectErrors(page) {
@@ -142,6 +182,8 @@ async function expectActivatingItGeneratesNothing(page, activate = ActivateTheGe
     (key) => JSON.parse(localStorage.getItem(key)).schedule.rounds.length, STATE_KEY);
   const before = await storedRounds();
   await activate(theOrganizer(page));
+  // Refused at once: no confirmation is asked for (AB#95).
+  await expect(page.locator('#generateConfirmation')).toBeHidden();
   await expect(page.locator('.round-header .left')).toHaveText(title);
   await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
   expect(await storedRounds()).toBe(before);
@@ -674,8 +716,16 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     await organizer.attemptsTo(CompleteTheRound([18, 7]));
     await expectTheNextRoundOffered(page);
 
-    // When the Organizer generates the next round by keyboard (focus the control, Enter),
+    // When the Organizer generates the next round by keyboard (focus the control,
+    // Enter; then, in the confirmation, Tab past Back to scores to Confirm, Enter),
     await page.locator('#generateNextRoundBtn').focus();
+    await page.keyboard.press('Enter');
+    await expect(theConfirmation(page)).toBeVisible();
+    await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Back to scores', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Confirm and generate', exact: true })).toBeFocused();
     await page.keyboard.press('Enter');
 
     // Then round 2 is shown and focus is on its heading, not lost with the replaced button,
@@ -877,13 +927,17 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
       window.Mexicano.nextRound = () => { document.activeElement.blur(); throw new Error('planted pairing failure'); };
     });
 
-    // When the Organizer generates the next round by keyboard,
+    // When the Organizer generates the next round by keyboard (and confirms by keyboard),
     const generate = page.locator('#generateNextRoundBtn');
     await generate.focus();
+    await page.keyboard.press('Enter');
+    await expect(theConfirmation(page)).toBeVisible();
+    await page.getByRole('button', { name: 'Confirm and generate', exact: true }).focus();
     await page.keyboard.press('Enter');
 
     // Then the failure is reported, round 1 stays as it was, and focus is still on the control.
     await expect.poll(() => dialogs).toEqual(['The next round could not be generated.']);
+    await expect(theConfirmation(page)).toBeHidden();
     await expect(generate).toBeFocused();
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 1');
     expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
@@ -1119,6 +1173,449 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     expect(stored.format).toBe('americano');
     expect(stored.schedule.rounds).toHaveLength(11);
     expect(stored.schedule.rounds[0].matches[0].result).toEqual({ left: '16', right: '8' });
+    expect(errors).toEqual([]);
+  });
+
+  // --- Generating asks the Organizer to confirm the scores it locks (AB#95) ---
+
+  // Given an 8-player round whose first court is scored 18-6 and whose second
+  // court's score is half typed: the "1" of "12", which the input completes to a
+  // whole 1-23 result. Returns the second court's inputs.
+  async function aRoundCompletedByAHalfTypedScore(page, organizer, tournamentName) {
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament(tournamentName));
+    await organizer.attemptsTo(EnterTheScore(0, 18));
+    const second = page.locator('.matches-container .match').nth(1);
+    const left = second.locator('.result-overlay-left input');
+    const right = second.locator('.result-overlay-right input');
+    await left.focus();
+    await page.keyboard.type('1');
+    await expect(right).toHaveValue('23');
+    await expectTheNextRoundOffered(page);
+    return { left, right };
+  }
+
+  // Nothing was generated: round 1 alone, on screen and stored, and still editable.
+  async function expectNothingGenerated(page, organizer) {
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+    await expectTheScoresEditable(page);
+  }
+
+  test('R-MEXICANO-ROUNDS: Asking for the next round mid-typing shows the half-typed score and generates nothing', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a round made complete by a half-typed score (the "1" of "12": 1-23),
+    await aRoundCompletedByAHalfTypedScore(page, organizer, 'Half Cup');
+    const courts = await organizer.asksFor(TheScoresOnTheCourts);
+
+    // When the Organizer asks for the next round at that moment,
+    await organizer.attemptsTo(AskForTheNextRound);
+
+    // Then the scores that will be locked are shown, the half-typed 1-23 among them,
+    expect(await organizer.asksFor(TheScoresToBeLocked)).toEqual(courts);
+    const halfTyped = theConfirmation(page).locator('li').nth(1);
+    await expect(halfTyped.locator('.confirm-court')).toHaveText('Court 2');
+    await expect(halfTyped.locator('.confirm-score-left')).toHaveText('1');
+    await expect(halfTyped.locator('.confirm-score-right')).toHaveText('23');
+    await expect(theConfirmation(page)).toContainText('Generating round 2 locks these scores');
+    // the standings behind it already counting that 1-23,
+    const pointsBehind = await page.locator('.scoreboard-container tr').evaluateAll((rows) =>
+      Object.fromEntries(rows.slice(1).map((row) => [row.cells[0].textContent, row.cells[1].textContent])));
+    for (const player of courts[1][4].split(' & ')) expect(pointsBehind[player], player).toBe('23');
+    for (const player of courts[1][1].split(' & ')) expect(pointsBehind[player], player).toBe('1');
+    // with focus on the confirmation's heading,
+    await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
+    // and no round is generated until the Organizer confirms: none on screen or
+    // stored, and round 1 is not locked.
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    const stored = await organizer.asksFor(TheStoredState);
+    expect(stored.schedule.rounds).toHaveLength(1);
+    expect(stored.schedule.rounds[0].matches[1].result).toEqual({ left: '1', right: '23' });
+    await organizer.attemptsTo(GoBackToTheScores);
+    await expectNothingGenerated(page, organizer);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: Going back from the confirmation, by button or Escape, generates nothing and returns to Generate', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+    const generate = page.locator('#generateNextRoundBtn');
+
+    // Given a round made complete by a half-typed score, and the confirmation asked for,
+    const { left, right } = await aRoundCompletedByAHalfTypedScore(page, organizer, 'Back Cup');
+    await organizer.attemptsTo(AskForTheNextRound);
+
+    // When the Organizer goes back with "Back to scores",
+    await organizer.attemptsTo(GoBackToTheScores);
+    // Then nothing is generated, the scores stay editable, and focus is on Generate.
+    await expectNothingGenerated(page, organizer);
+    await expect(generate).toBeFocused();
+
+    // When the Organizer asks again and presses Escape,
+    await organizer.attemptsTo(AskForTheNextRound);
+    await page.keyboard.press('Escape');
+    // Then the same.
+    await expect(theConfirmation(page)).toBeHidden();
+    await expectNothingGenerated(page, organizer);
+    await expect(generate).toBeFocused();
+
+    // When the Organizer then corrects the score to 12 and confirms,
+    await left.fill('12');
+    await expect(right).toHaveValue('12');
+    await organizer.attemptsTo(AskForTheNextRound);
+    const shown = await organizer.asksFor(TheScoresToBeLocked);
+    expect(shown[1].slice(2, 4)).toEqual(['12', '12']);
+    await organizer.attemptsTo(ConfirmTheScores);
+
+    // Then round 2 is generated, and round 1 is locked with 12-12, not 1-23.
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    const stored = await organizer.asksFor(TheStoredState);
+    expect(stored.schedule.rounds).toHaveLength(2);
+    expect(stored.schedule.rounds[0].matches.map((m) => m.result))
+      .toEqual([{ left: '18', right: '6' }, { left: '12', right: '12' }]);
+    await organizer.attemptsTo(GoToThePreviousRound);
+    await expectTheScoresLocked(page);
+    expect(await organizer.asksFor(TheScoresOnScreen)).toEqual([['18', '6'], ['12', '12']]);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: Confirming locks exactly the scores shown and pairs the next round from them', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 12-player round,
+    await organizer.attemptsTo(ChooseMexicanoFor(12), StartTheTournament('Confirm Cup'));
+    await organizer.attemptsTo(CompleteTheRound([20, 15, 3]));
+    const ranking = await organizer.asksFor(TheRanking);
+
+    // When the Organizer asks for the next round and confirms the scores shown,
+    await organizer.attemptsTo(AskForTheNextRound);
+    const shown = await organizer.asksFor(TheScoresToBeLocked);
+    expect(shown.map((match) => match.slice(2, 4))).toEqual([['20', '4'], ['15', '9'], ['3', '21']]);
+    await organizer.attemptsTo(ConfirmTheScores);
+
+    // Then the next round is generated, with focus on its heading,
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    await expect(page.getByRole('heading', { name: 'Round 2', level: 2, exact: true })).toBeFocused();
+    // paired from the standings those scores make,
+    expect(await organizer.asksFor(TheMatchesOnScreen)).toEqual(expectedNextRound(ranking, []).matches);
+    // and exactly the scores shown are locked.
+    const stored = await organizer.asksFor(TheStoredState);
+    expect(stored.schedule.rounds).toHaveLength(2);
+    expect(stored.schedule.rounds[0].matches.map((m) => [m.result.left, m.result.right]))
+      .toEqual(shown.map((match) => match.slice(2, 4)));
+    await organizer.attemptsTo(GoToThePreviousRound);
+    await expectTheScoresLocked(page);
+    expect(await organizer.asksFor(TheScoresOnTheCourts)).toEqual(shown);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: The confirmation shows every match of the round, both teams and both scores', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 24-player round (six courts), one court renamed,
+    await organizer.attemptsTo(ChooseMexicanoFor(24));
+    await page.fill('#courtNameInput_4', 'Centre');
+    await organizer.attemptsTo(StartTheTournament('Six Courts Cup'));
+    await expect(page.locator('.court')).toHaveCount(6);
+    await organizer.attemptsTo(CompleteTheRound([24, 0, 13, 7, 12, 1]));
+
+    // When the Organizer asks for the next round,
+    await organizer.attemptsTo(AskForTheNextRound);
+
+    // Then each of the six matches is listed as the courts show it: court name,
+    // both teams and both scores,
+    const shown = await organizer.asksFor(TheScoresToBeLocked);
+    expect(shown).toHaveLength(6);
+    expect(shown).toEqual(await organizer.asksFor(TheScoresOnTheCourts));
+    expect(shown[3][0]).toBe('Centre');
+    // and as stored: the results generating would lock.
+    const stored = await organizer.asksFor(TheStoredState);
+    expect(shown.map(([, teamLeft, left, right, teamRight]) => [teamLeft, left, right, teamRight]))
+      .toEqual(stored.schedule.rounds[0].matches.map((m) =>
+        [m.teams[0].join(' & '), m.result.left, m.result.right, m.teams[1].join(' & ')]));
+    expect(shown.map(([, , left, right]) => [left, right]))
+      .toEqual([['24', '0'], ['0', '24'], ['13', '11'], ['7', '17'], ['12', '12'], ['1', '23']]);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: While the confirmation is open no score can change, and nothing but the scores shown is locked', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a round made complete by a half-typed score, and the confirmation open,
+    const { left, right } = await aRoundCompletedByAHalfTypedScore(page, organizer, 'Inert Cup');
+    await organizer.attemptsTo(AskForTheNextRound);
+    const shown = await organizer.asksFor(TheScoresToBeLocked);
+
+    // When the Organizer taps a score input behind it (one the confirmation does
+    // not cover: a tap on the confirmation would reach its own buttons) and types,
+    const onScreen = await organizer.asksFor(TheScoresOnScreen);
+    const tapped = await page.evaluate(() => {
+      const dialog = document.getElementById('generateConfirmation').getBoundingClientRect();
+      for (const input of document.querySelectorAll('.matches-container .result-overlay-container input')) {
+        const r = input.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const covered = x >= dialog.left && x <= dialog.right && y >= dialog.top && y <= dialog.bottom;
+        if (!covered && y >= 0 && y <= window.innerHeight) return { x, y };
+      }
+      return null;
+    });
+    expect(tapped, 'a score input on screen, outside the confirmation').not.toBeNull();
+    await page.mouse.click(tapped.x, tapped.y);
+    await page.keyboard.type('2');
+    // Then no score changes: the page behind the confirmation is inert,
+    await expect(theConfirmation(page)).toBeVisible();
+    expect(await organizer.asksFor(TheScoresOnScreen)).toEqual(onScreen);
+    await expect(left).toHaveValue('1');
+    await expect(right).toHaveValue('23');
+    // not even the half-typed score's input can take the focus,
+    expect(await left.evaluate((input) => { input.focus(); return document.activeElement === input; })).toBe(false);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds[0].matches[1].result)
+      .toEqual({ left: '1', right: '23' });
+    expect(await organizer.asksFor(TheScoresToBeLocked)).toEqual(shown);
+
+    // When a score is changed under it anyway, by script (inert stops no
+    // dispatched event), and the Organizer confirms,
+    await left.evaluate((input) => {
+      input.value = '12';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(right).toHaveValue('12');
+    await organizer.attemptsTo(LetTheConfirmGuardPass);
+    await theConfirmation(page).getByRole('button', { name: 'Confirm and generate', exact: true }).click();
+
+    // Then nothing is generated (what would be locked is no longer what was
+    // shown): the confirmation stays open, now showing the scores as they are,
+    // and says in its own status line that they changed,
+    await expect(theConfirmation(page)).toBeVisible();
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+    expect((await organizer.asksFor(TheScoresToBeLocked))[1].slice(2, 4)).toEqual(['12', '12']);
+    await expect(page.locator('#generateConfirmationChanged')).toHaveText(
+      'The scores changed since you asked. Check them and confirm again.');
+    await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
+    // and confirming those locks them.
+    await organizer.attemptsTo(ConfirmTheScores);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds[0].matches[1].result)
+      .toEqual({ left: '12', right: '12' });
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: A score cleared under the open confirmation closes it on Confirm and generates nothing', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a round made complete by a half-typed score, and the confirmation open,
+    const { left } = await aRoundCompletedByAHalfTypedScore(page, organizer, 'Cleared Cup');
+    await organizer.attemptsTo(AskForTheNextRound);
+
+    // When that score is cleared under it by script, and the Organizer confirms,
+    await left.evaluate((input) => {
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await organizer.attemptsTo(LetTheConfirmGuardPass);
+    await theConfirmation(page).getByRole('button', { name: 'Confirm and generate', exact: true }).click();
+
+    // Then nothing is generated: the confirmation closes, the Organizer is back
+    // on Generate, and the court still waiting for a score is named.
+    await expect(theConfirmation(page)).toBeHidden();
+    await expectNothingGenerated(page, organizer);
+    await expect(page.locator('#generateNextRoundBtn')).toBeFocused();
+    await expectTheNextRoundNotOffered(page);
+    await expect(theAnnouncement(page)).toHaveText(/^Waiting for a valid score on: Court 2\./);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: A double click on Generate, or a click on Confirm right as it opens, confirms nothing', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+    const generate = page.locator('#generateNextRoundBtn');
+    const confirm = page.getByRole('button', { name: 'Confirm and generate', exact: true });
+
+    // Given a completed 8-player round, and the confirmation drawn so that its
+    // Confirm button lies exactly where the Generate button is (measured once
+    // open, then placed there),
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Double Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]));
+    await organizer.attemptsTo(AskForTheNextRound);
+    const offset = await page.evaluate(() => {
+      const dialog = document.getElementById('generateConfirmation').getBoundingClientRect();
+      const button = document.getElementById('generateConfirmationConfirm').getBoundingClientRect();
+      return { x: button.left + button.width / 2 - dialog.left, y: button.top + button.height / 2 - dialog.top };
+    });
+    await organizer.attemptsTo(GoBackToTheScores);
+    const box = await generate.boundingBox();
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await page.addStyleTag({ content:
+      `#generateConfirmation { margin: 0; inset: auto; left: ${point.x - offset.x}px; top: ${point.y - offset.y}px; }` });
+
+    // When the Organizer double-clicks Generate,
+    await page.mouse.dblclick(point.x, point.y);
+
+    // Then the second click, which lands on Confirm, confirms nothing: the
+    // confirmation stays open and no round is generated.
+    await expect(theConfirmation(page)).toBeVisible();
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y).id, point)).toBe('generateConfirmationConfirm');
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+    // Focus is back on the heading, not on the Confirm button the press may
+    // have focused, so a later Enter confirms nothing either.
+    await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(theConfirmation(page)).toBeVisible();
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+
+    // When the confirmation is opened again and a single click reaches Confirm
+    // at once (the tap that opened it repeated, in the same moment),
+    await organizer.attemptsTo(GoBackToTheScores);
+    await page.evaluate(() => {
+      document.getElementById('generateNextRoundBtn').click();
+      document.getElementById('generateConfirmationConfirm')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    });
+    // Then that confirms nothing either.
+    await expect(theConfirmation(page)).toBeVisible();
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+
+    // And a click once the scores have been on screen a moment does confirm.
+    await organizer.attemptsTo(LetTheConfirmGuardPass);
+    await confirm.click();
+    await expect(theConfirmation(page)).toBeHidden();
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: A burst of clicks on Confirm confirms nothing until a pause, then one click confirms', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 8-player round,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Burst Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]));
+
+    // When the confirmation opens and Confirm at once gets a burst of clicks,
+    // one every 150 ms for 750 ms (each made at its own moment: the page is
+    // held between them, so none waits in a queue), the last ones well past the
+    // guard time after the confirmation was shown,
+    const sent = await page.evaluate(() => {
+      const hold = (ms) => { const until = performance.now() + ms; while (performance.now() < until) { /* hold */ } };
+      document.getElementById('generateNextRoundBtn').click();
+      const opened = performance.now();
+      const confirm = document.getElementById('generateConfirmationConfirm');
+      const times = [];
+      for (let i = 0; i < 6; i++) {
+        if (i > 0) hold(150);
+        times.push(Math.round(performance.now() - opened));
+        confirm.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+      }
+      return times;
+    });
+    expect(sent[sent.length - 1]).toBeGreaterThanOrEqual(700);
+
+    // Then none of them confirms: the confirmation is still open, nothing generated,
+    await expect(theConfirmation(page)).toBeVisible();
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+
+    // and after a pause, one click confirms.
+    await organizer.attemptsTo(ConfirmTheScores);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: A click made right as the confirmation opens confirms nothing, however late it is handled', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 8-player round,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Queued Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]));
+
+    // When the confirmation opens and a click on Confirm is made at once but
+    // handled only 700 ms later (the page busy meanwhile),
+    await page.evaluate(() => {
+      document.getElementById('generateNextRoundBtn').click();
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+      const until = performance.now() + 700;
+      while (performance.now() < until) { /* busy */ }
+      document.getElementById('generateConfirmationConfirm').dispatchEvent(click);
+    });
+
+    // Then it is judged by when it was made: it confirms nothing.
+    await expect(theConfirmation(page)).toBeVisible();
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+    await organizer.attemptsTo(ConfirmTheScores);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: Going back and asking again at once leaves the new confirmation working', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 8-player round and its confirmation open,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Again Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]));
+    await organizer.attemptsTo(AskForTheNextRound);
+
+    // When the Organizer goes back and asks again in the same moment (the close
+    // event of going back arrives only after the confirmation is open again),
+    await page.evaluate(() => {
+      document.getElementById('generateConfirmationBack').click();
+      document.getElementById('generateNextRoundBtn').click();
+    });
+    await expect(theConfirmation(page)).toBeVisible();
+
+    // Then that late close event leaves the new confirmation as it is: it keeps
+    // what it shows, so confirming generates the next round.
+    await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
+    await organizer.attemptsTo(ConfirmTheScores);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: A refused next round asks for no confirmation', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given an 8-player round with a match missing its score, the confirmation
+    // watched for ever opening,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Refused Cup'));
+    await organizer.attemptsTo(EnterTheScore(0, 14));
+    await expectTheNextRoundNotOffered(page);
+    await page.evaluate(() => {
+      const watch = { changes: 0 };
+      // Any change of its open attribute: opening it, or closing it again.
+      watch.count = (records) => { watch.changes += records.length; };
+      watch.observer = new MutationObserver(watch.count);
+      watch.observer.observe(document.getElementById('generateConfirmation'), { attributes: true, attributeFilter: ['open'] });
+      window.confirmationWatch = watch;
+    });
+
+    // When the Organizer asks for the next round by click, Enter and Space,
+    for (const activate of [ActivateTheGenerateControl.byClick, ActivateTheGenerateControl.byEnter, ActivateTheGenerateControl.bySpace]) {
+      await expectActivatingItGeneratesNothing(page, activate);
+    }
+
+    // Then the confirmation never opened, not even for a moment,
+    const changes = await page.evaluate(() => {
+      const watch = window.confirmationWatch;
+      watch.count(watch.observer.takeRecords());
+      return watch.changes;
+    });
+    expect(changes).toBe(0);
+    // and the refusal still says which court waits for a score.
+    await expect(theAnnouncement(page)).toHaveText(/^Waiting for a valid score on: Court 2\./);
     expect(errors).toEqual([]);
   });
 });
