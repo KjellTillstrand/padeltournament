@@ -1493,6 +1493,71 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     expect(errors).toEqual([]);
   });
 
+  test('R-MEXICANO-ROUNDS: A burst of clicks on Confirm confirms nothing until a pause, then one click confirms', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 8-player round,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Burst Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]));
+
+    // When the confirmation opens and Confirm at once gets a burst of clicks,
+    // one every 150 ms for 750 ms (each made at its own moment: the page is
+    // held between them, so none waits in a queue), the last ones well past the
+    // guard time after the confirmation was shown,
+    const sent = await page.evaluate(() => {
+      const hold = (ms) => { const until = performance.now() + ms; while (performance.now() < until) { /* hold */ } };
+      document.getElementById('generateNextRoundBtn').click();
+      const opened = performance.now();
+      const confirm = document.getElementById('generateConfirmationConfirm');
+      const times = [];
+      for (let i = 0; i < 6; i++) {
+        if (i > 0) hold(150);
+        times.push(Math.round(performance.now() - opened));
+        confirm.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+      }
+      return times;
+    });
+    expect(sent[sent.length - 1]).toBeGreaterThanOrEqual(700);
+
+    // Then none of them confirms: the confirmation is still open, nothing generated,
+    await expect(theConfirmation(page)).toBeVisible();
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+
+    // and after a pause, one click confirms.
+    await organizer.attemptsTo(ConfirmTheScores);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: A click made right as the confirmation opens confirms nothing, however late it is handled', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+
+    // Given a completed 8-player round,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Queued Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]));
+
+    // When the confirmation opens and a click on Confirm is made at once but
+    // handled only 700 ms later (the page busy meanwhile),
+    await page.evaluate(() => {
+      document.getElementById('generateNextRoundBtn').click();
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+      const until = performance.now() + 700;
+      while (performance.now() < until) { /* busy */ }
+      document.getElementById('generateConfirmationConfirm').dispatchEvent(click);
+    });
+
+    // Then it is judged by when it was made: it confirms nothing.
+    await expect(theConfirmation(page)).toBeVisible();
+    await expect(page.locator('.round[data-round="2"]')).toHaveCount(0);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(1);
+    await organizer.attemptsTo(ConfirmTheScores);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    expect(errors).toEqual([]);
+  });
+
   test('R-MEXICANO-ROUNDS: Going back and asking again at once leaves the new confirmation working', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
@@ -1510,8 +1575,8 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     });
     await expect(theConfirmation(page)).toBeVisible();
 
-    // Then that late close event leaves the new confirmation as it is: focus
-    // stays in it, and confirming generates the next round.
+    // Then that late close event leaves the new confirmation as it is: it keeps
+    // what it shows, so confirming generates the next round.
     await expect(page.locator('#generateConfirmationTitle')).toBeFocused();
     await organizer.attemptsTo(ConfirmTheScores);
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');

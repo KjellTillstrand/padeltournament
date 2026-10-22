@@ -2167,11 +2167,12 @@
       showTheScoresToConfirm();
       dialog.returnValue = "";
       dialog.showModal();
+      generateConfirmationShownAt = performance.now(); // shown now, not when filled
       document.getElementById("generateConfirmationTitle").focus();
     }
 
     // Fill the confirmation with the latest round's scores as they are now, and
-    // remember what it shows and when.
+    // remember what it shows. (The caller stamps when: generateConfirmationShownAt.)
     function showTheScoresToConfirm() {
       const latest = currentSchedule.rounds[currentSchedule.rounds.length - 1];
       document.getElementById("generateConfirmationTitle").textContent =
@@ -2208,7 +2209,6 @@
       });
       document.getElementById("generateConfirmationScores").replaceChildren(...items);
       generateConfirmationShows = { schedule: currentSchedule, locked: latestRoundAsLocked() };
-      generateConfirmationShownAt = performance.now();
     }
 
     // Confirm activated: generate, locking exactly the scores shown.
@@ -2217,16 +2217,25 @@
       if (!dialog.open) return;
       const title = document.getElementById("generateConfirmationTitle");
       // Not a confirmation: a click or tap (detail 1 and up) made within
-      // CONFIRM_ACTIVATION_GUARD_MS of the scores being shown, by the time of the
-      // input itself (event.timeStamp), so a tap queued behind a slow opening is
-      // judged by when it was made. Focus goes back to the heading, or a later
-      // Enter would confirm from the Confirm button the press focused. A keyboard
-      // activation (detail 0) is taken at once: focus starts on the heading, so
-      // reaching Confirm takes a deliberate Tab.
-      if (event && event.detail > 0 &&
-        event.timeStamp - generateConfirmationShownAt < CONFIRM_ACTIVATION_GUARD_MS) {
-        title.focus();
-        return;
+      // CONFIRM_ACTIVATION_GUARD_MS of the scores being shown, or of the last
+      // click or tap not taken. Each one not taken restarts the wait, so a run of
+      // clicks or taps (a triple click, a burst) confirms nothing until a pause;
+      // a single deliberate click is never held back. Judged by the time of the
+      // input itself (event.timeStamp, the clock of performance.now()), so a tap
+      // queued behind a slow opening counts from when it was made; a timeStamp
+      // that is not a time on that clock (absent, or in the future) counts as now.
+      // Focus goes back to the heading, without scrolling a long confirmation
+      // back to its top, or a later Enter would confirm from the Confirm button
+      // the press focused. A keyboard activation (detail 0) is taken at once:
+      // focus starts on the heading, so reaching Confirm takes a deliberate Tab.
+      if (event && event.detail > 0) {
+        const now = performance.now();
+        const at = event.timeStamp > 0 && event.timeStamp <= now ? event.timeStamp : now;
+        if (at - generateConfirmationShownAt < CONFIRM_ACTIVATION_GUARD_MS) {
+          generateConfirmationShownAt = Math.max(generateConfirmationShownAt, at);
+          title.focus({ preventScroll: true });
+          return;
+        }
       }
       const shows = generateConfirmationShows;
       const sameTournament = !!shows && shows.schedule === currentSchedule && isMexicanoPlay();
@@ -2245,6 +2254,7 @@
       // Generate, which says why.
       if (sameTournament && !nextRoundRefused()) {
         showTheScoresToConfirm();
+        generateConfirmationShownAt = performance.now(); // shown anew: the wait starts again
         const note = document.getElementById("generateConfirmationChanged");
         // A repeat is a real change of the text (see announceNextRoundState).
         note.textContent = note.textContent === SCORES_CHANGED_TEXT ? SCORES_CHANGED_TEXT + "\u00A0" : SCORES_CHANGED_TEXT;

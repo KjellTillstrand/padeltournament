@@ -436,6 +436,36 @@ test.describe('Phone layout', () => {
         await confirm.click();
         await expect(page.locator('.round-header .left')).toHaveText('Round 2');
       });
+
+      test('a tap on Confirm too soon after the Mexicano generate confirmation opens does not scroll it', async ({ page }) => {
+        await page.goto('/');
+        await chooseTheTournament(page, { format: 'mexicano', players: 24, courts: 6 });
+        for (let i = 0; i < 24; i++) await page.fill(`#playerInput_${i}`, wideName(i));
+        await startTheTournament(page, 'Scroll Cup');
+        const matches = page.locator('.matches-container .match');
+        for (let i = 0; i < 6; i++) await matches.nth(i).locator('.result-overlay-left input').fill('12');
+        // The confirmation opens, is scrolled down to Confirm, and Confirm is
+        // tapped at once: the tap is not taken, and focus goes back to the
+        // heading without scrolling the confirmation back to its top.
+        const seen = await page.evaluate(() => {
+          document.getElementById('generateNextRoundBtn').click();
+          const dialog = document.getElementById('generateConfirmation');
+          const confirm = document.getElementById('generateConfirmationConfirm');
+          dialog.scrollTop = dialog.scrollHeight;
+          confirm.focus(); // as the press of a tap does
+          const before = dialog.scrollTop;
+          confirm.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+          return {
+            before,
+            after: dialog.scrollTop,
+            open: dialog.open,
+            headingFocused: document.activeElement.id === 'generateConfirmationTitle',
+          };
+        });
+        expect(seen.before, 'the confirmation scrolls').toBeGreaterThan(0);
+        expect(seen).toEqual({ before: seen.before, after: seen.before, open: true, headingFocused: true });
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      });
     });
   }
 
