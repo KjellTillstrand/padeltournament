@@ -891,7 +891,151 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     expect(errors).toEqual([]);
   });
 
-  test('R-MEXICANO-ROUNDS: Americano round navigation by keyboard moves no focus and writes no status line', async ({ page }) => {
+  // Round navigation redraws the round, its buttons included (AB#94): focus on
+  // the button used stays on that button in the new round, or goes to the round
+  // heading where the new round has none.
+  test('R-MEXICANO-ROUNDS: Mexicano round navigation by keyboard keeps the Organizer\'s place', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+    const title = page.locator('.round-header .left');
+    const stepOfRound = (roundNumber, name) =>
+      page.locator(`.round[data-round="${roundNumber}"]`).getByRole('button', { name, exact: true });
+    const headingOf = (roundNumber) =>
+      page.getByRole('heading', { name: `Round ${roundNumber}`, level: 2, exact: true });
+
+    // Given an 8-player Mexicano tournament at its latest round, round 3,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Keys Cup'));
+    await organizer.attemptsTo(CompleteTheRound([18, 7]), GenerateTheNextRound);
+    await organizer.attemptsTo(CompleteTheRound([13, 12]), GenerateTheNextRound);
+    await expect(title).toHaveText('Round 3');
+
+    // When the Organizer goes to the previous round using the keyboard (Tab from the heading),
+    await title.focus();
+    await page.keyboard.press('Tab');
+    await expect(stepOfRound(3, 'PREVIOUS ROUND')).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    // Then round 2 is shown, focus is on its PREVIOUS ROUND, and Tab goes on to NEXT ROUND.
+    await expect(title).toHaveText('Round 2');
+    await expect(stepOfRound(2, 'PREVIOUS ROUND')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(stepOfRound(2, 'NEXT ROUND')).toBeFocused();
+
+    // When the Organizer goes to the next round, the latest, by keyboard,
+    await page.keyboard.press('Space');
+
+    // Then, the latest round having no NEXT ROUND, focus is on its heading,
+    await expect(title).toHaveText('Round 3');
+    await expect(page.getByRole('button', { name: 'NEXT ROUND', exact: true })).toHaveCount(0);
+    await expect(headingOf(3)).toBeFocused();
+    // and Tab goes on to its controls: PREVIOUS ROUND, then the generate control.
+    await page.keyboard.press('Tab');
+    await expect(stepOfRound(3, 'PREVIOUS ROUND')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#generateNextRoundBtn')).toBeFocused();
+
+    // When the Organizer goes back to round 1 by keyboard,
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Enter');
+    await expect(title).toHaveText('Round 2');
+    await expect(stepOfRound(2, 'PREVIOUS ROUND')).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    // Then, round 1 having no PREVIOUS ROUND, focus is on its heading, and Tab goes on to NEXT ROUND.
+    await expect(title).toHaveText('Round 1');
+    await expect(headingOf(1)).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(stepOfRound(1, 'NEXT ROUND')).toBeFocused();
+    // Earlier rounds stay locked: navigation changed nothing but the round shown.
+    await expectTheScoresLocked(page);
+    expect((await organizer.asksFor(TheStoredState)).schedule.rounds).toHaveLength(3);
+    expect(errors).toEqual([]);
+  });
+
+  test('R-MEXICANO-ROUNDS: Completing a round\'s scores keeps focus in the score input', async ({ page }) => {
+    const errors = collectErrors(page);
+    const organizer = theOrganizer(page);
+    const scores = page.locator('.matches-container .match .result-overlay-left input');
+
+    // Given an 8-player Mexicano round with one score entered,
+    await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Typing Cup'));
+    await organizer.attemptsTo(EnterTheScore(0, 18));
+    await expectTheNextRoundNotOffered(page);
+
+    // When the Organizer types the last missing score,
+    await scores.nth(1).focus();
+    await page.keyboard.type('7');
+
+    // Then the round is complete (the status line and the control redrawn),
+    await expectTheNextRoundOffered(page);
+    await expect(page.locator('#nextRoundStatus')).toHaveText('All scores are in: the next round can be generated.');
+    // and focus is still in the score input typed in.
+    await expect(scores.nth(1)).toBeFocused();
+    expect(errors).toEqual([]);
+  });
+
+  // A tournament replaced by New Tournament, Delete or Load takes its
+  // announcement with it: the live region is cleared once, so nothing stale is
+  // left there, and the next tournament's first state is announced even when it
+  // is the same state.
+  for (const replacement of ['New Tournament', 'Delete', 'Load']) {
+    test(`A Mexicano tournament replaced by ${replacement} takes its announcement with it`, async ({ page }) => {
+      const errors = collectErrors(page);
+      page.on('dialog', (dialog) => {
+        // Confirm Delete; decline "save first?" on New Tournament; accept every notice.
+        if (dialog.type() !== 'confirm' || dialog.message().startsWith('Are you sure you want to delete')) {
+          dialog.accept();
+        } else {
+          dialog.dismiss();
+        }
+      });
+      const organizer = theOrganizer(page);
+      const waitingForBoth = /^Waiting for a valid score on: Court 1, Court 2\./;
+
+      // Given a saved Americano tournament,
+      await organizer.attemptsTo(StartTheTournament('Saved Americano'));
+      await page.click('#saveTournamentBtn');
+      await page.click('#newTournamentBtn');
+      await expect(page.locator('#settingsContainer')).toBeVisible();
+      // and a Mexicano tournament whose round waits for every court (courts 1 and 2),
+      await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Missing Cup'));
+      await expect(theAnnouncement(page)).toHaveText(waitingForBoth);
+      await watchTheAnnouncements(page);
+
+      // When the Organizer replaces it,
+      if (replacement === 'New Tournament') {
+        await page.click('#newTournamentBtn');
+        await expect(page.locator('#settingsContainer')).toBeVisible();
+      } else if (replacement === 'Delete') {
+        await page.click('#toggleSettingsBtn');
+        await page.click('#deleteTournamentBtn');
+        await expect(page.locator('#tournamentContainer .round')).toHaveCount(0);
+        await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+      } else {
+        await page.click('#toggleSettingsBtn');
+        await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+        await expect(page.locator('#savedTournamentSelect option')).toContainText('Saved Americano');
+        await page.selectOption('#savedTournamentSelect', '0');
+        await page.click('#loadTournamentBtn');
+        await expect(page.locator('#tournamentTitle')).toHaveText('Saved Americano');
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      }
+
+      // Then the live region is written exactly once, to clear it: nothing stale is left.
+      expect(await writesToTheAnnouncer(page)).toBe(1);
+      await expect(theAnnouncement(page)).toHaveText('');
+
+      // And a new Mexicano tournament in that same state is announced afresh.
+      if (replacement === 'Load') await page.click('#newTournamentBtn');
+      await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Next Cup'));
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      expect(await writesToTheAnnouncer(page)).toBe(2);
+      await expect(theAnnouncement(page)).toHaveText(waitingForBoth);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-MEXICANO-ROUNDS: Americano round navigation by keyboard keeps focus on the control or the round heading, and writes no status line', async ({ page }) => {
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
 
@@ -916,12 +1060,14 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     await page.getByRole('button', { name: 'NEXT ROUND', exact: true }).focus();
     await page.keyboard.press('Enter');
     await expect(page.locator('.round-header .left')).toHaveText('Round 2');
-    // Then focus does not jump to the round heading,
-    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    // Then focus stays on the control used (round 2's NEXT ROUND), not lost to the page,
+    await expect(page.locator('.round[data-round="2"]')
+      .getByRole('button', { name: 'NEXT ROUND', exact: true })).toBeFocused();
+    // and on round 1, which has no PREVIOUS ROUND, on the round heading.
     await page.getByRole('button', { name: 'PREVIOUS ROUND', exact: true }).focus();
     await page.keyboard.press('Enter');
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
-    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    await expect(page.getByRole('heading', { name: 'Round 1', level: 2, exact: true })).toBeFocused();
 
     // and scores shall remain editable as today, with no status line written.
     await expectTheScoresEditable(page);
