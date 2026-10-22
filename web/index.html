@@ -2423,6 +2423,7 @@
     function loadScheduleFromModule(moduleName) {
       const schedule = scheduleForModule(moduleName);
       if (!schedule) {
+        // DEFERRED: AB#112 (the previous round's controls stay live here)
         console.error("Unknown module name:", moduleName);
         return;
       }
