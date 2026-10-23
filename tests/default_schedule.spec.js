@@ -79,6 +79,7 @@ test.describe('Default Schedule Loading', () => {
     expect(errors, 'page and console errors').toEqual([]);
   });
 
+  // DEFERRED: AB#121 (round-3 review: read the name oracle before Start; non-vacuous no-rest check; feature tie/points scenarios)
   // Scenario Outline: The Organizer selects a schedule. Covers only the
   // R-SCHEDULE-SELECT example rows 8/12/16/20/24 and only the courts: the
   // schedule loads and its courts seat every player at once.
