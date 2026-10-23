@@ -91,7 +91,20 @@ Feature: Padel Turrar Tournament Manager
       | Mexicano  |
 
   # Scenario 6: Points per Game and Score Input Auto-Calculation
-  Scenario Outline: Entering a score auto-calculates the opponent's score
+  # R-POINTS-TOTAL: the example rows are those of the Requirement.
+  Scenario Outline: The selected total governs every match
+    Given a points total of "<total>" is selected (default 24)
+    And the tournament is started
+    When I enter "<entered>" into the left score input of a match
+    Then the right score input of that match should display "<complement>"
+
+    Examples:
+      | total | entered | complement |
+      | 24    | 15      | 9          |
+      | 32    | 20      | 12         |
+
+  # R-POINT-POOLS widens the options to 16, 21, 24 and 32.
+  Scenario Outline: The selected pool governs every match
     Given a points total of "<total>" is selected (16, 21, 24 or 32; default 24)
     And the tournament is started
     When I enter "<entered>" into the left score input of a match
@@ -99,9 +112,15 @@ Feature: Padel Turrar Tournament Manager
 
     Examples:
       | total | entered | complement |
-      | 24    | 10      | 14         |
+      | 16    | 9       | 7          |
+      | 21    | 13      | 8          |
+      | 24    | 15      | 9          |
       | 32    | 20      | 12         |
-      | 21    | 15      | 6          |
+
+  Scenario: An odd pool cannot draw
+    Given the points total is 21
+    When scores are recorded in any match
+    Then the two teams' scores shall never be equal
 
   # Scenario 7: Mexicano Rounds
   Scenario: A Mexicano starts with a random draw
@@ -153,13 +172,17 @@ Feature: Padel Turrar Tournament Manager
     When I review the standings
     Then both share the same placement
 
-  Scenario: Other ties share their placement, by competition ranking
+  Scenario: Two players level who never opposed share their placement
     Given two players level on points who never opposed each other
     When I review the standings
     Then both share first place and are gold
     And the next player is placed third and is bronze, with no second place
-    And a tie of three or more players is always shared
     And players who share a placement are listed in player-list order
+
+  Scenario: A tie of three or more players is always shared
+    Given three or more players end level on points
+    When I review the standings
+    Then they all share the same placement
 
   # Scenario 9: State Persistence on Reload
   Scenario: Tournament state persists after page reload
