@@ -78,4 +78,35 @@ test.describe('Default Schedule Loading', () => {
 
     expect(errors, 'page and console errors').toEqual([]);
   });
+
+  // Scenario Outline: The Organizer selects a schedule. Every example row: the
+  // schedule for that count loads, and its courts seat every player at once.
+  const examples = [
+    { players: 8, rounds: 7, courts: 2 },
+    { players: 12, rounds: 11, courts: 3 },
+    { players: 16, rounds: 15, courts: 4 },
+    { players: 20, rounds: 19, courts: 5 },
+    { players: 24, rounds: 23, courts: 6 },
+  ];
+  for (const { players, rounds, courts } of examples) {
+    test(`R-SCHEDULE-SELECT: the ${players}-player schedule presents ${courts} courts, so every player competes simultaneously`, async ({ page }) => {
+      await page.selectOption('#scheduleSelect', `${players}p${rounds}r.js`);
+      await expect(page.locator('[id^="playerInput_"]')).toHaveCount(players);
+      await expect(page.locator('[id^="courtNameInput_"]')).toHaveCount(courts);
+
+      await page.fill('#tournamentName', `Courts ${players}`);
+      await page.click('#startTournamentBtn');
+      await expect(page.locator('#tournamentContainer .court')).toHaveCount(courts);
+      // Every player of the schedule is on a court in round 1, each exactly once.
+      const seated = await page.locator('#tournamentContainer .match').evaluateAll((matches) =>
+        matches.flatMap((m) => [...m.dataset.teamLeft.split(','), ...m.dataset.teamRight.split(',')]));
+      const scheduled = await page.evaluate(
+        (key) => JSON.parse(localStorage.getItem(key)).schedule.players,
+        STATE_KEY
+      );
+      expect(scheduled).toHaveLength(players);
+      expect([...seated].sort()).toEqual([...scheduled].sort());
+      await expect(page.locator('.resting-players .resting-player')).toHaveCount(0);
+    });
+  }
 });

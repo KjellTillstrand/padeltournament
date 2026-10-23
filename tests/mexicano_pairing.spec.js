@@ -86,7 +86,7 @@ test.describe('Mexicano pairing', () => {
     expect(fielded(round).length).toBe(8);
   });
 
-  test('R-MEXICANO-PAIRING: with 10 Players the two with the fewest rests both rest, even the 1st-ranked', () => {
+  test('R-MEXICANO-PAIRING: with 10 Players the two with the fewest rests both rest, even the 1st-ranked, and the other eight are grouped by rank', () => {
     const players = idsOf(10);
     // A ranking that is not player-list order. Exactly two Players have the
     // fewest rests so far: P6, ranked 1st, and P2, ranked 5th.
@@ -99,9 +99,14 @@ test.describe('Mexicano pairing', () => {
     );
     // Both shall rest, the 1st-ranked Player included: rest fairness comes before rank.
     expect([...RestingPlayers(round)].sort()).toEqual(['P2', 'P6']);
-    expect(fielded(round)).not.toContain('P6');
-    expect(fielded(round)).not.toContain('P2');
-    expect(fielded(round).length).toBe(8);
+    expect([...fielded(round), ...RestingPlayers(round)].sort()).toEqual([...players].sort());
+    // The eight fielded Players, in rank order with the resting ones taken out
+    // (P3, P9, P1, P10, P4, P8, P5, P7), form the groups of four: 1st and 4th
+    // against 2nd and 3rd, the top group on court 1.
+    expect(CompositionOfRound(round)).toEqual([
+      { court: 1, teams: [['P3', 'P10'], ['P9', 'P1']] },
+      { court: 2, teams: [['P4', 'P7'], ['P8', 'P5']] },
+    ]);
   });
 
   test('R-MEXICANO-PAIRING: missing rest counts read as zero', () => {

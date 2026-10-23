@@ -39,18 +39,29 @@ Feature: Padel Turrar Tournament Manager
     Given the format is "Americano"
     When I select the <players>-player schedule
     Then a schedule for <players> players is loaded
+    And it runs <rounds> rounds
     And <courts> courts are presented
     And <resting> players rest each round
 
     Examples:
-      | players | courts | resting |
-      | 8       | 2      | 0       |
-      | 10      | 2      | 2       |
-      | 12      | 3      | 0       |
-      | 16      | 4      | 0       |
-      | 20      | 5      | 0       |
-      | 23      | 5      | 3       |
-      | 24      | 6      | 0       |
+      | players | rounds | courts | resting |
+      | 8       | 7      | 2      | 0       |
+      | 9       | 9      | 2      | 1       |
+      | 10      | 10     | 2      | 2       |
+      | 11      | 11     | 2      | 3       |
+      | 12      | 11     | 3      | 0       |
+      | 13      | 13     | 3      | 1       |
+      | 14      | 14     | 3      | 2       |
+      | 15      | 15     | 3      | 3       |
+      | 16      | 15     | 4      | 0       |
+      | 17      | 17     | 4      | 1       |
+      | 18      | 18     | 4      | 2       |
+      | 19      | 19     | 4      | 3       |
+      | 20      | 19     | 5      | 0       |
+      | 21      | 21     | 5      | 1       |
+      | 22      | 22     | 5      | 2       |
+      | 23      | 23     | 5      | 3       |
+      | 24      | 23     | 6      | 0       |
 
   # Scenario 4: Tournament Name Requirement and Uniqueness
   Scenario: Tournament name must be provided on start
@@ -64,8 +75,7 @@ Feature: Padel Turrar Tournament Manager
     Given a tournament with the name "Test Tournament" is already saved
     When I enter "Test Tournament" as the tournament name and click "Start Tournament"
     Then the tournament starts with the tournament name "Test Tournament-1"
-    And when I save the tournament, it is stored as "Test Tournament-1"
-      beside the saved "Test Tournament"
+    And saving it stores it as "Test Tournament-1" beside the saved "Test Tournament"
 
   # Scenario 5: Player Name Validation
   Scenario Outline: Player names must be unique
@@ -103,8 +113,9 @@ Feature: Padel Turrar Tournament Manager
   Scenario: The next Mexicano round waits for every score
     Given a Mexicano round with a match missing its score
     When I click "GENERATE NEXT ROUND"
-    Then no round is generated
-    And the courts still waiting for a valid score are named and marked
+    Then no round is generated and no confirmation opens
+    And the refusal is announced again, naming and marking the courts still waiting for a valid score
+    And the button stays focusable and clickable: it is marked aria-disabled, never disabled
 
   Scenario: Generating the next Mexicano round asks to confirm, then locks the round
     Given a Mexicano round in which every match has a valid score
@@ -112,8 +123,9 @@ Feature: Padel Turrar Tournament Manager
     Then every match of the round is shown with both teams and their scores
     And no round is generated until I confirm
     When I confirm
-    Then the next round is paired from the standings: each group of four by rank,
-      1st and 4th against 2nd and 3rd, with the top group on court 1
+    Then the next round is paired from the standings in groups of four by rank
+    And within each group 1st and 4th play against 2nd and 3rd
+    And the top group plays on court 1
     And the earlier round stays viewable but its scores can no longer be edited
 
   Scenario: Mexicano rests go to the fewest rested, before rank
@@ -121,6 +133,7 @@ Feature: Padel Turrar Tournament Manager
     When the next round is generated
     Then the players with the fewest rests so far rest, even a top-ranked one
     And among equally rested players the lowest-ranked rests first
+    And among equally rested players who share a placement, the one later in the player list rests first
 
   Scenario: Americano scores stay editable
     Given an Americano tournament
@@ -129,9 +142,16 @@ Feature: Padel Turrar Tournament Manager
 
   # Scenario 8: Standings and Tiebreak
   Scenario: A two-way tie is resolved head-to-head
-    Given two players end level on points and opposed each other
+    Given two players end level on points
+    And they opposed each other and one of them scored more points across their mutual games
     When I review the standings
-    Then the player who scored more points across their mutual games ranks higher
+    Then that player ranks higher
+
+  Scenario: A two-way tie level even head-to-head is shared
+    Given two players end level on points
+    And they opposed each other and their mutual games are level
+    When I review the standings
+    Then both share the same placement
 
   Scenario: Other ties share their placement, by competition ranking
     Given two players level on points who never opposed each other
@@ -139,6 +159,7 @@ Feature: Padel Turrar Tournament Manager
     Then both share first place and are gold
     And the next player is placed third and is bronze, with no second place
     And a tie of three or more players is always shared
+    And players who share a placement are listed in player-list order
 
   # Scenario 9: State Persistence on Reload
   Scenario: Tournament state persists after page reload
