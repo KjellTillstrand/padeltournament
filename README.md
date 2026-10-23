@@ -33,7 +33,9 @@ browser's localStorage, so a page reload or crash resumes exactly where you left
    points with gold/silver/bronze placement colors; two players level on points
    are ranked by their head-to-head games where that decides it, and every other
    tie shares its placement.
-6. Save, load and delete tournaments from the round header at any time.
+6. Once the tournament has started, save it with **Save Tournament** in the round
+   header. Load and delete saved tournaments in the settings panel: it is shown
+   during setup, and during play the **Tournament Settings** button opens it.
 
 ### Site variants
 

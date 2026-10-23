@@ -3,8 +3,15 @@
 ## Stack
 - Vanilla JS/HTML/CSS static web app under `web/` — no build step. `web/index.html` +
   `web/sites/{default,libro,was}` variants, styles in `web/css/`.
-- Tournament schedules are data modules in `web/schedules/` (`12p11r.js` … `24p23r.js`),
-  loaded dynamically.
+- Americano schedules are data modules in `web/schedules/`, one per player count
+  (`8p7r.js` … `24p23r.js`: the perfect-whist tables for 8, 12, 16, 20 and 24 players and
+  the sit-out tables for the other twelve counts). Each is loaded by its own static
+  `<script>` tag in the `<head>` of `web/index.html` and sets a global
+  (`window.schedule<N>p<R>r`); choosing a schedule only looks that global up, so every
+  `#scheduleSelect` option needs a matching tag. Mexicano has no schedule module: round 1
+  is drawn at Start by `startMexicano` in `web/index.html` (a seeded random draw made
+  through `web/mexicano.js`; the seed is persisted as `mexicanoSeed`), and every later
+  round is generated from the standings by `web/mexicano.js` during play.
 - Schedulers (none are part of the served app): `scheduler/whist-generate.js` generates
   the shipped perfect-whist tables for the multiples of 4 (8, 12, 16, 20, 24 players);
   `scheduler/engine/sitout-generate.mjs` generates the shipped rest-round tables for the

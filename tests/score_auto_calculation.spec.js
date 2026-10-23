@@ -35,15 +35,17 @@ test.describe('Point pools', () => {
     await expect(page.locator('#globalTotalPoints')).toHaveValue('24');
   });
 
-  // Scenario Outline: The selected pool governs every match.
+  // Scenario Outline: The selected pool governs every match. The 24 and 32 rows
+  // are also the example rows of R-POINTS-TOTAL ("The selected total governs
+  // every match"), so they carry its tag too.
   const examples = [
-    { total: 16, entered: 9, complement: 7 },
-    { total: 21, entered: 13, complement: 8 },
-    { total: 24, entered: 15, complement: 9 },
-    { total: 32, entered: 20, complement: 12 },
+    { total: 16, entered: 9, complement: 7, tags: 'R-POINT-POOLS' },
+    { total: 21, entered: 13, complement: 8, tags: 'R-POINT-POOLS' },
+    { total: 24, entered: 15, complement: 9, tags: 'R-POINT-POOLS, R-POINTS-TOTAL' },
+    { total: 32, entered: 20, complement: 12, tags: 'R-POINT-POOLS, R-POINTS-TOTAL' },
   ];
-  for (const { total, entered, complement } of examples) {
-    test(`R-POINT-POOLS: with a points total of ${total}, entering ${entered} makes the opposing score ${complement}`, async ({ page }) => {
+  for (const { total, entered, complement, tags } of examples) {
+    test(`${tags}: with a points total of ${total}, entering ${entered} makes the opposing score ${complement}`, async ({ page }) => {
       await startWithPointsTotal(page, total);
       const matches = page.locator('.result-overlay-container');
       expect(await matches.count()).toBeGreaterThan(1);
