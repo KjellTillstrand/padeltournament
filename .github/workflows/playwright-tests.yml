@@ -47,6 +47,11 @@ jobs:
       - name: Self-test requirement coverage gate
         run: node scripts/check-req-coverage.test.mjs
 
+      # The scheduled deploy freshness monitor (deploy-freshness.yml) only runs
+      # on main, so its decision logic is proven here, on every PR.
+      - name: Self-test deploy freshness monitor
+        run: node scripts/check-deploy-freshness.test.mjs
+
       # npm ci installs exactly what package-lock.json records and fails if the
       # lockfile and package.json disagree.
       - name: Install dependencies
