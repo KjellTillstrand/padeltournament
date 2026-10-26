@@ -4,11 +4,13 @@ name: Deploy freshness
 # stuck deploy is visible within hours instead of days. Run 36765228696 waited
 # on the github-pages environment for three days while holding the
 # deploy-gh-pages concurrency group; later deploys were cancelled and nothing
-# went red. scripts/check-deploy-freshness.mjs fails when the live Pages
-# deployment is not the head of main (once that head is over an hour old) or a
-# "Test and deploy" run has been waiting/queued/pending for over an hour. Its
-# header documents the exact rules, boundaries and fetch bounds; its decision
-# logic is self-tested in the Test and deploy workflow.
+# went red. scripts/check-deploy-freshness.mjs fails when the head of main has
+# no successful github-pages deployment over an hour after its push run was
+# created (its committer date when it has none, e.g. [skip ci]), or a
+# "Test and deploy" run has been waiting/queued/pending/requested
+# for over an hour. Its header documents the exact rules, boundaries, fetch
+# bounds and time budget; its decision logic is self-tested in the Test and
+# deploy workflow.
 #
 # Detection only: this workflow never cancels, approves, re-runs or deploys
 # anything, and it deliberately does not join the deploy-gh-pages concurrency
@@ -17,6 +19,9 @@ name: Deploy freshness
 on:
   schedule:
     # Hourly, at an off-peak minute (scheduled runs at :00 are the most delayed).
+    # DEFERRED: AB#122 - monitor liveness: GitHub may delay or drop scheduled
+    # runs and disables the schedule after 60 days without repository
+    # activity; nothing goes red when this monitor itself stops running.
     - cron: '17 * * * *'
   workflow_dispatch:
 
@@ -32,8 +37,10 @@ permissions:
 jobs:
   freshness:
     runs-on: ubuntu-latest
-    # A handful of API calls with a 30 s timeout each; anything near this limit
-    # is itself a failure worth seeing.
+    # The script's worst case is 17 API calls, each tried twice with an 8 s
+    # timeout and a 2 s pause between the tries: 5 min 6 s, after which it
+    # exits 2 on its own. The rest of the 10 minutes is for checkout and
+    # setup-node. The self-test asserts this margin (WORST_CASE_MS).
     timeout-minutes: 10
     steps:
       # The token is passed to the check as an env var only; it must not stay
@@ -51,9 +58,10 @@ jobs:
           node-version: '22'
 
       # Exit 1 = stale or stalled (an ::error:: annotation per problem);
-      # exit 2 = the check could not see (an API call failed or returned an
-      # unexpected shape). Both are red: a monitor that cannot see never passes.
-      - name: Check the live deployment is the head of main
+      # exit 2 = the check could not see (an API call failed after one retry,
+      # or returned an unexpected shape). Both are red: a monitor that cannot
+      # see never passes.
+      - name: Check the head of main is deployed
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/check-deploy-freshness.mjs
