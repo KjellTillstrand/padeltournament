@@ -11,7 +11,8 @@
 //   - the CLI as a black box (a child node process, as CI runs it) against a
 //     loopback HTTP server serving fixtures, to prove it reports green only
 //     when it could see everything, retries a transient error once, stays
-//     inside its fetch and time bounds, and fails closed (exit 2) otherwise.
+//     inside its fetch and time bounds, fetches no more than the decision
+//     needs, and fails closed (exit 2) otherwise.
 // Plain assert, no dependencies, no network beyond 127.0.0.1. Exits non-zero
 // if any case fails.
 
@@ -39,21 +40,39 @@ const ago = (ms, now = NOW) => iso(now - ms);
 const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
 const OLDER = 'c'.repeat(40);
+const PAGES_URL = 'https://o.github.io/r/';
 
 const head = (sha = HEAD, age = 2 * HOUR, now = NOW) => ({ sha, commit: { committer: { date: ago(age, now) } } });
-// Ids rise over time, as GitHub's do: a newer deployment has a higher id.
+// Ids rise over time, as GitHub's do: a newer deployment or status has a higher id.
 const depId = (age) => 1e9 - Math.floor(age / 1000);
-// A deployment as listed, plus its statuses (newest first, as the API returns;
-// the newest status has the highest id).
-const deployment = (sha, age, states = ['success'], now = NOW) => ({
-  id: depId(age),
-  sha,
-  created_at: ago(age, now),
-  statuses: states.map((s, i) => ({
-    id: states.length - i,
-    state: s,
-    created_at: ago(age - (states.length - i) * 1000, now),
-  })),
+const statusId = (age) => 2e9 - Math.floor(age / 1000);
+// A deployment as listed, plus its statuses (newest first, as the API returns),
+// one second apart. A "success" status carries `url` as its environment_url
+// (the deploy job sets it only when actions/deploy-pages ran); updated_at is
+// the newest status's time, as GitHub sets it.
+const deployment = (sha, age, states = ['success'], now = NOW, url = PAGES_URL) => {
+  const statuses = states.map((s, i) => {
+    const sAge = age - (states.length - i) * 1000;
+    return { id: statusId(sAge), state: s, created_at: ago(sAge, now), environment_url: s === 'success' ? url : '' };
+  });
+  return { id: depId(age), sha, created_at: ago(age, now), updated_at: statuses[0]?.created_at ?? ago(age, now), statuses };
+};
+// The record a guard-skipped publish leaves: "success" with an empty environment_url.
+const skipped = (sha, age, now = NOW) => deployment(sha, age, ['success', 'in_progress', 'queued', 'waiting'], now, '');
+// A deployment that published at `pubAge` ago, whatever its created_at.
+const publishedAt = (sha, createdAge, pubAge, now = NOW) => ({
+  ...deployment(sha, createdAge, [], now),
+  updated_at: ago(pubAge, now),
+  statuses: [
+    { id: statusId(pubAge), state: 'success', created_at: ago(pubAge, now), environment_url: PAGES_URL },
+    { id: statusId(createdAge - 1000), state: 'waiting', created_at: ago(createdAge - 1000, now), environment_url: '' },
+  ],
+});
+// GitHub's "inactive" status, added at `age` ago on top of a deployment's statuses.
+const inactivated = (d, age, now = NOW) => ({
+  ...d,
+  updated_at: ago(age, now),
+  statuses: [{ id: statusId(age), state: 'inactive', created_at: ago(age, now), environment_url: '' }, ...d.statuses],
 });
 // A push-event Test and deploy run of a sha (what the head's age is read from).
 const pushRun = (sha, age, status = 'completed', conclusion = 'success', id = 500, now = NOW) => ({
@@ -62,6 +81,7 @@ const pushRun = (sha, age, status = 'completed', conclusion = 'success', id = 50
   event: 'push',
   status,
   conclusion: status === 'completed' ? conclusion : null,
+  run_attempt: 1,
   created_at: ago(age, now),
   run_started_at: ago(age, now),
   html_url: `https://github.com/o/r/actions/runs/${id}`,
@@ -96,12 +116,20 @@ const INVISIBLE = [0x0a, 0x0d, 0x1b, 0x85, 0x061c, 0x200b, 0x200d, 0x200e, 0x200
 // The same set (and the rest of C0 but TAB/LF, DEL, C1) as a source-file scan.
 const RAW_INVISIBLE_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
 
+// Rollback fixtures (security review, round 2): X was published 48 h ago, Y
+// 24 h ago (Pages serves Y); main was force-pushed back to X 3 h ago.
+const X = HEAD;
+const Y = OLD;
+const rollback = (over) => input({ head: head(X, 49 * HOUR), deployments: [deployment(Y, 24 * HOUR), deployment(X, 48 * HOUR)], ...over });
+
 const unitCases = [
-  ['fresh: the head of main is deployed -> no failures', () => {
+  ['fresh: the head of main is the live publication -> no failures', () => {
     const r = evaluate(input());
     assert.deepStrictEqual(r.failures, []);
     assert.strictEqual(r.headLive, true);
-    assert.strictEqual(r.newestSuccess, HEAD);
+    assert.strictEqual(r.live.sha, HEAD);
+    assert.strictEqual(r.live.at, NOW - 90 * MIN + 1000);
+    assert.strictEqual(r.deploymentsChecked, 1);
   }],
   ['fresh even when the head is days old', () => {
     assert.deepStrictEqual(evaluate(input({ head: head(HEAD, 72 * HOUR), headRuns: [pushRun(HEAD, 72 * HOUR)] })).failures, []);
@@ -120,26 +148,38 @@ const unitCases = [
     assert.deepStrictEqual(codes(r), ['head-not-live']);
     assert.strictEqual(
       r.failures[0].reason,
-      'Main head aaaaaaa has no successful github-pages deployment 180 min after its push run was created ' +
-        '(limit 60 min); the newest successful deployment record is bbbbbbb. Its Test and deploy run 500 is ' +
+      'Main head aaaaaaa is not live 180 min after its push run was created (limit 60 min): github-pages serves ' +
+        `bbbbbbb (deployment ${depId(4 * HOUR)}, published 2026-10-03T08:00:01.000Z). Its Test and deploy run 500 is ` +
         'still "waiting" 180 min after it was created: the run or its publication is stuck. ' +
         'https://github.com/o/r/actions/runs/500',
     );
   }],
-  ['(a) on a failed main run names the conclusion, not a stalled publication', () => {
-    const r = evaluate(input({ headRuns: [pushRun(HEAD, 2 * HOUR, 'completed', 'failure')], deployments: [deployment(OLD, 4 * HOUR)] }));
-    assert.deepStrictEqual(codes(r), ['head-not-live']);
-    assert.match(r.failures[0].reason, /Its Test and deploy run 500 completed with conclusion "failure": the run failed \(tests, a gate or the deploy job; see the run\), not necessarily the publication\. https:/);
-    assert.doesNotMatch(r.failures[0].reason, /stuck/);
+  ['(a) names how a completed head run ended, neutrally (failure, cancelled, skipped, timed_out, other)', () => {
+    const said = (conclusion) => evaluate(input({
+      headRuns: [pushRun(HEAD, 2 * HOUR, 'completed', conclusion)],
+      deployments: [deployment(OLD, 4 * HOUR)],
+    })).failures[0].reason;
+    const tail = (conclusion, outcome) =>
+      new RegExp(`Its Test and deploy run 500 completed with conclusion "${conclusion}": ${outcome}\\. https://github\\.com/o/r/actions/runs/500$`);
+    assert.match(said('failure'), tail('failure', 'the run failed \\(tests, a gate or the deploy job; see the run\\)'));
+    assert.match(said('cancelled'), tail('cancelled', 'the run was cancelled \\(by hand, or replaced while it waited for the deploy-gh-pages concurrency group\\)'));
+    assert.match(said('skipped'), tail('skipped', 'the run was skipped'));
+    assert.match(said('timed_out'), tail('timed_out', 'a job of the run timed out'));
+    assert.match(said('startup_failure'), tail('startup_failure', 'the run failed to start'));
+    assert.match(said('neutral'), tail('neutral', 'the run did not succeed'));
+    // An API value is never looked up as an object property.
+    assert.match(said('constructor'), tail('constructor', 'the run did not succeed'));
+    assert.match(said(null), tail('none', 'the run did not succeed'));
+    for (const c of ['cancelled', 'skipped', 'timed_out']) assert.doesNotMatch(said(c), /failed|stuck/, c);
   }],
-  ['(a) on a successful run without a live deployment says the publication was skipped', () => {
+  ['(a) on a successful run without a live publication says the publication was skipped', () => {
     const r = evaluate(input({ deployments: [deployment(OLD, 4 * HOUR)] }));
-    assert.match(r.failures[0].reason, /run 500 completed with conclusion "success", yet no deployment of the head is live: the publication was skipped or not recorded\./);
+    assert.match(r.failures[0].reason, /run 500 completed with conclusion "success", yet it is not the live publication: the publication was skipped or not recorded\./);
   }],
   ['(a) with no push run ([skip ci]) ages the head from its committer date and says so', () => {
     const r = evaluate(input({ head: head(HEAD, 2 * HOUR), headRuns: [], deployments: [deployment(OLD, 4 * HOUR)] }));
     assert.deepStrictEqual(codes(r), ['head-not-live']);
-    assert.match(r.failures[0].reason, /deployment 120 min after its committer date \(limit 60 min\)/);
+    assert.match(r.failures[0].reason, /is not live 120 min after its committer date \(limit 60 min\)/);
     assert.match(r.failures[0].reason, /No push-event Test and deploy run exists for it \(a \[skip ci\] commit, or CI never started\)/);
     assert.strictEqual(r.headSinceSource, 'committer date (no push run)');
     assert.deepStrictEqual(evaluate(input({ head: head(HEAD, 59 * MIN), headRuns: [], deployments: [deployment(OLD, 4 * HOUR)] })).failures, []);
@@ -164,39 +204,131 @@ const unitCases = [
     assert.deepStrictEqual(r.failures, []);
     assert.strictEqual(r.headSinceSource, 'push run 600 created');
   }],
-  ['a future committer date or run time is not trusted (InputError, never silence)', () => {
+  ['a re-run of the head run keeps its clock and is called a re-run, not stuck', () => {
+    const rerun = { ...pushRun(HEAD, 90 * MIN, 'in_progress'), run_attempt: 2, run_started_at: ago(5 * MIN) };
+    const r = evaluate(input({ headRuns: [rerun], deployments: [deployment(OLD, 4 * HOUR)] }));
+    assert.strictEqual(r.headSince, NOW - 90 * MIN);
+    assert.deepStrictEqual(codes(r), ['head-not-live']);
+    assert.match(
+      r.failures[0].reason,
+      /Its Test and deploy run 500 is being re-run \(attempt 2, now "in_progress"\); the run was first created 90 min ago, and a re-run does not restart the head's clock\. https:/,
+    );
+    assert.doesNotMatch(r.failures[0].reason, /stuck/);
+    // Attempt 1 still reads as stuck.
+    const first = evaluate(input({ headRuns: [pushRun(HEAD, 90 * MIN, 'in_progress')], deployments: [deployment(OLD, 4 * HOUR)] }));
+    assert.match(first.failures[0].reason, /is still "in_progress" 90 min after it was created: the run or its publication is stuck/);
+  }],
+  ['a future committer date is refused only when it is the age source', () => {
     throwsInput(() => evaluate(input({ head: head(HEAD, -6 * MIN), headRuns: [] })), /main head committer date is 6 min in the future/);
-    throwsInput(() => evaluate(input({ head: head(HEAD, -50 * 365 * 24 * HOUR) })), /main head committer date is .* in the future/);
-    throwsInput(() => evaluate(input({ headRuns: [pushRun(HEAD, -6 * MIN)] })), /head run #0 created_at is 6 min in the future/);
+    throwsInput(() => evaluate(input({ head: head(HEAD, -50 * 365 * 24 * HOUR), headRuns: [] })), /main head committer date is .* in the future/);
+    // A clock-skewed pusher: the push run's server time is the age source, so
+    // the future committer date is not judged.
+    const skewed = evaluate(input({ head: head(HEAD, -10 * MIN) }));
+    assert.deepStrictEqual(skewed.failures, []);
+    assert.strictEqual(skewed.headSince, NOW - 2 * HOUR);
     // Clock skew within FUTURE_SKEW_MS is tolerated.
-    assert.deepStrictEqual(evaluate(input({ head: head(HEAD, -4 * MIN), headRuns: [pushRun(HEAD, -4 * MIN)] })).failures, []);
+    assert.deepStrictEqual(evaluate(input({ head: head(HEAD, -4 * MIN), headRuns: [] })).failures, []);
+  }],
+  ['a future run or status time is not trusted (InputError, never silence)', () => {
+    throwsInput(() => evaluate(input({ headRuns: [pushRun(HEAD, -6 * MIN)] })), /head run #0 created_at is 6 min in the future/);
+    throwsInput(() => evaluate(input({ runs: [run(1, 'waiting', -6 * MIN)] })), /run #0 run_started_at is 6 min in the future/);
+    throwsInput(
+      () => evaluate(input({ runs: [{ ...run(1, 'queued', 0), run_started_at: undefined, created_at: ago(-30 * 24 * HOUR) }] })),
+      /run #0 run_started_at is 43200 min in the future/,
+    );
+    throwsInput(() => evaluate(input({ deployments: [deployment(HEAD, -6 * MIN)] })), /deployment #0 status #0 created_at is .* in the future/);
+    // Within FUTURE_SKEW_MS is tolerated.
+    assert.deepStrictEqual(evaluate(input({ headRuns: [pushRun(HEAD, -4 * MIN)], runs: [run(1, 'waiting', -4 * MIN)] })).failures, []);
   }],
   ['a head run of another sha is refused', () => {
     throwsInput(() => evaluate(input({ headRuns: [pushRun(OLD, HOUR)] })), /head run #0 is not a run of the main head/);
   }],
-  ['the head deployment decides: a newer "success" record of an older sha (skipped publish) is not live', () => {
+  ['a newer "success" record with an empty environment_url (skipped publish) is not a publication', () => {
     // A's run reaches its deploy job after B (the head) published; its
     // freshness guard skips publishing, but the job succeeds, so GitHub
-    // records a newer "success" deployment for A.
-    const deployments = [deployment(OLD, 20 * MIN), deployment(HEAD, 40 * MIN)];
-    const r = evaluate(input({ deployments }));
+    // records a newer "success" for A, without an environment_url.
+    const r = evaluate(input({ deployments: [skipped(OLD, 20 * MIN), deployment(HEAD, 40 * MIN)] }));
     assert.deepStrictEqual(r.failures, []);
     assert.strictEqual(r.headLive, true);
-    assert.strictEqual(r.newestSuccess, OLD);
+    assert.strictEqual(r.live.sha, HEAD);
   }],
-  ['the head deployment decides: an older-sha success does not cover a failed head deployment', () => {
-    const deployments = [
-      deployment(HEAD, 30 * MIN, ['failure', 'in_progress', 'queued']),
-      deployment(OLD, 2 * HOUR, ['success', 'in_progress']),
-      deployment(OLDER, 5 * HOUR, ['success']),
-    ];
-    const r = evaluate(input({ deployments }));
+  ['the head\'s only record a skipped publish -> not live; an absent, null or blank url is no publication either', () => {
+    const r = evaluate(input({ deployments: [skipped(HEAD, 30 * MIN), deployment(OLD, 4 * HOUR)] }));
     assert.deepStrictEqual(codes(r), ['head-not-live']);
-    assert.match(r.failures[0].reason, /the newest successful deployment record is bbbbbbb\./);
+    assert.match(r.failures[0].reason, /github-pages serves bbbbbbb/);
+    for (const url of [undefined, null, '', '  ']) {
+      const d = deployment(HEAD, 90 * MIN);
+      if (url === undefined) delete d.statuses[0].environment_url;
+      else d.statuses[0].environment_url = url;
+      const none = evaluate(input({ deployments: [d] }));
+      assert.deepStrictEqual(codes(none), ['no-publication'], String(url));
+      assert.strictEqual(none.live, undefined);
+    }
   }],
-  ['any successful deployment of the head counts, in any order', () => {
+  ['rollback: an older published record of the head does not make it live (reviewer fixture)', () => {
+    const r = evaluate(rollback({ headRuns: [pushRun(X, 2 * HOUR)] }));
+    assert.deepStrictEqual(codes(r), ['head-not-live']);
+    assert.strictEqual(r.headLive, false);
+    assert.strictEqual(r.live.sha, Y);
+  }],
+  ['rollback A: the rollback run was cancelled -> head-not-live, Pages still serves Y', () => {
+    const headRuns = [pushRun(X, 49 * HOUR, 'completed', 'success', 400), pushRun(X, 3 * HOUR, 'completed', 'cancelled', 700)];
+    const r = evaluate(rollback({ headRuns }));
+    assert.deepStrictEqual(codes(r), ['head-not-live']);
+    assert.match(r.failures[0].reason, /^Main head aaaaaaa is not live 180 min after its push run was created \(limit 60 min\): github-pages serves bbbbbbb /);
+    assert.match(r.failures[0].reason, /run 700 completed with conclusion "cancelled": the run was cancelled/);
+  }],
+  ['rollback B: no run for the rollback push (the query returns X\'s original run) -> head-not-live', () => {
+    const r = evaluate(rollback({ headRuns: [pushRun(X, 49 * HOUR, 'completed', 'success', 400)] }));
+    assert.deepStrictEqual(codes(r), ['head-not-live']);
+    assert.match(r.failures[0].reason, /is not live 2940 min after its push run was created/);
+  }],
+  ['rollback C: X\'s only record is a skipped publish, the rollback run failed -> head-not-live', () => {
+    const r = evaluate(input({
+      head: head(X, 25 * HOUR),
+      headRuns: [pushRun(X, 3 * HOUR, 'completed', 'failure', 701)],
+      deployments: [skipped(X, 24 * HOUR - 10 * MIN), deployment(Y, 24 * HOUR)],
+    }));
+    assert.deepStrictEqual(codes(r), ['head-not-live']);
+    assert.strictEqual(r.live.sha, Y);
+  }],
+  ['publications are ordered by their success time, not by deployment created_at', () => {
+    // OLD's deployment was created first but published last: Pages serves OLD.
+    const r = evaluate(input({ deployments: [deployment(HEAD, 2 * HOUR), publishedAt(OLD, 3 * HOUR, 30 * MIN)] }));
+    assert.deepStrictEqual(codes(r), ['head-not-live']);
+    assert.strictEqual(r.live.sha, OLD);
+    const reversed = evaluate(input({ deployments: [publishedAt(HEAD, 3 * HOUR, 30 * MIN), deployment(OLD, 2 * HOUR)] }));
+    assert.deepStrictEqual(reversed.failures, []);
+  }],
+  ['two publications in the same second: the higher status id is the newer', () => {
+    const at = ago(HOUR);
+    const pub = (sha, age, id) => ({
+      ...deployment(sha, age, [], NOW),
+      updated_at: at,
+      statuses: [{ id, state: 'success', created_at: at, environment_url: PAGES_URL }],
+    });
+    assert.deepStrictEqual(evaluate(input({ deployments: [pub(HEAD, 2 * HOUR, 9), pub(OLD, 3 * HOUR, 8)] })).failures, []);
+    assert.deepStrictEqual(codes(evaluate(input({ deployments: [pub(HEAD, 2 * HOUR, 8), pub(OLD, 3 * HOUR, 9)] }))), ['head-not-live']);
+  }],
+  ['"inactive" is passed over: a later skipped record does not un-publish the head', () => {
+    const r = evaluate(input({ deployments: [skipped(OLD, 20 * MIN), inactivated(deployment(HEAD, 40 * MIN), 20 * MIN - 9000)] }));
+    assert.deepStrictEqual(r.failures, []);
+    assert.strictEqual(r.live.sha, HEAD);
+    // An inactive older publication stays older than a newer one.
+    const older = evaluate(input({ deployments: [deployment(OLD, 30 * MIN), inactivated(deployment(HEAD, 3 * HOUR), 30 * MIN - 2000)] }));
+    assert.deepStrictEqual(codes(older), ['head-not-live']);
+    assert.strictEqual(older.live.sha, OLD);
+    // Inactive alone, or after a failure, is no publication.
+    assert.deepStrictEqual(codes(evaluate(input({ deployments: [deployment(HEAD, 90 * MIN, ['inactive', 'failure'])] }))), ['no-publication']);
+  }],
+  ['the newest publication decides, in any listing order', () => {
     const deployments = [deployment(HEAD, 20 * MIN, ['failure']), deployment(OLD, 5 * HOUR), deployment(HEAD, 2 * HOUR)];
-    assert.deepStrictEqual(evaluate(input({ deployments })).failures, []);
+    const shuffles = [[0, 1, 2], [2, 0, 1], [1, 2, 0], [2, 1, 0]];
+    for (const order of shuffles) {
+      const r = evaluate(input({ deployments: order.map((i) => deployments[i]) }));
+      assert.deepStrictEqual(r.failures, [], String(order));
+      assert.strictEqual(r.live.deploymentId, depId(2 * HOUR), String(order));
+    }
   }],
   ['latest status decides, whatever the listing order of statuses', () => {
     const d = deployment(HEAD, 2 * HOUR, ['success', 'in_progress']);
@@ -204,22 +336,34 @@ const unitCases = [
     assert.deepStrictEqual(evaluate(input({ deployments: [d] })).failures, []);
     const failed = deployment(HEAD, 2 * HOUR, ['failure', 'success']);
     failed.statuses.reverse();
-    assert.deepStrictEqual(codes(evaluate(input({ deployments: [failed] }))), ['no-successful-deployment']);
+    assert.deepStrictEqual(codes(evaluate(input({ deployments: [failed] }))), ['no-publication']);
   }],
   ['statuses with the same timestamp: the higher id is the latest', () => {
     const at = ago(HOUR);
     const tie = (successId, progressId) => ({
       ...deployment(HEAD, 2 * HOUR),
-      statuses: [{ id: progressId, state: 'in_progress', created_at: at }, { id: successId, state: 'success', created_at: at }],
+      statuses: [
+        { id: progressId, state: 'in_progress', created_at: at, environment_url: '' },
+        { id: successId, state: 'success', created_at: at, environment_url: PAGES_URL },
+      ],
     });
     assert.deepStrictEqual(evaluate(input({ deployments: [tie(9, 8)] })).failures, []);
-    assert.deepStrictEqual(codes(evaluate(input({ deployments: [tie(8, 9)] }))), ['no-successful-deployment']);
+    assert.deepStrictEqual(codes(evaluate(input({ deployments: [tie(8, 9)] }))), ['no-publication']);
   }],
-  ['no successful deployment at all -> no-successful-deployment, even inside the grace hour', () => {
-    for (const deployments of [[], [deployment(HEAD, 10 * MIN, ['in_progress'])], [deployment(HEAD, 2 * HOUR, [])]]) {
-      const r = evaluate(input({ head: head(HEAD, 5 * MIN), headRuns: [pushRun(HEAD, 5 * MIN, 'in_progress')], deployments }));
-      assert.deepStrictEqual(codes(r), ['no-successful-deployment']);
-      assert.match(r.failures[0].reason, new RegExp(`^No successful github-pages deployment among the ${deployments.length} listed: main head aaaaaaa is not live\\.$`));
+  ['no publication at all: the same grace hour as head-not-live, then no-publication', () => {
+    for (const deployments of [[], [deployment(HEAD, 10 * MIN, ['in_progress'])], [deployment(HEAD, 2 * HOUR, [])], [skipped(OLD, 2 * HOUR)]]) {
+      const inGrace = evaluate(input({ head: head(HEAD, 5 * MIN), headRuns: [pushRun(HEAD, 5 * MIN, 'in_progress')], deployments }));
+      assert.deepStrictEqual(inGrace.failures, []);
+      assert.strictEqual(inGrace.headLive, false);
+      const late = evaluate(input({ headRuns: [pushRun(HEAD, HOUR + 1, 'in_progress')], deployments }));
+      assert.deepStrictEqual(codes(late), ['no-publication']);
+      assert.strictEqual(
+        late.failures[0].reason,
+        `Main head aaaaaaa is not live 60 min after its push run was created (limit 60 min): none of the ${deployments.length} ` +
+          'github-pages deployments checked records a publication (a latest "success" status with an environment_url). ' +
+          'Its Test and deploy run 500 is still "in_progress" 60 min after it was created: the run or its publication is stuck. ' +
+          'https://github.com/o/r/actions/runs/500',
+      );
     }
   }],
   ['stalled run over 1h -> stalled-run (b), for every stalled status', () => {
@@ -301,17 +445,29 @@ const unitCases = [
     throwsInput(() => evaluate(input({ head: { sha: HEAD, commit: { committer: { date: 'yesterday' } } } })), /committer date is not a timestamp/);
     throwsInput(() => evaluate(input({ headRuns: undefined })), /head runs is not an array/);
     throwsInput(() => evaluate(input({ headRuns: [{ ...pushRun(HEAD, HOUR), id: '5' }] })), /head run #0 has no integer id/);
+    throwsInput(() => evaluate(input({ headRuns: [{ ...pushRun(HEAD, HOUR), id: -5 }] })), /head run #0 has no integer id/);
     throwsInput(() => evaluate(input({ headRuns: [{ ...pushRun(HEAD, HOUR), status: 3 }] })), /head run #0 has no status/);
     throwsInput(() => evaluate(input({ headRuns: [{ ...pushRun(HEAD, HOUR), conclusion: 1 }] })), /head run #0 has a malformed conclusion/);
+    for (const runAttempt of [0, '2', 1.5]) {
+      throwsInput(() => evaluate(input({ headRuns: [{ ...pushRun(HEAD, HOUR), run_attempt: runAttempt }] })), /head run #0 has a malformed run_attempt/);
+    }
     throwsInput(() => evaluate(input({ headRuns: [{ ...pushRun(HEAD, HOUR), created_at: 'x' }] })), /head run #0 created_at is not a timestamp/);
     throwsInput(() => evaluate(input({ deployments: { message: 'Not Found' } })), /deployments is not an array/);
     throwsInput(() => evaluate(input({ runs: null })), /runs is not an array/);
+    throwsInput(() => evaluate(input({ deployments: [42] })), /deployment #0 is not an object/);
     throwsInput(() => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), sha: undefined }] })), /deployment #0 sha/);
     throwsInput(() => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), id: undefined }] })), /deployment #0 has no integer id/);
     throwsInput(() => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), created_at: '' }] })), /deployment #0 created_at is not a timestamp/);
+    throwsInput(() => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), updated_at: undefined }] })), /deployment #0 updated_at is not a timestamp/);
     throwsInput(() => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), statuses: undefined }] })), /deployment #0 has no "statuses" array/);
     throwsInput(() => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), statuses: [{ id: 1, created_at: ago(1) }] }] })), /status #0 has no state/);
     throwsInput(() => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), statuses: [{ state: 'success', created_at: ago(1) }] }] })), /status #0 has no integer id/);
+    throwsInput(
+      () => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), statuses: [{ id: 1, state: 'success', created_at: ago(1), environment_url: 7 }] }] })),
+      /status #0 has a malformed environment_url/,
+    );
+    // An "inactive" status is validated too, though it is passed over.
+    throwsInput(() => evaluate(input({ deployments: [{ ...deployment(HEAD, HOUR), statuses: [{ id: 1, state: 'inactive', created_at: 'x' }] }] })), /status #0 created_at is not a timestamp/);
     throwsInput(() => evaluate(input({ runs: [{ id: 1 }] })), /run #0 has no status/);
     throwsInput(() => evaluate(input({ runs: [{ status: 'waiting' }] })), /run #0 has no integer id/);
     throwsInput(() => evaluate(input({ runs: [{ ...run(1, 'waiting', HOUR), run_started_at: 'soon' }] })), /run #0 run_started_at is not a timestamp/);
@@ -330,10 +486,10 @@ const unitCases = [
 
 const CHILD_LIMIT_MS = 15 * 1000;
 
-// routes: key -> [status, body] | 'hang' (never answers) | (n) => either of
-// those, for the n-th request to that key (1-based). The key is the path without
-// /repos/o/r/, plus "?<status>" for a status listing or "?head_sha" for the
-// head's push runs. Unlisted keys answer 404.
+// routes: key -> [status, body, headers?] | 'hang' (never answers) | (n) =>
+// either of those, for the n-th request to that key (1-based). The key is the
+// path without /repos/o/r/, plus "?<status>" for a status listing or
+// "?head_sha" for the head's push runs. Unlisted keys answer 404.
 async function cli(routes, env = {}) {
   const seen = [];
   const hits = {};
@@ -347,8 +503,8 @@ async function cli(routes, env = {}) {
     const route = routes[key] ?? [404, { message: 'Not Found' }];
     const answer = typeof route === 'function' ? route(hits[key]) : route;
     if (answer === 'hang') return;
-    const [code, body] = answer;
-    res.writeHead(code, { 'content-type': 'application/json' });
+    const [code, body, headers = {}] = answer;
+    res.writeHead(code, { 'content-type': 'application/json', ...headers });
     res.end(typeof body === 'string' ? body : JSON.stringify(body));
   });
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
@@ -383,22 +539,26 @@ async function cli(routes, env = {}) {
 const now = Date.now();
 const runsPage = (runs = []) => [200, { total_count: runs.length, workflow_runs: runs }];
 const listed = (...ds) => [200, ds.map(({ statuses, ...d }) => d)];
-const statusesOf = (d) => ({ [`deployments/${d.id}/statuses`]: [200, d.statuses] });
+const statusesOf = (...ds) => Object.fromEntries(ds.map((d) => [`deployments/${d.id}/statuses`, [200, d.statuses]]));
 const D_HEAD = deployment(HEAD, 2 * HOUR, ['success'], now);
 const D_OLD = deployment(OLD, 5 * HOUR, ['success'], now);
+const D_OLDER = deployment(OLDER, 8 * HOUR, ['success'], now);
 const freshRoutes = (over = {}) => ({
   'commits/main': [200, head(HEAD, 3 * HOUR, now)],
   'actions/workflows/playwright-tests.yml/runs?head_sha': runsPage([pushRun(HEAD, 3 * HOUR, 'completed', 'success', 500, now)]),
   deployments: listed(D_HEAD, D_OLD),
-  ...statusesOf(D_HEAD),
-  ...statusesOf(D_OLD),
+  ...statusesOf(D_HEAD, D_OLD),
   'actions/workflows/playwright-tests.yml/runs?waiting': runsPage(),
   'actions/workflows/playwright-tests.yml/runs?queued': runsPage(),
   'actions/workflows/playwright-tests.yml/runs?pending': runsPage(),
   'actions/workflows/playwright-tests.yml/runs?requested': runsPage(),
   ...over,
 });
-const statusesFetched = (r, d) => r.seen.some((s) => s.path.endsWith(`/deployments/${d.id}/statuses`));
+// The deployment ids whose statuses the CLI requested, in request order.
+const statusCalls = (r) => r.seen
+  .map((s) => /\/deployments\/(\d+)\/statuses$/.exec(s.path)?.[1])
+  .filter(Boolean)
+  .map(Number);
 const CANNOT = '^::error::DEPLOY FRESHNESS: CANNOT EVALUATE - ';
 
 const cliCases = [
@@ -407,6 +567,9 @@ const cliCases = [
     assert.strictEqual(r.code, 0, r.out);
     assert.match(r.out, /DEPLOY FRESHNESS OK/);
     assert.match(r.out, /head reached main: .* \(push run 500 created\)/);
+    assert.match(r.out, new RegExp(`^live publication: {3}a{40} \\(deployment ${D_HEAD.id}, published `, 'm'));
+    assert.match(r.out, /^head is live: {7}yes$/m);
+    assert.match(r.out, /^deployments checked: 1 of 2 listed$/m);
     assert.ok(r.seen.every((s) => s.auth === 'Bearer fixture-token'), 'every request is authenticated');
     const listing = r.seen.find((s) => s.path === '/repos/o/r/deployments');
     assert.strictEqual(listing.params.get('environment'), 'github-pages');
@@ -418,30 +581,78 @@ const cliCases = [
     );
     for (const s of r.seen.filter((x) => x.path.endsWith('/statuses'))) assert.strictEqual(s.params.get('per_page'), String(STATUS_PAGE));
     for (const s of r.seen.filter((x) => x.params.get('status'))) assert.strictEqual(s.params.get('per_page'), String(RUN_PAGE));
-    assert.ok(!statusesFetched(r, D_OLD), 'older deployment not fetched');
+    assert.deepStrictEqual(statusCalls(r), [D_HEAD.id], 'only the newest deployment\'s statuses');
     assert.doesNotMatch(r.out, /fixture-token/);
   }],
-  ['CLI: newest deployment in progress, the next one successful -> scans on to it', async () => {
+  ['CLI: a shuffled listing is scanned newest first and stops as early', async () => {
+    const r = await cli(freshRoutes({ deployments: listed(D_OLD, D_OLDER, D_HEAD), ...statusesOf(D_OLDER) }));
+    assert.strictEqual(r.code, 0, r.out);
+    assert.deepStrictEqual(statusCalls(r), [D_HEAD.id]);
+  }],
+  ['CLI: newest deployment in progress, the next one published -> scans on to it, no further', async () => {
     const inProgress = deployment(HEAD, 20 * MIN, ['in_progress', 'queued'], now);
     const routes = (age) => freshRoutes({
       'actions/workflows/playwright-tests.yml/runs?head_sha': runsPage([pushRun(HEAD, age, 'in_progress', null, 500, now)]),
-      deployments: listed(inProgress, D_OLD),
-      ...statusesOf(inProgress),
+      deployments: listed(D_OLDER, inProgress, D_OLD),
+      ...statusesOf(inProgress, D_OLDER),
     });
     const inGrace = await cli(routes(30 * MIN));
     assert.strictEqual(inGrace.code, 0, inGrace.out);
-    assert.ok(statusesFetched(inGrace, D_OLD), 'the second deployment\'s statuses were requested');
-    assert.match(inGrace.out, /newest successful deployment record: b{40}/);
+    assert.deepStrictEqual(statusCalls(inGrace), [inProgress.id, D_OLD.id]);
+    assert.match(inGrace.out, /^live publication: {3}b{40} /m);
     const late = await cli(routes(3 * HOUR));
     assert.strictEqual(late.code, 1, late.out);
-    assert.match(late.out, /^::error::DEPLOY FRESHNESS \(head-not-live\): Main head aaaaaaa .* record is bbbbbbb\. Its Test and deploy run 500 is still "in_progress"/m);
+    assert.match(late.out, /^::error::DEPLOY FRESHNESS \(head-not-live\): Main head aaaaaaa is not live 180 min .* github-pages serves bbbbbbb .* Its Test and deploy run 500 is still "in_progress"/m);
   }],
-  ['CLI: a newer "success" record of an older sha (skipped publish) does not hide the live head', async () => {
-    const skipped = deployment(OLD, 20 * MIN, ['success'], now);
-    const r = await cli(freshRoutes({ deployments: listed(skipped, D_HEAD), ...statusesOf(skipped) }));
+  ['CLI: a newer skipped-publish record of an older sha does not hide the live head; nothing older is fetched', async () => {
+    const skip = skipped(OLD, 20 * MIN, now);
+    const r = await cli(freshRoutes({ deployments: listed(skip, D_HEAD, D_OLD), ...statusesOf(skip) }));
     assert.strictEqual(r.code, 0, r.out);
-    assert.ok(statusesFetched(r, D_HEAD), 'scanned on to the head deployment');
-    assert.match(r.out, /head deployed: {6}yes/);
+    assert.deepStrictEqual(statusCalls(r), [skip.id, D_HEAD.id]);
+    assert.match(r.out, /^head is live: {7}yes$/m);
+  }],
+  ['CLI: rollback to a once-published sha is red, and the older record of it is not even fetched', async () => {
+    const y = deployment(OLD, 24 * HOUR, ['success'], now);
+    const x = deployment(HEAD, 48 * HOUR, ['success'], now);
+    const r = await cli(freshRoutes({
+      'commits/main': [200, head(HEAD, 49 * HOUR, now)],
+      'actions/workflows/playwright-tests.yml/runs?head_sha': runsPage([pushRun(HEAD, 3 * HOUR, 'completed', 'cancelled', 700, now)]),
+      deployments: listed(y, x),
+      ...statusesOf(y, x),
+    }));
+    assert.strictEqual(r.code, 1, r.out);
+    assert.match(r.out, /\(head-not-live\): Main head aaaaaaa is not live 180 min .* github-pages serves bbbbbbb .* conclusion "cancelled": the run was cancelled/);
+    assert.deepStrictEqual(statusCalls(r), [y.id]);
+  }],
+  ['CLI: an older deployment updated after the publication found is fetched (it may hold a newer one)', async () => {
+    // OLD's deployment was created before the head's but published after it.
+    const late = publishedAt(OLD, 3 * HOUR, 30 * MIN, now);
+    const r = await cli(freshRoutes({ deployments: listed(D_HEAD, late, D_OLDER), ...statusesOf(late) }));
+    assert.strictEqual(r.code, 1, r.out);
+    assert.deepStrictEqual(statusCalls(r), [D_HEAD.id, late.id]);
+    assert.match(r.out, /\(head-not-live\): .* github-pages serves bbbbbbb /);
+    // The rule looks at every deployment left, not only the next one: a
+    // failed deployment in between (updated long ago) does not stop the scan.
+    const between = deployment(OLDER, 150 * MIN, ['failure'], now);
+    const r2 = await cli(freshRoutes({ deployments: listed(D_HEAD, between, late), ...statusesOf(between, late) }));
+    assert.strictEqual(r2.code, 1, r2.out);
+    assert.deepStrictEqual(statusCalls(r2), [D_HEAD.id, between.id, late.id]);
+  }],
+  ['CLI: a deployment left that was updated in the same second as the publication found is still fetched', async () => {
+    // Both published in the same second; OLD's success status has the higher
+    // id, so OLD is the newer publication although its deployment is older.
+    const at = ago(HOUR, now);
+    const pub = (sha, age, statusIdValue) => ({
+      ...deployment(sha, age, [], now),
+      updated_at: at,
+      statuses: [{ id: statusIdValue, state: 'success', created_at: at, environment_url: PAGES_URL }],
+    });
+    const h = pub(HEAD, 2 * HOUR, 8);
+    const o = pub(OLD, 3 * HOUR, 9);
+    const r = await cli(freshRoutes({ deployments: listed(h, o, D_OLDER), ...statusesOf(h, o) }));
+    assert.strictEqual(r.code, 1, r.out);
+    assert.deepStrictEqual(statusCalls(r), [h.id, o.id]);
+    assert.match(r.out, /\(head-not-live\): .* github-pages serves bbbbbbb /);
   }],
   ['CLI: stale deployment and stalled run exit 1 with one ::error:: each', async () => {
     const r = await cli(freshRoutes({
@@ -450,15 +661,20 @@ const cliCases = [
       'actions/workflows/playwright-tests.yml/runs?queued': runsPage([run(99, 'queued', 30 * HOUR, now)]),
     }));
     assert.strictEqual(r.code, 1, r.out);
-    assert.match(r.out, /^::error::DEPLOY FRESHNESS \(head-not-live\): Main head aaaaaaa has no successful github-pages deployment/m);
+    assert.match(r.out, /^::error::DEPLOY FRESHNESS \(head-not-live\): Main head aaaaaaa is not live/m);
     assert.strictEqual(r.out.match(/\(stalled-run\): Test and deploy run 99 /g)?.length, 1, r.out);
     assert.match(r.out, /stalled-status runs listed: 1$/m);
   }],
-  ['CLI: a transient 5xx, 429 or network error is retried once', async () => {
+  ['CLI: a transient 5xx, 429, rate-limit 403 or network error is retried once', async () => {
     const twice = (first) => (n) => (n === 1 ? first : freshRoutes()['commits/main']);
-    for (const first of [[502, { message: 'bad gateway' }], [429, { message: 'slow down' }]]) {
+    for (const first of [
+      [502, { message: 'bad gateway' }],
+      [429, { message: 'slow down' }],
+      [403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0' }],
+      [403, { message: 'secondary rate limit' }, { 'retry-after': '60' }],
+    ]) {
       const r = await cli(freshRoutes({ 'commits/main': twice(first) }));
-      assert.strictEqual(r.code, 0, r.out);
+      assert.strictEqual(r.code, 0, `${first[0]}: ${r.out}`);
       assert.strictEqual(r.hits['commits/main'], 2);
     }
     const r = await cli(freshRoutes({
@@ -474,12 +690,18 @@ const cliCases = [
       assert.match(r.out, new RegExp(`${CANNOT}GET .* failed after 2 attempts: HTTP 500$`, 'm'));
       assert.strictEqual(r.hits[key], 2, key);
     }
+    const limited = await cli(freshRoutes({ deployments: [403, { message: 'rate limited' }, { 'x-ratelimit-remaining': '0' }] }));
+    assert.strictEqual(limited.code, 2, limited.out);
+    assert.match(limited.out, new RegExp(`${CANNOT}GET deployments\\?environment=github-pages&per_page=10 failed after 2 attempts: HTTP 403 \\(rate limit\\)$`, 'm'));
+    assert.strictEqual(limited.hits.deployments, 2);
   }],
-  ['CLI: a 4xx other than 429 is not retried', async () => {
-    const r = await cli(freshRoutes({ deployments: [403, { message: 'forbidden' }] }));
-    assert.strictEqual(r.code, 2, r.out);
-    assert.match(r.out, new RegExp(`${CANNOT}GET deployments\\?environment=github-pages&per_page=10 returned HTTP 403$`, 'm'));
-    assert.strictEqual(r.hits.deployments, 1);
+  ['CLI: a 4xx other than 429 or a rate-limit 403 is not retried', async () => {
+    for (const answer of [[403, { message: 'forbidden' }], [403, { message: 'forbidden' }, { 'x-ratelimit-remaining': '4999' }], [404, { message: 'Not Found' }]]) {
+      const r = await cli(freshRoutes({ deployments: answer }));
+      assert.strictEqual(r.code, 2, r.out);
+      assert.match(r.out, new RegExp(`${CANNOT}GET deployments\\?environment=github-pages&per_page=10 returned HTTP ${answer[0]}$`, 'm'));
+      assert.strictEqual(r.hits.deployments, 1);
+    }
   }],
   ['CLI: a request that never answers times out, and the run still exits 2 on its own', async () => {
     const r = await cli(freshRoutes({ 'commits/main': 'hang' }), { DEPLOY_FRESHNESS_TIMEOUT_MS: '200' });
@@ -510,6 +732,24 @@ const cliCases = [
       assert.strictEqual(r.seen.length, 0);
     }
   }],
+  ['CLI: the token is masked even when an API value echoes it, whole or truncated', async () => {
+    const long = `ghs_${'Q'.repeat(60)}TAILSECRET${'z'.repeat(19)}`;
+    for (const token of ['fixture-token', long]) {
+      const echo = { sha: HEAD, commit: { committer: { date: token } } };
+      const r = await cli(freshRoutes({ 'commits/main': [200, echo] }), { GITHUB_TOKEN: token });
+      assert.strictEqual(r.code, 2, r.out);
+      assert.match(r.out, /CANNOT EVALUATE - main head committer date is not a timestamp: "\*\*\*"$/m);
+      assert.ok(!r.out.includes(token.slice(0, 8)), `no prefix of the ${token.length}-character token in: ${r.out}`);
+    }
+  }],
+  ['CLI: a malformed GITHUB_REPOSITORY is refused before any request', async () => {
+    for (const repo of ['o', 'o/r/../../x', 'o/r?x=1', '../o/r']) {
+      const r = await cli(freshRoutes(), { GITHUB_REPOSITORY: repo });
+      assert.strictEqual(r.code, 2, `${repo}: ${r.out}`);
+      assert.match(r.out, new RegExp(`${CANNOT}GITHUB_REPOSITORY must be set to <owner>/<repo>$`, 'm'));
+      assert.strictEqual(r.seen.length, 0, repo);
+    }
+  }],
   ['CLI: the timing overrides may only shorten the defaults', async () => {
     for (const env of [{ DEPLOY_FRESHNESS_TIMEOUT_MS: '600000' }, { DEPLOY_FRESHNESS_RETRY_DELAY_MS: '-1' }, { DEPLOY_FRESHNESS_TIMEOUT_MS: '0' }]) {
       const r = await cli(freshRoutes(), env);
@@ -525,6 +765,7 @@ const cliCases = [
       ['commits/main', { sha: '../../evil' }],
       ['actions/workflows/playwright-tests.yml/runs?queued', { workflow_runs: 'x' }],
       ['actions/workflows/playwright-tests.yml/runs?head_sha', { total_count: 2, workflow_runs: [] }],
+      [`deployments/${D_HEAD.id}/statuses`, { message: 'not a list' }],
     ]) {
       const r = await cli(freshRoutes({ [key]: [200, body] }));
       assert.strictEqual(r.code, 2, `${key}: ${r.out}`);
@@ -538,21 +779,19 @@ const cliCases = [
     assert.strictEqual(r.seen.length, 1);
   }],
   ['CLI: a listed deployment with a malformed or missing field exits 2 before any scan', async () => {
-    const bad = { ...D_OLD, created_at: 'garbage' };
-    for (const deployments of [listed(D_HEAD, bad), listed(D_HEAD, { ...D_OLD, id: undefined }), listed(D_HEAD, { ...D_OLD, sha: 'x' })]) {
-      const r = await cli(freshRoutes({ deployments }));
+    for (const bad of [{ ...D_OLD, created_at: 'garbage' }, { ...D_OLD, id: undefined }, { ...D_OLD, sha: 'x' }, { ...D_OLD, updated_at: null }]) {
+      const r = await cli(freshRoutes({ deployments: listed(D_HEAD, bad) }));
       assert.strictEqual(r.code, 2, r.out);
       assert.match(r.out, /CANNOT EVALUATE - deployment #1 /);
-      assert.ok(!r.seen.some((s) => s.path.endsWith('/statuses')), 'no statuses fetched');
+      assert.deepStrictEqual(statusCalls(r), [], 'no statuses fetched');
     }
   }],
   ['CLI: worst case makes exactly MAX_CALLS calls; a longer listing exits 2', async () => {
     const ten = Array.from({ length: DEPLOYMENT_LIMIT }, (_, i) => deployment(OLD, (i + 1) * HOUR, ['failure'], now));
-    const routes = freshRoutes({ deployments: listed(...ten) });
-    for (const d of ten) Object.assign(routes, statusesOf(d));
+    const routes = freshRoutes({ deployments: listed(...ten), ...statusesOf(...ten) });
     const r = await cli(routes);
     assert.strictEqual(r.code, 1, r.out);
-    assert.match(r.out, /\(no-successful-deployment\): No successful github-pages deployment among the 10 listed/);
+    assert.match(r.out, /\(no-publication\): Main head aaaaaaa is not live 180 min .* none of the 10 github-pages deployments checked records a publication/);
     assert.strictEqual(r.seen.length, MAX_CALLS);
     const eleven = [...ten, deployment(OLDER, 20 * HOUR, ['success'], now)];
     const over = await cli(freshRoutes({ deployments: listed(...eleven) }));

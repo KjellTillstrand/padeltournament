@@ -4,11 +4,15 @@ name: Deploy freshness
 # stuck deploy is visible within hours instead of days. Run 36765228696 waited
 # on the github-pages environment for three days while holding the
 # deploy-gh-pages concurrency group; later deploys were cancelled and nothing
-# went red. scripts/check-deploy-freshness.mjs fails when the head of main has
-# no successful github-pages deployment over an hour after its push run was
-# created (its committer date when it has none, e.g. [skip ci]), or a
-# "Test and deploy" run has been waiting/queued/pending/requested
-# for over an hour. Its header documents the exact rules, boundaries, fetch
+# went red. scripts/check-deploy-freshness.mjs fails when the head of main is
+# not what Pages serves (the newest github-pages publication) over an hour
+# after its push run was created (its committer date when it has none, e.g.
+# [skip ci]), or a "Test and deploy" run has been
+# waiting/queued/pending/requested for over an hour. A publication is a
+# "success" deployment status with an environment_url, which the deploy job
+# in playwright-tests.yml sets only when actions/deploy-pages ran (its
+# environment.url); dropping that url there turns this monitor red, never
+# green. The script's header documents the exact rules, boundaries, fetch
 # bounds and time budget; its decision logic is self-tested in the Test and
 # deploy workflow.
 #
@@ -59,9 +63,10 @@ jobs:
 
       # Exit 1 = stale or stalled (an ::error:: annotation per problem);
       # exit 2 = the check could not see (an API call failed after one retry,
-      # or returned an unexpected shape). Both are red: a monitor that cannot
-      # see never passes.
-      - name: Check the head of main is deployed
+      # including a rate limit that outlasts the retry pause, or returned an
+      # unexpected shape). Both are red: a monitor that cannot see never
+      # passes.
+      - name: Check the head of main is live on Pages
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/check-deploy-freshness.mjs

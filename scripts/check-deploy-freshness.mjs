@@ -19,25 +19,45 @@
 // deploy-freshness.yml runs it hourly).
 //
 // It fails when either:
-//   (a) the head of main has no github-pages deployment whose latest status is
-//       "success", and the head reached main more than STALE_AFTER_MS ago.
-//       What counts is a deployment OF THE HEAD SHA, not the newest "success"
-//       record: when the deploy job's freshness guard skips publishing (main
-//       has moved on), the job still succeeds, so GitHub records a "success"
-//       deployment for that older, unpublished sha, possibly after the newer
-//       sha was published. No successful deployment at all among those fetched
-//       is also a failure, with no grace period.
+//   (a) the head of main is not what GitHub Pages serves, and the head reached
+//       main more than STALE_AFTER_MS ago. One rule, one grace hour, whether
+//       Pages serves another sha or no publication is found at all.
+//       What Pages serves ("live") is the newest PUBLICATION: a github-pages
+//       deployment whose latest status is "success" and carries a non-empty
+//       environment_url, ordered by that success status's created_at (the
+//       status id breaks a tie). Only the newest publication counts, so an
+//       older record of the head sha does not make it live: after main is
+//       rolled back to a sha that was published before, the newer sha Pages
+//       still serves is the live one until the rollback itself is published.
+//       COUPLING to .github/workflows/playwright-tests.yml: its deploy job sets
+//       environment.url from actions/deploy-pages' page_url output, so a
+//       success status carries an environment_url only when deploy-pages ran.
+//       When the job's freshness guard skips publishing (main has moved on),
+//       the job still succeeds and GitHub records "success" with an EMPTY
+//       environment_url (live data 2026-10-26: skipped 32cafe6 = deployment
+//       7245089193 and 5ffd3ea = 7248393700 empty; published 9c4159e =
+//       7274264074, 684bb60 = 7265740918, d0917b3 = 7245103323 set). Should
+//       that workflow stop setting environment.url, every success reads as "no
+//       publication" and (a) goes red after the grace hour: a false red, never
+//       a false green.
+//       "inactive" statuses are passed over when finding the latest status.
+//       GitHub may add one to a deployment a newer one superseded; none of the
+//       30 newest github-pages deployments here carries one (2026-10-26). If
+//       one appears, a skipped publish of an older sha must not un-publish the
+//       head it "superseded"; ordering by publication time already decides
+//       which publication is live.
 //       When the head reached main is server-set: the created_at of the
 //       push-event Test and deploy run for the head sha (the newest one, should
-//       main have been pushed to that sha twice). With no such run (a
-//       [skip ci] push, CI never started, or the run not created yet) the
-//       committer date is used instead. A committer date or run time more than
-//       FUTURE_SKEW_MS in the future is not trusted and exits 2: a future date
-//       would otherwise hold (a) silent until that date.
+//       main have been pushed to that sha twice). A re-run of that run keeps
+//       its created_at, so a re-run does not restart the clock: the head has
+//       not been live for that long. The message then says the run is being
+//       re-run rather than stuck. With no such run (a [skip ci] push, CI never
+//       started, or the run not created yet) the committer date is used
+//       instead.
 //       (a) also fires when the run on main failed or never ran, which is not a
 //       stalled publication; its error therefore says what is known about the
-//       head's run (none, still running/waiting, or completed with which
-//       conclusion).
+//       head's run (none, being re-run, still running/waiting, or completed
+//       with which conclusion).
 //   (b) a "Test and deploy" run (playwright-tests.yml) has been in a stalled
 //       status (waiting, queued, pending or requested) for more than
 //       STALE_AFTER_MS, measured from the run attempt's start (run_started_at,
@@ -55,11 +75,19 @@
 //       the listing calls) is judged and reported once.
 // Boundary: both limits are strict ("more than"): an age of exactly one hour
 // passes, one millisecond more fails.
+// Future times: every time a verdict rests on (the head's push run, the
+// committer date when it is the age source, deployment status times, stalled
+// run times) more than FUTURE_SKEW_MS in the future is not trusted and exits
+// 2; a future time would otherwise hold a check silent until that date. A
+// committer date that is NOT the age source (a push run exists) is not judged:
+// a clock-skewed pusher must not blind the monitor. Deployment created_at and
+// updated_at only steer the fetch scan below (a future one only makes it fetch
+// more), so they are validated as timestamps but not judged.
 //
 // Detection only: it reads, never cancels, approves or re-runs anything.
 //
 // Exit codes:
-//   0  the head of main is deployed (or still in its grace hour) and no run is
+//   0  the head of main is live (or still in its grace hour) and no run is
 //      stalled
 //   1  one or more of the failures above (each printed as an ::error:: line)
 //   2  the monitor could not see: bad environment, an API call failed (after
@@ -69,13 +97,18 @@
 //
 // Fetch bounds (each a single page, no further pagination):
 //   - main head: one call; its push-event runs: one call (RUN_PAGE).
-//   - deployments: the DEPLOYMENT_LIMIT newest github-pages deployments, then
-//     the statuses (STATUS_PAGE) of each, newest first, only until the head's
-//     deployment is found live, or a successful one has been found and no
-//     deployment of the head is left to check. The head's deployment is created
-//     after every older commit's run started, so it is among the newest; if it
-//     is not listed, (a) reports the head as not live (a false red, never a
-//     false green).
+//   - deployments: the DEPLOYMENT_LIMIT newest github-pages deployments,
+//     validated and ordered newest first (orderDeployments(), shared with
+//     evaluate()), then the statuses (STATUS_PAGE) of each in that order until
+//     the newest publication is known: one has been found and no deployment
+//     left has an updated_at (GitHub sets it to the time of the deployment's
+//     newest status; equal on every live record checked) at or after its
+//     publication time, so none of them can hold a newer one. Publications
+//     are serialised by the deploy-gh-pages concurrency group, so normally
+//     the first publication found is the newest and one or two status calls
+//     suffice. A publication older than the DEPLOYMENT_LIMIT newest records is
+//     not seen; that reads as "no publication" (a false red, never a false
+//     green).
 //   - runs: one page of RUN_PAGE runs per stalled status. If GitHub reports
 //     more runs in a status than one page holds, the oldest (most likely
 //     stalled) ones could be on a later page, so that exits 2 instead.
@@ -85,8 +118,11 @@
 // 17 x (8 + 2 + 8) s = 5 min 6 s. The workflow's timeout-minutes (10) leaves
 // room for checkout and setup-node, so the script always exits on its own,
 // with its own CANNOT EVALUATE annotation; the self-test asserts the margin.
-// A retry happens only on a network error or timeout, HTTP 5xx or HTTP 429;
-// if the retry fails too, it exits 2.
+// A retry happens only on a network error or timeout, HTTP 5xx, HTTP 429, or
+// an HTTP 403 that is a rate limit (x-ratelimit-remaining: 0 or a
+// retry-after header); any other 403 is not retried. The pause stays the
+// fixed RETRY_DELAY_MS whatever retry-after asks for (the budget above), so a
+// rate limit that outlasts it still exits 2.
 //
 // The decision is the pure function evaluate(), exported for the fixture
 // self-test (scripts/check-deploy-freshness.test.mjs); the CLI below it only
@@ -171,28 +207,85 @@ function minutes(ms) {
   return `${Math.floor(ms / 60000)} min`;
 }
 
+const iso = (ms) => new Date(ms).toISOString();
+
 // Newest first: by time, then by id (ids rise over time; a tie in the
 // one-second timestamps is broken by the higher id).
 const newer = (x, y) => y.at - x.at || y.id - x.id;
 
-// The newest status of one deployment, or undefined when it has none.
-export function latestState(deployment, label) {
-  if (!Array.isArray(deployment.statuses)) throw new InputError(`${label} has no "statuses" array`);
-  let latest;
-  for (const [i, s] of deployment.statuses.entries()) {
-    const sLabel = `${label} status #${i}`;
-    if (!isObject(s) || typeof s.state !== 'string') throw new InputError(`${sLabel} has no state`);
-    const candidate = { at: time(s.created_at, `${sLabel} created_at`), id: intId(s.id, sLabel), state: s.state };
-    if (!latest || newer(candidate, latest) < 0) latest = candidate;
-  }
-  return latest?.state;
+// The newer of two publications (either may be undefined).
+function newest(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return newer(b, a) < 0 ? b : a;
 }
 
-// One deployment as listed, validated: everything the sort and the decision use.
-export function listedDeployment(d, label) {
-  if (!isObject(d)) throw new InputError(`${label} is not an object`);
-  return { id: intId(d.id, label), sha: sha(d.sha, `${label} sha`), at: time(d.created_at, `${label} created_at`) };
+/**
+ * Validate a list of github-pages deployments and order it newest first (by
+ * created_at, then id). The ONE place deployments are validated and ordered:
+ * the CLI's fetch scan and evaluate() both use it, so they cannot disagree
+ * about the order. Labels name the position in the list as given.
+ *
+ * @returns {{id: number, sha: string, at: number, updatedAt: number, label: string, raw: object}[]}
+ */
+export function orderDeployments(list) {
+  if (!Array.isArray(list)) throw new InputError('deployments is not an array');
+  return list
+    .map((d, i) => {
+      const label = `deployment #${i}`;
+      if (!isObject(d)) throw new InputError(`${label} is not an object`);
+      return {
+        id: intId(d.id, label),
+        sha: sha(d.sha, `${label} sha`),
+        at: time(d.created_at, `${label} created_at`),
+        updatedAt: time(d.updated_at, `${label} updated_at`),
+        label,
+        raw: d,
+      };
+    })
+    .sort(newer);
 }
+
+/**
+ * The publication one deployment records, or undefined: its latest status
+ * other than "inactive" must be "success" with a non-empty environment_url
+ * (see the header: the url is set only when actions/deploy-pages ran). Every
+ * status is validated, "inactive" ones too.
+ *
+ * @returns {{sha: string, deploymentId: number, at: number, id: number}|undefined}
+ *          at/id are the success status's created_at and id
+ */
+export function publicationOf(deployment, statuses, now) {
+  const { label } = deployment;
+  if (!Array.isArray(statuses)) throw new InputError(`${label} has no "statuses" array`);
+  let latest;
+  for (const [i, s] of statuses.entries()) {
+    const sLabel = `${label} status #${i}`;
+    if (!isObject(s) || typeof s.state !== 'string') throw new InputError(`${sLabel} has no state`);
+    const url = s.environment_url ?? '';
+    if (typeof url !== 'string') throw new InputError(`${sLabel} has a malformed environment_url`);
+    const candidate = {
+      at: past(time(s.created_at, `${sLabel} created_at`), now, `${sLabel} created_at`),
+      id: intId(s.id, sLabel),
+      state: s.state,
+      url,
+    };
+    if (candidate.state === 'inactive') continue;
+    if (!latest || newer(candidate, latest) < 0) latest = candidate;
+  }
+  if (latest?.state !== 'success' || latest.url.trim() === '') return undefined;
+  return { sha: deployment.sha, deploymentId: deployment.id, at: latest.at, id: latest.id };
+}
+
+// How a completed, unsuccessful head run ended, by conclusion. A Map, so an
+// API-supplied conclusion can never select an inherited object property.
+const OUTCOME = new Map([
+  ['failure', 'the run failed (tests, a gate or the deploy job; see the run)'],
+  ['cancelled', 'the run was cancelled (by hand, or replaced while it waited for the deploy-gh-pages concurrency group)'],
+  ['timed_out', 'a job of the run timed out'],
+  ['skipped', 'the run was skipped'],
+  ['startup_failure', 'the run failed to start'],
+]);
 
 // What is known about the head's push run, for the (a) message.
 function describeHeadRun(run, now) {
@@ -203,15 +296,20 @@ function describeHeadRun(run, now) {
   const ref = `Its Test and deploy run ${run.id}`;
   const url = run.url ? ` ${clean(run.url, 120)}` : '';
   if (run.status !== 'completed') {
+    if (run.attempt > 1) {
+      return `${ref} is being re-run (attempt ${run.attempt}, now "${clean(run.status, 20)}"); the run was first ` +
+        `created ${minutes(now - run.at)} ago, and a re-run does not restart the head's clock.${url}`;
+    }
     return `${ref} is still "${clean(run.status, 20)}" ${minutes(now - run.at)} after it was created: ` +
       `the run or its publication is stuck.${url}`;
   }
   if (run.conclusion === 'success') {
-    return `${ref} completed with conclusion "success", yet no deployment of the head is live: ` +
+    return `${ref} completed with conclusion "success", yet it is not the live publication: ` +
       `the publication was skipped or not recorded.${url}`;
   }
-  return `${ref} completed with conclusion "${clean(run.conclusion ?? 'none', 20)}": the run failed ` +
-    `(tests, a gate or the deploy job; see the run), not necessarily the publication.${url}`;
+  const conclusion = run.conclusion ?? 'none';
+  const outcome = OUTCOME.get(conclusion) ?? 'the run did not succeed';
+  return `${ref} completed with conclusion "${clean(conclusion, 20)}": ${outcome}.${url}`;
 }
 
 /**
@@ -221,14 +319,18 @@ function describeHeadRun(run, now) {
  * @param {number} input.now          current time, epoch ms
  * @param {object} input.head         GET repos/{repo}/commits/main (sha, commit.committer.date)
  * @param {object[]} input.headRuns   push-event "Test and deploy" runs for the head sha
- *                                    (id, head_sha, status, conclusion, created_at, html_url)
- * @param {object[]} input.deployments github-pages deployments (id, sha, created_at), each with a
- *                                    `statuses` array as returned by its statuses endpoint
+ *                                    (id, head_sha, status, conclusion, run_attempt, created_at,
+ *                                    html_url)
+ * @param {object[]} input.deployments github-pages deployments (id, sha, created_at, updated_at),
+ *                                    each with a `statuses` array as returned by its statuses
+ *                                    endpoint (state, id, created_at, environment_url)
  * @param {object[]} input.runs       "Test and deploy" workflow runs in a stalled status (id,
  *                                    status, run_started_at|created_at, html_url)
  * @returns {{failures: {code: string, reason: string}[], headSha: string, headLive: boolean,
- *            headSince: number, headSinceSource: string, newestSuccess: string|undefined,
- *            runsListed: number}} failures is empty when fresh; the rest is what was judged
+ *            headSince: number, headSinceSource: string,
+ *            live: {sha: string, deploymentId: number, at: number, id: number}|undefined,
+ *            deploymentsChecked: number, runsListed: number}}
+ *          failures is empty when fresh; the rest is what was judged
  * @throws {InputError} when any input is missing or malformed (fail closed)
  */
 export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
@@ -237,7 +339,7 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
     throw new InputError('main head has no commit.committer');
   }
   const headSha = sha(head.sha, 'main head sha');
-  const committed = past(time(head.commit.committer.date, 'main head committer date'), now, 'main head committer date');
+  const committed = time(head.commit.committer.date, 'main head committer date');
   if (!Array.isArray(headRuns)) throw new InputError('head runs is not an array');
   if (!Array.isArray(deployments)) throw new InputError('deployments is not an array');
   if (!Array.isArray(runs)) throw new InputError('runs is not an array');
@@ -250,44 +352,51 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
     if (r.head_sha !== headSha) throw new InputError(`${label} is not a run of the main head`);
     if (typeof r.status !== 'string') throw new InputError(`${label} has no status`);
     if (r.conclusion != null && typeof r.conclusion !== 'string') throw new InputError(`${label} has a malformed conclusion`);
+    const attempt = r.run_attempt ?? 1;
+    if (!Number.isSafeInteger(attempt) || attempt < 1) throw new InputError(`${label} has a malformed run_attempt`);
     const candidate = {
       id: intId(r.id, label),
       at: past(time(r.created_at, `${label} created_at`), now, `${label} created_at`),
       status: r.status,
       conclusion: r.conclusion ?? null,
+      attempt,
       url: r.html_url,
     };
     if (!headRun || newer(candidate, headRun) < 0) headRun = candidate;
   }
-  const headSince = headRun ? headRun.at : committed;
+  // The committer date is judged against the future only when it is the age source.
+  const headSince = headRun ? headRun.at : past(committed, now, 'main head committer date');
   const headSinceSource = headRun ? `push run ${headRun.id} created` : 'committer date (no push run)';
   const headAge = now - headSince;
 
   const failures = [];
 
-  // (a) Is the head of main itself deployed?
-  const listed = deployments.map((d, i) => {
-    const label = `deployment #${i}`;
-    return { ...listedDeployment(d, label), state: latestState(d, label) };
-  });
-  listed.sort(newer);
-  const headLive = listed.some((d) => d.sha === headSha && d.state === 'success');
-  const newestSuccess = listed.find((d) => d.state === 'success');
-  if (!newestSuccess) {
-    failures.push({
-      code: 'no-successful-deployment',
-      reason:
-        `No successful ${ENVIRONMENT} deployment among the ${deployments.length} listed: ` +
-        `main head ${headSha.slice(0, 7)} is not live.`,
-    });
-  } else if (!headLive && headAge > STALE_AFTER_MS) {
-    failures.push({
-      code: 'head-not-live',
-      reason:
-        `Main head ${headSha.slice(0, 7)} has no successful ${ENVIRONMENT} deployment ${minutes(headAge)} after its ` +
-        `${headRun ? 'push run was created' : 'committer date'} (limit ${minutes(STALE_AFTER_MS)}); the newest ` +
-        `successful deployment record is ${newestSuccess.sha.slice(0, 7)}. ${describeHeadRun(headRun, now)}`,
-    });
+  // (a) Is the head of main what Pages serves?
+  const ordered = orderDeployments(deployments);
+  let live;
+  for (const entry of ordered) live = newest(live, publicationOf(entry, entry.raw.statuses, now));
+  const headLive = live?.sha === headSha;
+  if (!headLive && headAge > STALE_AFTER_MS) {
+    const since =
+      `${minutes(headAge)} after its ${headRun ? 'push run was created' : 'committer date'} ` +
+      `(limit ${minutes(STALE_AFTER_MS)})`;
+    failures.push(
+      live
+        ? {
+          code: 'head-not-live',
+          reason:
+            `Main head ${headSha.slice(0, 7)} is not live ${since}: ${ENVIRONMENT} serves ` +
+            `${live.sha.slice(0, 7)} (deployment ${live.deploymentId}, published ${iso(live.at)}). ` +
+            describeHeadRun(headRun, now),
+        }
+        : {
+          code: 'no-publication',
+          reason:
+            `Main head ${headSha.slice(0, 7)} is not live ${since}: none of the ${ordered.length} ` +
+            `${ENVIRONMENT} deployments checked records a publication (a latest "success" status ` +
+            `with an environment_url). ${describeHeadRun(headRun, now)}`,
+        },
+    );
   }
 
   // (b) Is any Test and deploy run stuck before or between its jobs?
@@ -299,7 +408,8 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
     if (seen.has(id)) continue;
     seen.add(id);
     if (!STALLED_STATUSES.includes(run.status)) continue;
-    const started = time(run.run_started_at ?? run.created_at, `${label} run_started_at`);
+    const startLabel = `${label} run_started_at`;
+    const started = past(time(run.run_started_at ?? run.created_at, startLabel), now, startLabel);
     const age = now - started;
     if (age > STALE_AFTER_MS) {
       failures.push({
@@ -310,7 +420,9 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
       });
     }
   }
-  return { failures, headSha, headLive, headSince, headSinceSource, newestSuccess: newestSuccess?.sha, runsListed: seen.size };
+  return {
+    failures, headSha, headLive, headSince, headSinceSource, live, deploymentsChecked: ordered.length, runsListed: seen.size,
+  };
 }
 
 // ---------------------------------------------------------------- CLI ----
@@ -318,8 +430,12 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
 function cannotSee(message) {
   let text = String(message);
   // Belt and braces: no message is built from the token, but never print it.
+  // Echoed API values are truncated before they get here, so a prefix of the
+  // token (8 characters or more, longest first) is masked too.
   const token = process.env.GITHUB_TOKEN;
-  if (token && token.length >= 4) text = text.replaceAll(token, '***');
+  if (token && token.length >= 4) {
+    for (let n = token.length; n >= Math.min(token.length, 8); n -= 1) text = text.replaceAll(token.slice(0, n), '***');
+  }
   console.log(`::error::DEPLOY FRESHNESS: CANNOT EVALUATE - ${clean(text, 400)}`);
   console.error('A monitor that cannot see never reports green.');
   process.exit(EXIT_CANNOT_SEE);
@@ -372,6 +488,15 @@ function runsOf(page, what) {
   return page.workflow_runs;
 }
 
+// Worth one retry: a server error, or a rate limit (429, or a 403 that says so).
+function transient(res) {
+  if (res.status >= 500 || res.status === 429) return `HTTP ${res.status}`;
+  if (res.status === 403 && (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after'))) {
+    return 'HTTP 403 (rate limit)';
+  }
+  return undefined;
+}
+
 async function main() {
   const repo = process.env.GITHUB_REPOSITORY ?? '';
   const token = process.env.GITHUB_TOKEN ?? '';
@@ -401,8 +526,9 @@ async function main() {
         why = `network error (${errorCode(err)})`;
         continue;
       }
-      if (res.status >= 500 || res.status === 429) {
-        why = `HTTP ${res.status}`;
+      const retryable = transient(res);
+      if (retryable) {
+        why = retryable;
         await res.body?.cancel().catch(() => {});
         continue;
       }
@@ -423,6 +549,9 @@ async function main() {
     throw new InputError(`GET ${path} failed after ${ATTEMPTS} attempts: ${why}`);
   };
 
+  // One clock for the scan and the decision.
+  const now = Date.now();
+
   const head = await get('commits/main');
   // Validated before it is put into a URL.
   const headSha = sha(isObject(head) ? head.sha : undefined, 'main head sha');
@@ -435,20 +564,24 @@ async function main() {
   const listing = await get(`deployments?environment=${ENVIRONMENT}&per_page=${DEPLOYMENT_LIMIT}`);
   if (!Array.isArray(listing)) throw new InputError('deployments listing is not an array');
   if (listing.length > DEPLOYMENT_LIMIT) throw new InputError(`deployments listing holds more than ${DEPLOYMENT_LIMIT}`);
-  // Validate before sorting: a missing or malformed field must not scramble
-  // the order the scan below stops on.
-  const byAge = listing.map((d, i) => ({ d, ...listedDeployment(d, `deployment #${i}`) })).sort(newer);
-  // Fetch statuses newest first, only as far as the decision needs (see the
-  // header); evaluate() makes the decision on what was fetched.
+  // Validated and ordered before any statuses call (a malformed field must not
+  // scramble the scan), by the same function evaluate() uses.
+  const ordered = orderDeployments(listing);
+  // The stop rule, computed once: lastUpdate[i] is the newest updated_at among
+  // ordered[i..]. Once a publication is known and nothing left was updated at
+  // or after it, nothing left can hold a newer publication (see the header).
+  const lastUpdate = new Array(ordered.length);
+  for (let i = ordered.length - 1, max = -Infinity; i >= 0; i -= 1) {
+    max = Math.max(max, ordered[i].updatedAt);
+    lastUpdate[i] = max;
+  }
   const deployments = [];
-  let anySuccess = false;
-  for (const [i, entry] of byAge.entries()) {
+  let live;
+  for (const [i, entry] of ordered.entries()) {
+    if (live && lastUpdate[i] < live.at) break;
     const statuses = await get(`deployments/${entry.id}/statuses?per_page=${STATUS_PAGE}`);
-    deployments.push({ ...entry.d, statuses });
-    const success = latestState({ statuses }, `deployment ${entry.id}`) === 'success';
-    if (success && entry.sha === headSha) break;
-    anySuccess ||= success;
-    if (anySuccess && !byAge.slice(i + 1).some((later) => later.sha === headSha)) break;
+    deployments.push({ ...entry.raw, statuses });
+    live = newest(live, publicationOf(entry, statuses, now));
   }
 
   const runs = [];
@@ -456,18 +589,23 @@ async function main() {
     runs.push(...runsOf(await get(`actions/workflows/${WORKFLOW_FILE}/runs?status=${status}&per_page=${RUN_PAGE}`), `"${status}"`));
   }
 
-  const result = evaluate({ now: Date.now(), head, headRuns, deployments, runs });
+  const result = evaluate({ now, head, headRuns, deployments, runs });
   console.log(`main head:          ${result.headSha}`);
-  console.log(`head reached main:  ${new Date(result.headSince).toISOString()} (${result.headSinceSource})`);
-  console.log(`head deployed:      ${result.headLive ? 'yes' : 'no'}`);
-  console.log(`newest successful deployment record: ${result.newestSuccess ?? '(none)'}`);
+  console.log(`head reached main:  ${iso(result.headSince)} (${result.headSinceSource})`);
+  console.log(
+    `live publication:   ${result.live
+      ? `${result.live.sha} (deployment ${result.live.deploymentId}, published ${iso(result.live.at)})`
+      : `(none among ${result.deploymentsChecked} checked)`}`,
+  );
+  console.log(`head is live:       ${result.headLive ? 'yes' : 'no'}`);
+  console.log(`deployments checked: ${result.deploymentsChecked} of ${ordered.length} listed`);
   console.log(`stalled-status runs listed: ${result.runsListed}`);
   if (result.failures.length > 0) {
     for (const f of result.failures) console.log(`::error::DEPLOY FRESHNESS (${f.code}): ${f.reason}`);
     console.error(`DEPLOY FRESHNESS FAILED: ${result.failures.length} problem(s); see the errors above.`);
     process.exit(EXIT_STALE);
   }
-  console.log('DEPLOY FRESHNESS OK: the head of main is deployed (or in its grace hour) and no Test and deploy run is stalled.');
+  console.log('DEPLOY FRESHNESS OK: the head of main is live (or in its grace hour) and no Test and deploy run is stalled.');
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
