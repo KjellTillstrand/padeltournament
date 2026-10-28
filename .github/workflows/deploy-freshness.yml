@@ -5,16 +5,19 @@ name: Deploy freshness
 # on the github-pages environment for three days while holding the
 # deploy-gh-pages concurrency group; later deploys were cancelled and nothing
 # went red. scripts/check-deploy-freshness.mjs fails when the head of main is
-# not what Pages serves (the newest github-pages publication) over an hour
-# after its push run was created (its committer date when it has none, e.g.
-# [skip ci]), or a "Test and deploy" run has been
-# waiting/queued/pending/requested for over an hour. A publication is a
-# "success" deployment status with an environment_url, which the deploy job
-# in playwright-tests.yml sets only when actions/deploy-pages ran (its
-# environment.url); dropping that url there turns this monitor red, never
-# green. The script's header documents the exact rules, boundaries, fetch
-# bounds and time budget; its decision logic is self-tested in the Test and
-# deploy workflow.
+# not what Pages serves (the newest github-pages publication) more than an
+# hour after its push run was created (after its committer date when it has
+# no push run, e.g. [skip ci]), or when a "Test and deploy" run has been
+# waiting, queued, pending or requested for more than an hour. A publication
+# is a "success" deployment status with an environment_url, which the deploy
+# job in playwright-tests.yml sets only when actions/deploy-pages ran: its
+# environment.url is that step's page_url output, and the step runs only when
+# the job's freshness guard lets it publish. Removing that url there turns
+# this monitor red; replacing it with anything non-empty on a skipped deploy
+# would let skipped deploys count as publications (a false green), so the
+# self-test pins the url, the step and its guard. The script's header
+# documents the exact rules, boundaries, fetch bounds and time budget; its
+# decision logic is self-tested in the Test and deploy workflow.
 #
 # Detection only: this workflow never cancels, approves, re-runs or deploys
 # anything, and it deliberately does not join the deploy-gh-pages concurrency

@@ -30,34 +30,55 @@
 //       rolled back to a sha that was published before, the newer sha Pages
 //       still serves is the live one until the rollback itself is published.
 //       COUPLING to .github/workflows/playwright-tests.yml: its deploy job sets
-//       environment.url from actions/deploy-pages' page_url output, so a
+//       environment.url to exactly ${{ steps.deployment.outputs.page_url }},
+//       the output of its actions/deploy-pages step (id: deployment), and that
+//       step runs only if steps.freshness.outputs.current == 'true'. So a
 //       success status carries an environment_url only when deploy-pages ran.
 //       When the job's freshness guard skips publishing (main has moved on),
 //       the job still succeeds and GitHub records "success" with an EMPTY
 //       environment_url (live data 2026-10-26: skipped 32cafe6 = deployment
 //       7245089193 and 5ffd3ea = 7248393700 empty; published 9c4159e =
-//       7274264074, 684bb60 = 7265740918, d0917b3 = 7245103323 set). Should
-//       that workflow stop setting environment.url, every success reads as "no
-//       publication" and (a) goes red after the grace hour: a false red, never
-//       a false green.
+//       7274264074, 684bb60 = 7265740918, d0917b3 = 7245103323 set). Removing
+//       that url makes every success read as "no publication", and (a) goes
+//       red after the grace hour: a false red. Replacing it with anything that
+//       is non-empty on a skipped deploy (a literal, another step's output)
+//       would make guard-skipped successes count as publications: a false
+//       green. The self-test therefore pins all three: the url expression, the
+//       one step with id: deployment using actions/deploy-pages, and that
+//       step's freshness condition.
 //       "inactive" statuses are passed over when finding the latest status.
 //       GitHub may add one to a deployment a newer one superseded; none of the
 //       30 newest github-pages deployments here carries one (2026-10-26). If
 //       one appears, a skipped publish of an older sha must not un-publish the
 //       head it "superseded"; ordering by publication time already decides
-//       which publication is live.
-//       When the head reached main is server-set: the created_at of the
-//       push-event Test and deploy run for the head sha (the newest one, should
-//       main have been pushed to that sha twice). A re-run of that run keeps
-//       its created_at, so a re-run does not restart the clock: the head has
-//       not been live for that long. The message then says the run is being
-//       re-run rather than stuck. With no such run (a [skip ci] push, CI never
-//       started, or the run not created yet) the committer date is used
-//       instead.
+//       which publication is live. Accepted residual: "inactive" is ALWAYS
+//       passed over, so a publication GitHub deactivates for another reason
+//       (the site unpublished, say) still reads as live: a false green, until
+//       a newer head of main is published or trips (a).
+//       The time the head reached main is server-set: the created_at of the
+//       push-event Test and deploy run on main for the head sha (the newest
+//       one, should main have been pushed to that sha twice). The listing asks
+//       for exactly those runs (branch=main, event=push, head_sha); a listed
+//       run of another sha is refused (exit 2: the listing did not answer the
+//       question asked), while a listed run whose event is not "push" or whose
+//       head_branch is not "main" (a pull_request run at the same sha, a push
+//       to another branch) is a real run, just not the head's push: it is
+//       passed over as if not listed, so it never sets the clock. Its event
+//       and head_branch must still be strings (a run without them exits 2, so
+//       a dropped field cannot silently demote every run to "not listed"). A
+//       re-run of the push run keeps its created_at, so a re-run does not
+//       restart the clock: the head has not been live for that long. The
+//       message then says the run is being re-run rather than stuck. With no
+//       such run (a [skip ci] push, CI never started, or the run not created
+//       yet) the committer date is used instead.
 //       (a) also fires when the run on main failed or never ran, which is not a
 //       stalled publication; its error therefore says what is known about the
 //       head's run (none, being re-run, still running/waiting, or completed
 //       with which conclusion).
+//       Accepted residual: the grace hour is per head. Pushes to main arriving
+//       less than an hour apart that all fail to publish never trip (a), since
+//       each new head restarts the clock; each failing run is red in CI itself,
+//       and a run left waiting trips (b).
 //   (b) a "Test and deploy" run (playwright-tests.yml) has been in a stalled
 //       status (waiting, queued, pending or requested) for more than
 //       STALE_AFTER_MS, measured from the run attempt's start (run_started_at,
@@ -80,9 +101,17 @@
 // run times) more than FUTURE_SKEW_MS in the future is not trusted and exits
 // 2; a future time would otherwise hold a check silent until that date. A
 // committer date that is NOT the age source (a push run exists) is not judged:
-// a clock-skewed pusher must not blind the monitor. Deployment created_at and
-// updated_at only steer the fetch scan below (a future one only makes it fetch
-// more), so they are validated as timestamps but not judged.
+// a clock-skewed pusher must not blind the monitor. A deployment's created_at
+// only orders the listing (its statuses decide what is live), so it is
+// validated as a timestamp but not judged; its updated_at is not read.
+// Accepted residual: "now" is read once, before the first call, and call k of
+// the scan (below) can end up to k x 18 s after it: WORST_CASE_MS (306 s) for
+// the last, more than FUTURE_SKEW_MS (300 s). The statuses calls are calls 4
+// to 13 at most and end within 234 s, so no status can read as future; only
+// the last runs listing can. In a pathological scan where every earlier call
+// needed its retry and each retry answered just inside its timeout, a run
+// started in the scan's last seconds can read as more than FUTURE_SKEW_MS in
+// the future and exit 2: a false red only.
 //
 // Detection only: it reads, never cancels, approves or re-runs anything.
 //
@@ -96,19 +125,18 @@
 //      reports green.
 //
 // Fetch bounds (each a single page, no further pagination):
-//   - main head: one call; its push-event runs: one call (RUN_PAGE).
+//   - main head: one call (commits/heads/main: the branch, so a tag named
+//     main cannot stand in for it); its push-event runs: one call (RUN_PAGE).
 //   - deployments: the DEPLOYMENT_LIMIT newest github-pages deployments,
 //     validated and ordered newest first (orderDeployments(), shared with
-//     evaluate()), then the statuses (STATUS_PAGE) of each in that order until
-//     the newest publication is known: one has been found and no deployment
-//     left has an updated_at (GitHub sets it to the time of the deployment's
-//     newest status; equal on every live record checked) at or after its
-//     publication time, so none of them can hold a newer one. Publications
-//     are serialised by the deploy-gh-pages concurrency group, so normally
-//     the first publication found is the newest and one or two status calls
-//     suffice. A publication older than the DEPLOYMENT_LIMIT newest records is
-//     not seen; that reads as "no publication" (a false red, never a false
-//     green).
+//     evaluate()) before any statuses call, then the statuses (STATUS_PAGE)
+//     of EVERY listed deployment; evaluate() picks the newest publication
+//     among them. There is no early stop: no listing field (updated_at
+//     included) is trusted to say which deployment holds the newest status,
+//     so the scan is always 1 + (number listed) calls, at most
+//     1 + DEPLOYMENT_LIMIT. A publication older than the DEPLOYMENT_LIMIT
+//     newest records is not seen; that reads as "no publication" (a false
+//     red, never a false green).
 //   - runs: one page of RUN_PAGE runs per stalled status. If GitHub reports
 //     more runs in a status than one page holds, the oldest (most likely
 //     stalled) ones could be on a later page, so that exits 2 instead.
@@ -223,10 +251,11 @@ function newest(a, b) {
 /**
  * Validate a list of github-pages deployments and order it newest first (by
  * created_at, then id). The ONE place deployments are validated and ordered:
- * the CLI's fetch scan and evaluate() both use it, so they cannot disagree
- * about the order. Labels name the position in the list as given.
+ * the CLI validates the listing with it before any statuses call (an id goes
+ * into a URL), and evaluate() uses it too. Labels name the position in the
+ * list as given.
  *
- * @returns {{id: number, sha: string, at: number, updatedAt: number, label: string, raw: object}[]}
+ * @returns {{id: number, sha: string, at: number, label: string, raw: object}[]}
  */
 export function orderDeployments(list) {
   if (!Array.isArray(list)) throw new InputError('deployments is not an array');
@@ -238,7 +267,6 @@ export function orderDeployments(list) {
         id: intId(d.id, label),
         sha: sha(d.sha, `${label} sha`),
         at: time(d.created_at, `${label} created_at`),
-        updatedAt: time(d.updated_at, `${label} updated_at`),
         label,
         raw: d,
       };
@@ -255,7 +283,7 @@ export function orderDeployments(list) {
  * @returns {{sha: string, deploymentId: number, at: number, id: number}|undefined}
  *          at/id are the success status's created_at and id
  */
-export function publicationOf(deployment, statuses, now) {
+function publicationOf(deployment, statuses, now) {
   const { label } = deployment;
   if (!Array.isArray(statuses)) throw new InputError(`${label} has no "statuses" array`);
   let latest;
@@ -317,11 +345,12 @@ function describeHeadRun(run, now) {
  *
  * @param {object} input
  * @param {number} input.now          current time, epoch ms
- * @param {object} input.head         GET repos/{repo}/commits/main (sha, commit.committer.date)
- * @param {object[]} input.headRuns   push-event "Test and deploy" runs for the head sha
- *                                    (id, head_sha, status, conclusion, run_attempt, created_at,
- *                                    html_url)
- * @param {object[]} input.deployments github-pages deployments (id, sha, created_at, updated_at),
+ * @param {object} input.head         GET repos/{repo}/commits/heads/main (sha, commit.committer.date)
+ * @param {object[]} input.headRuns   push-event "Test and deploy" runs on main for the head sha
+ *                                    (id, head_sha, event, head_branch, status, conclusion,
+ *                                    run_attempt, created_at, html_url); a run whose event is not
+ *                                    "push" or head_branch not "main" is passed over
+ * @param {object[]} input.deployments github-pages deployments (id, sha, created_at),
  *                                    each with a `statuses` array as returned by its statuses
  *                                    endpoint (state, id, created_at, environment_url)
  * @param {object[]} input.runs       "Test and deploy" workflow runs in a stalled status (id,
@@ -344,12 +373,15 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
   if (!Array.isArray(deployments)) throw new InputError('deployments is not an array');
   if (!Array.isArray(runs)) throw new InputError('runs is not an array');
 
-  // When did the head reach main? The newest push run for it, else its committer date.
+  // When did the head reach main? The newest push run on main for it, else its
+  // committer date.
   let headRun;
   for (const [i, r] of headRuns.entries()) {
     const label = `head run #${i}`;
     if (!isObject(r)) throw new InputError(`${label} is not an object`);
     if (r.head_sha !== headSha) throw new InputError(`${label} is not a run of the main head`);
+    if (typeof r.event !== 'string') throw new InputError(`${label} has no event`);
+    if (typeof r.head_branch !== 'string') throw new InputError(`${label} has no head_branch`);
     if (typeof r.status !== 'string') throw new InputError(`${label} has no status`);
     if (r.conclusion != null && typeof r.conclusion !== 'string') throw new InputError(`${label} has a malformed conclusion`);
     const attempt = r.run_attempt ?? 1;
@@ -362,6 +394,8 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
       attempt,
       url: r.html_url,
     };
+    // Validated, then passed over: not the head's push to main (see the header).
+    if (r.event !== 'push' || r.head_branch !== 'main') continue;
     if (!headRun || newer(candidate, headRun) < 0) headRun = candidate;
   }
   // The committer date is judged against the future only when it is the age source.
@@ -552,7 +586,7 @@ async function main() {
   // One clock for the scan and the decision.
   const now = Date.now();
 
-  const head = await get('commits/main');
+  const head = await get('commits/heads/main');
   // Validated before it is put into a URL.
   const headSha = sha(isObject(head) ? head.sha : undefined, 'main head sha');
 
@@ -564,24 +598,12 @@ async function main() {
   const listing = await get(`deployments?environment=${ENVIRONMENT}&per_page=${DEPLOYMENT_LIMIT}`);
   if (!Array.isArray(listing)) throw new InputError('deployments listing is not an array');
   if (listing.length > DEPLOYMENT_LIMIT) throw new InputError(`deployments listing holds more than ${DEPLOYMENT_LIMIT}`);
-  // Validated and ordered before any statuses call (a malformed field must not
-  // scramble the scan), by the same function evaluate() uses.
-  const ordered = orderDeployments(listing);
-  // The stop rule, computed once: lastUpdate[i] is the newest updated_at among
-  // ordered[i..]. Once a publication is known and nothing left was updated at
-  // or after it, nothing left can hold a newer publication (see the header).
-  const lastUpdate = new Array(ordered.length);
-  for (let i = ordered.length - 1, max = -Infinity; i >= 0; i -= 1) {
-    max = Math.max(max, ordered[i].updatedAt);
-    lastUpdate[i] = max;
-  }
+  // Validated and ordered before any statuses call (a malformed id must never
+  // reach a URL), by the same function evaluate() uses. Every listed
+  // deployment's statuses are fetched; evaluate() picks the newest publication.
   const deployments = [];
-  let live;
-  for (const [i, entry] of ordered.entries()) {
-    if (live && lastUpdate[i] < live.at) break;
-    const statuses = await get(`deployments/${entry.id}/statuses?per_page=${STATUS_PAGE}`);
-    deployments.push({ ...entry.raw, statuses });
-    live = newest(live, publicationOf(entry, statuses, now));
+  for (const entry of orderDeployments(listing)) {
+    deployments.push({ ...entry.raw, statuses: await get(`deployments/${entry.id}/statuses?per_page=${STATUS_PAGE}`) });
   }
 
   const runs = [];
@@ -598,7 +620,7 @@ async function main() {
       : `(none among ${result.deploymentsChecked} checked)`}`,
   );
   console.log(`head is live:       ${result.headLive ? 'yes' : 'no'}`);
-  console.log(`deployments checked: ${result.deploymentsChecked} of ${ordered.length} listed`);
+  console.log(`deployments checked: ${result.deploymentsChecked} (every one listed)`);
   console.log(`stalled-status runs listed: ${result.runsListed}`);
   if (result.failures.length > 0) {
     for (const f of result.failures) console.log(`::error::DEPLOY FRESHNESS (${f.code}): ${f.reason}`);
