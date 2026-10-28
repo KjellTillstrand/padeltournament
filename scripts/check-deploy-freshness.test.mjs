@@ -18,7 +18,7 @@
 
 import assert from 'node:assert';
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,8 +29,9 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = resolve(HERE, 'check-deploy-freshness.mjs');
-const WORKFLOW = resolve(HERE, '../.github/workflows/deploy-freshness.yml');
-const TEST_AND_DEPLOY = resolve(HERE, '../.github/workflows/playwright-tests.yml');
+const WORKFLOWS = resolve(HERE, '../.github/workflows');
+const WORKFLOW = resolve(WORKFLOWS, 'deploy-freshness.yml');
+const TEST_AND_DEPLOY = resolve(WORKFLOWS, 'playwright-tests.yml');
 
 const HOUR = STALE_AFTER_MS;
 const MIN = 60 * 1000;
@@ -277,7 +278,7 @@ const unitCases = [
     assert.strictEqual(r.live.sha, HEAD);
   }],
   ['a latest status other than "success" is no publication, even with an environment_url', () => {
-    for (const state of ['failure', 'error', 'in_progress', 'queued', 'pending']) {
+    for (const state of ['failure', 'error', 'in_progress', 'queued', 'pending', 'waiting']) {
       // The head's only deployment: published once, then a later status of `state`.
       const none = evaluate(input({ deployments: [withUrl(deployment(HEAD, 90 * MIN, [state, 'success']))] }));
       assert.deepStrictEqual(codes(none), ['no-publication'], state);
@@ -468,7 +469,7 @@ const unitCases = [
     assert.doesNotMatch(g.reason, RAW_INVISIBLE_RE);
   }],
   ['no raw invisible or control character in the monitor, its self-test or the workflows', () => {
-    const files = [CLI, fileURLToPath(import.meta.url), WORKFLOW, resolve(HERE, '../.github/workflows/playwright-tests.yml')];
+    const files = [CLI, fileURLToPath(import.meta.url), WORKFLOW, TEST_AND_DEPLOY];
     for (const file of files) {
       const lines = readFileSync(file, 'utf8').split('\n');
       const bad = lines.findIndex((line) => RAW_INVISIBLE_RE.test(line));
@@ -522,30 +523,37 @@ const unitCases = [
     assert.strictEqual(MAX_CALLS, 3 + DEPLOYMENT_LIMIT + 4);
     assert.strictEqual(WORST_CASE_MS, 17 * 18 * 1000);
   }],
-  ['coupling: the deploy job names a url only through the freshness-gated deploy-pages step', () => {
+  ['coupling: the deploy job alone uses github-pages, its url only through the freshness-gated deploy-pages step', () => {
     // The monitor reads a "success" status as a publication only when it
-    // carries an environment_url (see the script's header). That is sound
-    // only while the url is deploy-pages' output and deploy-pages runs only
-    // when the freshness guard says the run is current: any other url,
-    // non-empty on a guard-skipped deploy, would turn the monitor falsely
-    // green.
+    // carries an environment_url (see COUPLING in the script's header). That
+    // is sound only while the url is deploy-pages' output, deploy-pages runs
+    // only when the freshness guard says the run is current, a deploy-pages
+    // failure fails the job, and no other job records github-pages
+    // deployments: any other url, non-empty on a guard-skipped deploy or set
+    // by another job, would turn the monitor falsely green.
+    const COUPLING = 'breaks the github-pages coupling the deploy freshness monitor relies on ' +
+      '(see COUPLING in the header of scripts/check-deploy-freshness.mjs)';
+    // A line without its YAML comment (a # at the start or after whitespace).
+    const code = (line) => line.replace(/(^|\s)#.*$/, '').trimEnd();
     const lines = readFileSync(TEST_AND_DEPLOY, 'utf8').split('\n');
     const start = lines.indexOf('  deploy:');
     assert.ok(start >= 0, 'playwright-tests.yml has a deploy job');
-    const end = lines.findIndex((line, i) => i > start && /^ {0,2}\S/.test(line));
+    // The job ends at the next line indented 0-2 spaces that is not a comment.
+    const end = lines.findIndex((line, i) => i > start && /^ {0,2}[^\s#]/.test(line));
     const job = lines.slice(start + 1, end < 0 ? lines.length : end);
     // The lines of the job-level block opened by `key:`, comments and blanks dropped.
     const block = (key) => {
       const at = job.indexOf(`    ${key}:`);
       assert.ok(at >= 0, `the deploy job has ${key}:`);
       const rest = job.slice(at + 1);
-      const stop = rest.findIndex((line) => /^ {0,4}\S/.test(line));
+      const stop = rest.findIndex((line) => /^ {0,4}[^\s#]/.test(line));
       return rest.slice(0, stop < 0 ? rest.length : stop).filter((line) => line.trim() !== '' && !/^\s*#/.test(line));
     };
-    assert.deepStrictEqual(block('environment'), [
+    const environment = block('environment');
+    assert.deepStrictEqual(environment, [
       '      name: github-pages',
       '      url: ${{ steps.deployment.outputs.page_url }}',
-    ]);
+    ], `the deploy job's environment block ${COUPLING}:\n${environment.join('\n')}`);
     // Split the steps at each "      - " list item.
     const steps = [];
     for (const line of block('steps')) {
@@ -554,17 +562,41 @@ const unitCases = [
     }
     const withId = (id) => steps.filter((step) => step.some((line) => new RegExp(`^ {6}(- | {2})id: ${id}\\s*$`).test(line)));
     const deploying = withId('deployment');
-    assert.strictEqual(deploying.length, 1, 'exactly one step has id: deployment');
+    assert.strictEqual(deploying.length, 1, `exactly one step has id: deployment; otherwise the deploy job ${COUPLING}`);
+    // The whole step, line for line (trailing comments dropped); only the
+    // action's pinned sha may change.
     const [step] = deploying;
-    assert.ok(
-      step.some((line) => /^ {6}(- | {2})uses: actions\/deploy-pages@[0-9a-f]{40}( #.*)?$/.test(line)),
-      `the id: deployment step uses actions/deploy-pages:\n${step.join('\n')}`,
-    );
-    assert.ok(
-      step.includes("        if: steps.freshness.outputs.current == 'true'"),
-      `the id: deployment step is gated by the freshness guard:\n${step.join('\n')}`,
-    );
-    assert.strictEqual(withId('freshness').length, 1, 'exactly one step has id: freshness');
+    assert.deepStrictEqual(step.map(code).map((line) => line.replace(/^( {8}uses: actions\/deploy-pages@)[0-9a-f]{40}$/, '$1<sha>')), [
+      '      - name: Deploy to GitHub Pages',
+      '        id: deployment',
+      "        if: steps.freshness.outputs.current == 'true'",
+      '        uses: actions/deploy-pages@<sha>',
+      '        with:',
+      '          artifact_name: ${{ env.PAGES_ARTIFACT }}',
+    ], `the id: deployment step ${COUPLING}:\n${step.join('\n')}`);
+    assert.strictEqual(withId('freshness').length, 1, `exactly one step has id: freshness; otherwise the deploy job ${COUPLING}`);
+    // No continue-on-error anywhere in the job (job or step level): a
+    // deploy-pages failure kept green could record "success" with a url.
+    const tolerated = job
+      .map((line, i) => [start + 2 + i, code(line)])
+      .filter(([, text]) => /continue-on-error/i.test(text))
+      .map(([n, text]) => `playwright-tests.yml:${n}: ${text.trim()}`);
+    assert.deepStrictEqual(tolerated, [], `continue-on-error in the deploy job ${COUPLING}:\n${tolerated.join('\n')}`);
+    // github-pages is used as an environment exactly once, in every workflow:
+    // the deploy job's environment name. Any non-comment mention counts
+    // (environment: github-pages, environment: { name: github-pages },
+    // name: github-pages; environment names are case-insensitive), except the
+    // github-pages-<attempt> artifact name.
+    const nameAt = lines.findIndex((line, i) => i > start + 1 + job.indexOf('    environment:') && line === '      name: github-pages');
+    const users = [];
+    for (const file of readdirSync(WORKFLOWS).filter((f) => /\.ya?ml$/i.test(f)).sort()) {
+      readFileSync(resolve(WORKFLOWS, file), 'utf8').split('\n').forEach((line, i) => {
+        if (/\bgithub-pages\b(?!-)/i.test(code(line))) users.push(`${file}:${i + 1}: ${code(line).trim()}`);
+      });
+    }
+    assert.deepStrictEqual(users, [`playwright-tests.yml:${nameAt + 1}: name: github-pages`],
+      `github-pages must be used as an environment only by the deploy job of playwright-tests.yml; ` +
+        `another user ${COUPLING}:\n${users.join('\n')}`);
   }],
 ];
 

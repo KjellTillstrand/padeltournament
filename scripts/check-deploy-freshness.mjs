@@ -43,9 +43,20 @@
 //       red after the grace hour: a false red. Replacing it with anything that
 //       is non-empty on a skipped deploy (a literal, another step's output)
 //       would make guard-skipped successes count as publications: a false
-//       green. The self-test therefore pins all three: the url expression, the
-//       one step with id: deployment using actions/deploy-pages, and that
-//       step's freshness condition.
+//       green. The self-test therefore pins all three: the url expression, and
+//       the one step with id: deployment, line for line (it uses
+//       actions/deploy-pages at a pinned sha, under the freshness condition).
+//       It also pins two things the monitor cannot see in the API. First, the
+//       deploy job is the only github-pages environment user: the monitor
+//       counts every github-pages success with a url, whichever job or
+//       workflow made it, so the self-test scans every file in
+//       .github/workflows/ and requires the deploy job's environment name to
+//       be the one non-comment mention of github-pages (case-insensitive; the
+//       github-pages-<attempt> artifact name is another name). Second, the
+//       deploy job has no continue-on-error, at job or step level: a
+//       deploy-pages failure kept green could record "success" with a url.
+//       Accepted residual: a deployment made outside this repo's workflows
+//       (by hand, through the API) is not covered.
 //       "inactive" statuses are passed over when finding the latest status.
 //       GitHub may add one to a deployment a newer one superseded; none of the
 //       30 newest github-pages deployments here carries one (2026-10-26). If
@@ -63,9 +74,10 @@
 //       question asked), while a listed run whose event is not "push" or whose
 //       head_branch is not "main" (a pull_request run at the same sha, a push
 //       to another branch) is a real run, just not the head's push: it is
-//       passed over as if not listed, so it never sets the clock. Its event
-//       and head_branch must still be strings (a run without them exits 2, so
-//       a dropped field cannot silently demote every run to "not listed"). A
+//       validated like any run (a malformed one exits 2), then passed over, so
+//       it never sets the clock. Its event and head_branch must be strings (a
+//       run without them exits 2, so a dropped field cannot silently demote
+//       every run to a passed-over one). A
 //       re-run of the push run keeps its created_at, so a re-run does not
 //       restart the clock: the head has not been live for that long. The
 //       message then says the run is being re-run rather than stuck. With no
