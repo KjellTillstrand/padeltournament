@@ -1,0 +1,75 @@
+name: Deploy freshness
+
+# Monitor (AB#65): goes red when GitHub Pages publication has stalled, so a
+# stuck deploy is visible within hours instead of days. Run 36765228696 waited
+# on the github-pages environment for three days while holding the
+# deploy-gh-pages concurrency group; later deploys were cancelled and nothing
+# went red. scripts/check-deploy-freshness.mjs fails when the head of main is
+# not what Pages serves (the newest github-pages publication) more than an
+# hour after its push run was created (after its committer date when it has
+# no push run, e.g. [skip ci]), or when a "Test and deploy" run has been
+# waiting, queued, pending or requested for more than an hour. A publication
+# is a "success" deployment status with an environment_url, which the deploy
+# job in playwright-tests.yml sets only when actions/deploy-pages ran: its
+# environment.url is that step's page_url output, and the step runs only when
+# the job's freshness guard lets it publish. Removing that url there turns
+# this monitor red; replacing it with anything non-empty on a skipped deploy
+# would let skipped deploys count as publications (a false green), so the
+# self-test pins the url, the step and its guard. The script's header
+# documents the exact rules, boundaries, fetch bounds and time budget; its
+# decision logic is self-tested in the Test and deploy workflow.
+#
+# Detection only: this workflow never cancels, approves, re-runs or deploys
+# anything, and it deliberately does not join the deploy-gh-pages concurrency
+# group (it must never queue behind, or hold up, a publication).
+
+on:
+  schedule:
+    # Hourly, at an off-peak minute (scheduled runs at :00 are the most delayed).
+    # DEFERRED: AB#122 - monitor liveness: GitHub may delay or drop scheduled
+    # runs and disables the schedule after 60 days without repository
+    # activity; nothing goes red when this monitor itself stops running.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+# Least privilege, read-only: contents for the main head, actions for the
+# workflow runs, deployments for the github-pages deployments and their
+# statuses. No write scope, no pages, no id-token. Actions are pinned to full
+# commit SHAs (tag in the trailing comment), the same pins as Test and deploy.
+permissions:
+  contents: read
+  actions: read
+  deployments: read
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    # The script's worst case is 17 API calls, each tried twice with an 8 s
+    # timeout and a 2 s pause between the tries: 5 min 6 s, after which it
+    # exits 2 on its own. The rest of the 10 minutes is for checkout and
+    # setup-node. The self-test asserts this margin (WORST_CASE_MS).
+    timeout-minutes: 10
+    steps:
+      # The token is passed to the check as an env var only; it must not stay
+      # in .git/config after checkout.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No dependencies to install: the check uses only Node built-ins
+      # (global fetch), so no npm cache either.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      # Exit 1 = stale or stalled (an ::error:: annotation per problem);
+      # exit 2 = the check could not see (an API call failed after one retry,
+      # including a rate limit that outlasts the retry pause, or returned an
+      # unexpected shape). Both are red: a monitor that cannot see never
+      # passes.
+      - name: Check the head of main is live on Pages
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-deploy-freshness.mjs
