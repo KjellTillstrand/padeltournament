@@ -129,6 +129,13 @@ What each relaxed R1 dial does here:
   resolves state at the current git toplevel, which in a worktree would fork the
   board. (Adapter-level fix proposed for dotfiles-claude: resolve via
   `git rev-parse --git-common-dir`.)
+- Never write a CI-skip marker literally (`skip ci`, `ci skip`, `no ci`, `skip actions`
+  or `actions skip` inside square brackets) in a commit message, PR title or PR body,
+  not even inside backticks or prose. GitHub honours it anywhere in the head commit's
+  message, and a squash merge copies the branch's commit messages (or the PR body)
+  into it: the push run, and with it the Pages deploy, then never starts. Observed
+  2026-10-28: merge 00206a9 (PR #71, AB#65) went undeployed. Describe the marker in
+  words, as here. A PR check for it is AB#128.
 
 ## Agent Overrides
 none
