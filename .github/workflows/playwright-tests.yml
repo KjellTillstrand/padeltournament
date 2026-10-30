@@ -60,11 +60,13 @@ jobs:
       # Only the bundled browsers the projects use, plus their OS libraries.
       # The "Microsoft Edge" project runs the runner's installed Edge (channel
       # msedge); the "webkit" project runs the bundled WebKit (Desktop Safari).
+      # --no: run the lockfile-pinned local playwright; never download one.
       - name: Install playwright
         run: npx --no playwright install --with-deps chromium firefox webkit
 
       # playwright.config.js starts (and stops) the static server itself and
       # fails fast if its port is already occupied, so no server steps here.
+      # --no: run the lockfile-pinned local playwright; never download one.
       - name: Run tests
         env:
           # JSON report consumed by the requirement coverage gate.

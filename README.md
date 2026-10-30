@@ -57,13 +57,24 @@ Requirements: Node.js ≥ 20.
 ```sh
 npm install     # once
 npm start       # vite dev server serving the app locally
-npm test        # full Playwright suite (chromium, firefox, webkit, edge)
+npm test        # full Playwright suite (all five projects, listed below)
 ```
 
-The suite needs Playwright's bundled browsers. WebKit is part of the gate, so
-install it too before a local run: `npx playwright install webkit` (or
-`npx playwright install chromium firefox webkit` on a fresh machine). The edge
-project uses the installed Microsoft Edge (channel `msedge`). On macOS a few
+`npm test` runs five Playwright projects: `unit` (the node-only specs, run once
+and without a browser), `chromium`, `firefox`, `webkit` and `Microsoft Edge`.
+To run some of them, name each one and quote names with a space, for example
+`npm test -- --project=webkit --project="Microsoft Edge"`. A project you don't
+name doesn't run, `unit` included.
+
+The browser projects need Playwright's bundled browsers. WebKit is part of the
+gate, so install it too before a local run: `npx --no playwright install webkit`
+(or `npx --no playwright install chromium firefox webkit` on a fresh machine).
+Run `npm install` first: `--no` makes npx use the project's pinned Playwright
+and fail rather than download another version. On Linux (Debian or Ubuntu), add
+`--with-deps` to install the browsers' OS libraries too, as CI does; WebKit
+does not launch without them. The `Microsoft Edge` project uses the installed
+Microsoft Edge (channel `msedge`); if it is missing,
+`npx --no playwright install msedge` installs it. On macOS a few
 keyboard-navigation tests skip on WebKit (AB#131); CI runs them on Linux WebKit.
 
 Playwright starts its own server on `127.0.0.1:8199` for the test suite — don't
