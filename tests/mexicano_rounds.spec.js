@@ -707,7 +707,11 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
   // Court names (such as Libro's "1. Centro kakel") as literal text in a pattern.
   const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  test('R-MEXICANO-ROUNDS: Generating the next round by keyboard moves focus to the new round heading', async ({ page }) => {
+  test('R-MEXICANO-ROUNDS: Generating the next round by keyboard moves focus to the new round heading', async ({ page, browserName }) => {
+    // macOS WebKit's Tab skips buttons (a platform default: Full Keyboard Access is off),
+    // so this keyboard path runs on Linux WebKit, which CI uses, and not on a Mac.
+    test.skip(browserName === 'webkit' && process.platform === 'darwin',
+      'DEFERRED: AB#131: macOS WebKit Tab does not reach buttons');
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
 
@@ -868,7 +872,11 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
     expect(errors).toEqual([]);
   });
 
-  test('R-MEXICANO-ROUNDS: The unavailable control stays focusable and explained, and click, Enter or Space generate nothing', async ({ page }) => {
+  test('R-MEXICANO-ROUNDS: The unavailable control stays focusable and explained, and click, Enter or Space generate nothing', async ({ page, browserName }) => {
+    // macOS WebKit's Tab skips buttons (a platform default: Full Keyboard Access is off),
+    // so this keyboard path runs on Linux WebKit, which CI uses, and not on a Mac.
+    test.skip(browserName === 'webkit' && process.platform === 'darwin',
+      'DEFERRED: AB#131: macOS WebKit Tab does not reach buttons');
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
 
@@ -948,7 +956,11 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
   // Round navigation redraws the round, its buttons included (AB#94): focus on
   // the button used stays on that button in the new round, or goes to the round
   // heading where the new round has none.
-  test('R-MEXICANO-ROUNDS: Mexicano round navigation by keyboard keeps the Organizer\'s place', async ({ page }) => {
+  test('R-MEXICANO-ROUNDS: Mexicano round navigation by keyboard keeps the Organizer\'s place', async ({ page, browserName }) => {
+    // macOS WebKit's Tab skips buttons (a platform default: Full Keyboard Access is off),
+    // so this keyboard path runs on Linux WebKit, which CI uses, and not on a Mac.
+    test.skip(browserName === 'webkit' && process.platform === 'darwin',
+      'DEFERRED: AB#131: macOS WebKit Tab does not reach buttons');
     const errors = collectErrors(page);
     const organizer = theOrganizer(page);
     const title = page.locator('.round-header .left');

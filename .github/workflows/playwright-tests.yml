@@ -59,9 +59,9 @@ jobs:
 
       # Only the bundled browsers the projects use, plus their OS libraries.
       # The "Microsoft Edge" project runs the runner's installed Edge (channel
-      # msedge); WebKit is unused.
+      # msedge); the "webkit" project runs the bundled WebKit (Desktop Safari).
       - name: Install playwright
-        run: npx playwright install --with-deps chromium firefox
+        run: npx playwright install --with-deps chromium firefox webkit
 
       # playwright.config.js starts (and stops) the static server itself and
       # fails fast if its port is already occupied, so no server steps here.

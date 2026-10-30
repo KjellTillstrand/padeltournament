@@ -82,11 +82,18 @@ export default defineConfig({
       use: { ...devices['Desktop Firefox'] },
     },
 
+    {
+      name: 'webkit',
+      testIgnore: NODE_ONLY_SPECS,
+      use: { ...devices['Desktop Safari'] },
+    },
+
     /* Test against mobile viewports. */
     // {
     //   name: 'Mobile Chrome',
     //   use: { ...devices['Pixel 5'] },
     // },
+    // DEFERRED: AB#130 (Mobile Safari: CI time budget)
     // {
     //   name: 'Mobile Safari',
     //   use: { ...devices['iPhone 12'] },
