@@ -66,6 +66,7 @@ To run some of them, name each one and quote names with a space, for example
 `npm test -- --project=webkit --project="Microsoft Edge"`. A project you don't
 name doesn't run, `unit` included.
 
+<!-- DEFERRED: AB#135 install privileges, npm ci vs install, bundled-browser wording -->
 The browser projects need Playwright's bundled browsers. WebKit is part of the
 gate, so install it too before a local run: `npx --no playwright install webkit`
 (or `npx --no playwright install chromium firefox webkit` on a fresh machine).
