@@ -61,7 +61,7 @@ jobs:
       # The "Microsoft Edge" project runs the runner's installed Edge (channel
       # msedge); the "webkit" project runs the bundled WebKit (Desktop Safari).
       - name: Install playwright
-        run: npx playwright install --with-deps chromium firefox webkit
+        run: npx --no playwright install --with-deps chromium firefox webkit
 
       # playwright.config.js starts (and stops) the static server itself and
       # fails fast if its port is already occupied, so no server steps here.
@@ -69,7 +69,7 @@ jobs:
         env:
           # JSON report consumed by the requirement coverage gate.
           PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ env.PW_JSON }}
-        run: npx playwright test --reporter=html,json
+        run: npx --no playwright test --reporter=html,json
 
       - name: Upload Playwright Report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

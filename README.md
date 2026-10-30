@@ -57,8 +57,14 @@ Requirements: Node.js ≥ 20.
 ```sh
 npm install     # once
 npm start       # vite dev server serving the app locally
-npm test        # full Playwright suite (chromium, firefox, edge)
+npm test        # full Playwright suite (chromium, firefox, webkit, edge)
 ```
+
+The suite needs Playwright's bundled browsers. WebKit is part of the gate, so
+install it too before a local run: `npx playwright install webkit` (or
+`npx playwright install chromium firefox webkit` on a fresh machine). The edge
+project uses the installed Microsoft Edge (channel `msedge`). On macOS a few
+keyboard-navigation tests skip on WebKit (AB#131); CI runs them on Linux WebKit.
 
 Playwright starts its own server on `127.0.0.1:8199` for the test suite — don't
 run one there yourself; an occupied port fails fast by design.
