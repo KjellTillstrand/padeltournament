@@ -122,7 +122,11 @@ test.describe('R-ROUND-NAV: Round navigation', () => {
   // not fall to the page, where the next Tab would start again from the top.
 
   // @verifies REQ-9
-  test('R-ROUND-NAV: Keyboard navigation keeps the Organizer\'s place', async ({ page }) => {
+  test('R-ROUND-NAV: Keyboard navigation keeps the Organizer\'s place', async ({ page, browserName }) => {
+    // macOS WebKit's Tab skips buttons (a platform default: Full Keyboard Access is off),
+    // so this keyboard path runs on Linux WebKit, which CI uses, and not on a Mac.
+    test.skip(browserName === 'webkit' && process.platform === 'darwin',
+      'DEFERRED: AB#131: macOS WebKit Tab does not reach buttons');
     const organizer = theOrganizer(page);
     const next = theStep(page, 'NEXT ROUND');
 
@@ -160,7 +164,11 @@ test.describe('R-ROUND-NAV: Round navigation', () => {
   });
 
   // @verifies REQ-9
-  test('R-ROUND-NAV: Keyboard navigation back keeps the Organizer\'s place, down to round 1', async ({ page }) => {
+  test('R-ROUND-NAV: Keyboard navigation back keeps the Organizer\'s place, down to round 1', async ({ page, browserName }) => {
+    // macOS WebKit's Tab skips buttons (a platform default: Full Keyboard Access is off),
+    // so this keyboard path runs on Linux WebKit, which CI uses, and not on a Mac.
+    test.skip(browserName === 'webkit' && process.platform === 'darwin',
+      'DEFERRED: AB#131: macOS WebKit Tab does not reach buttons');
     const organizer = theOrganizer(page);
 
     // Given a tournament in progress at round 3.
