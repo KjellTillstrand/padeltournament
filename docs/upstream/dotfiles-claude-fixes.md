@@ -38,6 +38,13 @@ step), never prose alone, per the retro rule (REQ-490).
 | DF-20 | Nothing lists the tagged tests a diff touches, so the annotation audit input is hand-made | gate (script) | open |
 | DF-21 | Drain working state lives in a session scratchpad that can disappear | process-step | open |
 | DF-22 | Comments and docs claim more than the code does, in most items | process-step + gate (AB#709) | open |
+| DF-23 | Port scripts are committed non-executable, so direct-exec `ask` spellings never match | gate (mode + install check) | filed as AB#773 |
+| DF-24 | The mock board has no way to clear an item's owner, so a released item can't be claimed | gate (port op) | open |
+| DF-25 | `--check-batch-id` checks the format of the id, not that it is this batch's | verification-step | open |
+| DF-26 | A Claude Code runtime directory inside a harness skill fails `install.sh --check` | gate (check fix) | open |
+| DF-27 | The implementer's `git commit` is denied every round, so the operator commits by hand | process-step | open |
+| DF-28 | The resume note goes stale between sessions and outgrows a single read | process-step | open |
+| DF-29 | Later review rounds reopen trade-offs an earlier round settled | process-step | open |
 
 ---
 
@@ -824,6 +831,169 @@ step), never prose alone, per the retro rule (REQ-490).
   - it rejects an entry whose cited `file:line` does not exist at the head
     commit. Whether the claim is true stays the reviewer's judgement.
 
+## DF-23: Port scripts are committed non-executable, so direct-exec `ask` spellings never match
+
+- **Status:** filed as AB#773 (from the harness session, 2026-10-18)
+- **Source:** drain 2026-10-17..31, AB#88 (posted to AB#88 as a write-back
+  comment 2026-10-18)
+- **Goal:** every permission spelling in `settings.base.json` can match a call
+  that actually works.
+- **Problem:** `scripts/forge/port.sh` and `scripts/feedback/port.sh` are
+  committed 100644 (`scripts/boards/port.sh` is 100755). The direct-exec
+  spellings `~/.claude/forge/port.sh land_proposal` and `$HOME/...` in the
+  `ask` list can never match a working call: exec gives 126. Approval is not
+  skipped. `bash ~/.claude/forge/port.sh land_proposal:*` is also in `ask`,
+  `gate-forge-landing.sh` matches the basename of any spelling, and
+  `land_proposal`'s only sanctioned caller is the queue's integrate step,
+  itself ask-gated. This is a consistency defect, not an approval bypass.
+- **Mechanism (gate):** commit every `scripts/*/port.sh` 100755, and make
+  `install.sh --check` fail on a linked script that is not executable.
+- **Target (dotfiles-claude):** `scripts/forge/port.sh`,
+  `scripts/feedback/port.sh` (mode), `scripts/install.sh` (check).
+- **Verify:** bats: `--check` fails on a linked port script with mode 100644
+  and passes once it is 100755. No drain-preflight check needed.
+
+## DF-24: The mock board has no way to clear an item's owner, so a released item can't be claimed
+
+- **Status:** open
+- **Source:** drain 2026-10-17..31, AB#65 claim (2026-10-26T06:44Z)
+- **Goal:** an item released by `/refine` or a drain can be claimed again
+  without editing the board's state file.
+- **Problem:** a 2026-10-07 `/refine` release put AB#65 back to the ready
+  state but left `assignedTo: kjell`. The mock adapter's `claim_item` requires
+  `assignedTo == null`, so the drain's claim was refused ("not claimable …
+  owner=kjell"). The adapter has no op that clears the owner: `update_item`
+  does not take one, and there is no `release`/`unassign`. The operator
+  cleared it by hand with `jq` on `.claude/mock-board.json`, outside the port
+  and its audit trail.
+- **Mechanism (gate):** an `unassign <id>` op (or `update_item --owner ""`)
+  on every adapter, and the release step in `/refine` and in the drain's
+  stale-claim reset calls it, so a release always ends with no owner.
+- **Target (dotfiles-claude):** `scripts/boards/mock.sh`, the other adapters,
+  `scripts/boards/port.sh`, `home/skills/refine`, drain stale-claim reset.
+- **Verify:** bats: claim → release → claim succeeds on the mock adapter;
+  release leaves `assignedTo` null.
+
+## DF-25: `--check-batch-id` checks the format of the id, not that it is this batch's
+
+- **Status:** open
+- **Source:** drain 2026-10-17..31, AB#91–93 preflight (noted 2026-10-22T09:18Z)
+- **Goal:** a drain resumed in a new session can only proceed under the batch
+  id it was approved with.
+- **Problem:** each item's §0 ran from a preflight script hand-copied from the
+  previous one. The scripts for AB#91, AB#92 and AB#93 carried a mistyped id
+  (`…T093216Z` for `…T092216Z`), and `--check-batch-id` passed it, because it
+  checks only the shape. The board stamps happened to use the right id. A
+  stamp under the wrong id would have split the batch, and `/retro` and §4
+  would have missed items.
+- **Mechanism (verification-step):** `--check-batch-id` also takes the
+  resume note's recorded id (or the batch's existing `[drain-batch] … claimed`
+  markers on the board) and fails when they differ. The drain ships one
+  preflight script that reads the id from the note, replacing per-item copies.
+- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §0,
+  `scripts/drain/` (batch-id check).
+- **Verify:** bats: a well-formed id that differs from the recorded one fails;
+  the recorded id passes.
+
+## DF-26: A Claude Code runtime directory inside a harness skill fails `install.sh --check`
+
+- **Status:** open
+- **Source:** drain 2026-10-17..31, §4 close (2026-10-31)
+- **Goal:** drain §0 doesn't stop on files the harness doesn't own.
+- **Problem:** an empty `.claude/.cc-writes` directory appeared under the
+  harness checkout's `home/skills/drain/` on 2026-10-31 16:07, created by
+  Claude Code's own tooling during the session, not by the drain. `install.sh
+  --check` then failed and §0 stopped. The operator removed the directory by
+  hand. A real stray in a skill directory should still fail. The problem is
+  that the check doesn't say this one is a runtime artifact.
+- **Mechanism (gate):** `install.sh --check` reports a `.claude/` runtime
+  directory inside a skill by name and cause ("Claude Code runtime directory,
+  safe to delete"), and the harness's `.gitignore` covers `**/.claude/.cc-*`
+  so it can never be committed.
+- **Target (dotfiles-claude):** `scripts/install.sh`, `.gitignore`.
+- **Verify:** bats: a `.claude/.cc-writes` directory under a linked skill
+  produces the named diagnostic.
+
+## DF-27: The implementer's `git commit` is denied every round, so the operator commits by hand
+
+- **Status:** open
+- **Source:** drain 2026-10-17..31, every item (AB#88–97, AB#65, AB#77)
+- **Goal:** the commit step of a drained item has one defined owner and a
+  check, not an ad-hoc fallback.
+- **Problem:** in auto mode the classifier refused the implementer's `git
+  commit` in every round of every item. Each writer handed back uncommitted
+  work plus a message file. The operator committed it by hand, about 30 times
+  in this batch. Then the drain checked the message for a CI-skip marker and
+  ran the bar on the new commit. The skill still describes the writer
+  committing, so each round improvises the handover.
+- **Mechanism (process-step):** make operator-commit the declared path when
+  the writer can't commit. The completion report carries `commit_message_file:`
+  and `files:`. The drain runs `check-scope` and the skip-marker check on them
+  before asking the operator to commit, then confirms the new HEAD's file list
+  equals `files:`. Alternatively, scope an allow rule for `git commit` to item
+  worktrees and keep the same checks.
+- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §2c/§2d,
+  `home/skills/drain/references/handoff.md` (completion report),
+  `home/agents/implementer.md`.
+- **Verify:** skill-text assertion; a bats case for the file-list comparison.
+
+## DF-28: The resume note goes stale between sessions and outgrows a single read
+
+- **Status:** open
+- **Source:** drain 2026-10-17..31 (operator retro item 2026-10-22T14:31Z;
+  resume reconnaissance 2026-10-30)
+- **Goal:** any session can resume a batch from a short, current state block,
+  and no item step happens without a record.
+- **Problem:**
+  - The note had no entry between 2026-10-26 and 2026-10-30. In that time
+    AB#65 had a third review round, two more commits and its merge (PR #71).
+    That round's review record was never written, so §4 needed an after-the-fact
+    waiver. AB#65's marker was still live on 2026-10-30.
+  - AB#77's round-2 bar log was lost and the bar had to be re-run.
+  - The note grew to 189 lines and 53 KB, an append-only log with a current
+    state block on top, and no longer fits one read.
+  - Subagent reports came back into the session's context in full. The
+    operator asked for the batch to be made context-efficient (items 1–4
+    below).
+- **Mechanism (process-step):**
+  1. The drain checkpoints at each item boundary. It rewrites the current-state
+     block and stops with "safe to /clear; resume with: …". Skills can't run
+     `/clear`. Optionally it stops itself past about 60% context.
+  2. A SessionStart hook prints the in-flight batch's current-state block, so
+     a fresh session starts from it.
+  3. The note is a bounded state block. The log moves to the DF-21 state
+     directory.
+  4. Subagents write full reports to a file in that directory and return only
+     a terse summary (a `handoff.md` change).
+- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md`,
+  `home/skills/drain/references/handoff.md`, `home/hooks/` (SessionStart).
+  Builds on DF-21.
+- **Verify:** skill-text assertion; a bats case that the SessionStart hook
+  prints the state block when a batch is in flight and nothing otherwise.
+
+## DF-29: Later review rounds reopen trade-offs an earlier round settled
+
+- **Status:** open
+- **Source:** drain 2026-10-17..31, AB#95, AB#96, AB#97, AB#65, AB#77
+- **Goal:** the round cap ends review on schedule, and each round's findings
+  are new.
+- **Problem:** every item with a review record reached the third round, and
+  AB#95 needed four. Part of the cause: `/code-review` and the reviewer got
+  no record of earlier dispositions, so they raised findings again that the
+  operator had already accepted or deferred. Examples are AB#77 round 3 C1
+  (same class as AB#134) and C2 (same class as round-2 C3). The 12 items
+  produced 31 follow-up items (AB#101–123, AB#130–135), several of them
+  re-raised classes.
+- **Mechanism (process-step):** §2e passes every earlier round's dispositions
+  (`<id> <class> → <disposition>`, from the local review record) into each
+  review prompt as settled. A finding whose class matches a settled one is
+  recorded as `seen-class`, not a new finding, so the existing round-cap rule
+  applies to it mechanically.
+- **Target (dotfiles-claude):** `home/skills/drain/SKILL.md` §2e,
+  `home/skills/drain/references/board-ops.md` (review-round record).
+- **Verify:** skill-text assertion; a bats case that the prompt builder
+  includes the earlier rounds' dispositions.
+
 ## Evidence added by the 2026-10-17 retro (existing entries)
 
 - **DF-1 (deploy not verified):** the merge of AB#75 (PR #53, 7f11e79) produced
@@ -867,3 +1037,23 @@ step), never prose alone, per the retro rule (REQ-490).
   voided the run and re-ran cold; this is also DF-11 evidence. The DF-16 bar
   wrapper should also void a run that spans a system sleep (`pmset -g log` on
   macOS).
+
+## Evidence added by the 2026-10-31 retro (existing entries)
+
+- **DF-2 (worktree teardown):** recurred. On 2026-10-30, before AB#77, 15
+  leftover worktrees were removed by hand with the operator's approval. At
+  AB#77's teardown, two isolation review worktrees still couldn't be removed:
+  the reviewer's Playwright run had left git-ignored `playwright-report/`
+  files in them. Step 4 of the mechanism has to cover a review worktree that
+  holds only ignored files. Remove it with `--force` once a
+  `git status --porcelain --ignored` listing shows nothing but ignored paths.
+- **DF-6 (create_item leaves state null):** recurred, and at scale. The
+  2026-10-17 batch had worked round it with `update_item --state New`. This
+  batch dropped that workaround. 29 follow-ups the drain filed (AB#101–123,
+  AB#130–135) have `state: null`, so they are invisible to every
+  state-filtered query. The resume note listed them as "New". Still open on
+  the harness's main: `scripts/boards/mock.sh` `_adapter_create_item` stores
+  `state: $s.state` with no default.
+- **DF-21 (working state location):** the review records under
+  `drain-reviews/<batch>/` survived the whole 14-day batch, but the bar logs
+  kept in session scratchpads did not (AB#77 round 2). See DF-28.
