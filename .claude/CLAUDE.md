@@ -124,9 +124,9 @@ What each relaxed R1 dial does here:
   error before any test runs. Do not hand-start a server for the suite. (Port 8080
   on this machine is often held by another app, observed: VLC; testing against the
   wrong server reads as an all-red suite.) `PW_PORT` moves the server (default 8199,
-  integer 1024-65535) so a second concurrent run, e.g. from another worktree, gets
-  its own port; `PW_WORKERS` caps local workers (default 4, positive integer; CI
-  always runs 1). An invalid value of either fails at config load, before any test.
+  integer 1024-65535; empty means the default) so a second concurrent run gets its
+  own port. Run it from another worktree: runs in one checkout share `test-results/`
+  and `playwright-report/`. An invalid value fails at config load, before any test.
 - Board operations from inside a worktree MUST pin
   `MOCK_BOARD_STATE=<main checkout>/.claude/mock-board.json` — the mock adapter
   resolves state at the current git toplevel, which in a worktree would fork the

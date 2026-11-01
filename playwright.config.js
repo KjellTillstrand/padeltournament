@@ -10,39 +10,29 @@ import { defineConfig, devices } from '@playwright/test';
 // dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 /**
- * Read a whole-number setting from the environment. Unset means the default;
- * any other value must be a plain integer in [min, max], or loading the config
- * throws, so a bad value fails the run before any test starts.
- */
-function intFromEnv(name, fallback, min, max, what) {
-  const raw = process.env[name];
-  if (raw === undefined) return fallback;
-  const value = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
-  if (!Number.isSafeInteger(value) || value < min || value > max) {
-    throw new Error(`${name} must be ${what} (got ${JSON.stringify(raw)}).`);
-  }
-  return value;
-}
-
-/**
  * The suite always runs against a static server that Playwright itself starts
  * from ./web. A dedicated port, bound to loopback only, keeps it clear of
  * common dev ports; reuseExistingServer is false so a port that is already
  * occupied is a hard error rather than a silent run against a foreign server.
  * PW_PORT (default 8199) moves the server, so two runs on one machine can each
- * have their own.
+ * have their own. Unset or empty means the default; any other value must be
+ * plain ASCII digits forming an integer from 1024 to 65535, or loading the
+ * config throws, so a bad value fails the run before any test starts. Only the
+ * parsed number ever reaches the webServer command.
  */
-const TEST_SERVER_PORT = intFromEnv(
-  'PW_PORT', 8199, 1024, 65535, 'an integer from 1024 to 65535');
-const TEST_SERVER_URL = `http://127.0.0.1:${TEST_SERVER_PORT}`;
+function testServerPort() {
+  const raw = process.env.PW_PORT;
+  if (raw === undefined || raw === '') return 8199;
+  const port = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) {
+    throw new Error(
+      `PW_PORT must be an integer from 1024 to 65535 (got ${JSON.stringify(raw)}).`);
+  }
+  return port;
+}
 
-/**
- * Local worker cap: PW_WORKERS (default 4), so two concurrent runs do not
- * overload the CPU. CI always runs one worker and ignores the value, but a
- * malformed PW_WORKERS still fails the run.
- */
-const LOCAL_WORKERS = intFromEnv(
-  'PW_WORKERS', 4, 1, Number.MAX_SAFE_INTEGER, 'a positive integer');
+const TEST_SERVER_PORT = testServerPort();
+const TEST_SERVER_URL = `http://127.0.0.1:${TEST_SERVER_PORT}`;
 
 /**
  * Specs that read schedule data, call the engine or drive web/*.js modules
@@ -56,6 +46,7 @@ const NODE_ONLY_SPECS = [
   '**/spaced_mix.spec.js',
   '**/mexicano_pairing.spec.js',
   '**/sitout_tables.spec.js',
+  '**/playwright_config.spec.js',
 ];
 
 /**
@@ -73,8 +64,8 @@ export default defineConfig({
    * a flake blocks the release gate and the deploy instead of passing silently.
    * Retries stay on so the flake is still reported with its failing attempt. */
   failOnFlakyTests: !!process.env.CI,
-  /* Opt out of parallel tests on CI; cap them locally (PW_WORKERS, default 4). */
-  workers: process.env.CI ? 1 : LOCAL_WORKERS,
+  /* Opt out of parallel tests on CI. */
+  workers: process.env.CI ? 1 : undefined,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters
    * The html report is written but never auto-opened, so a non-interactive run
    * cannot block on a report server; `npx playwright show-report` opens it. */
