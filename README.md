@@ -79,7 +79,13 @@ Microsoft Edge (channel `msedge`); if it is missing,
 keyboard-navigation tests skip on WebKit (AB#131); CI runs them on Linux WebKit.
 
 Playwright starts its own server on `127.0.0.1:8199` for the test suite — don't
-run one there yourself; an occupied port fails fast by design.
+run one there yourself; an occupied port fails fast by design. `PW_PORT` moves
+that server (default `8199`; an integer from 1024 to 65535; empty means the
+default), and an invalid value stops the run before any test starts. To run two
+suites at once, start them from separate checkouts or worktrees — runs in one
+checkout share `test-results/` and `playwright-report/` — and give each its own
+port, for example `PW_PORT=8299 npm test` in the second. To use fewer parallel
+workers, pass Playwright's `--workers` flag, e.g. `npm test -- --workers=2`.
 
 ## Repository layout
 

@@ -14,8 +14,25 @@ import { defineConfig, devices } from '@playwright/test';
  * from ./web. A dedicated port, bound to loopback only, keeps it clear of
  * common dev ports; reuseExistingServer is false so a port that is already
  * occupied is a hard error rather than a silent run against a foreign server.
+ * PW_PORT (default 8199) moves the server, so two runs on one machine can each
+ * have their own. Unset or empty means the default; any other value must be
+ * plain ASCII digits forming an integer from 1024 to 65535, or loading the
+ * config throws, so a bad value fails the run before any test starts. Only the
+ * parsed number ever reaches the webServer command.
  */
-const TEST_SERVER_URL = 'http://127.0.0.1:8199';
+function testServerPort() {
+  const raw = process.env.PW_PORT;
+  if (raw === undefined || raw === '') return 8199;
+  const port = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) {
+    throw new Error(
+      `PW_PORT must be an integer from 1024 to 65535 (got ${JSON.stringify(raw)}).`);
+  }
+  return port;
+}
+
+const TEST_SERVER_PORT = testServerPort();
+const TEST_SERVER_URL = `http://127.0.0.1:${TEST_SERVER_PORT}`;
 
 /**
  * Specs that read schedule data, call the engine or drive web/*.js modules
@@ -29,6 +46,7 @@ const NODE_ONLY_SPECS = [
   '**/spaced_mix.spec.js',
   '**/mexicano_pairing.spec.js',
   '**/sitout_tables.spec.js',
+  '**/playwright_config.spec.js',
 ];
 
 /**
@@ -114,7 +132,7 @@ export default defineConfig({
   /* Serve ./web for the tests. Never reuse: an occupied port must fail the run. */
   webServer: {
     // --no: run the pinned local http-server; never download one on the fly.
-    command: 'npx --no http-server ./web -p 8199 -a 127.0.0.1 -s',
+    command: `npx --no http-server ./web -p ${TEST_SERVER_PORT} -a 127.0.0.1 -s`,
     url: TEST_SERVER_URL,
     reuseExistingServer: false,
     timeout: 30 * 1000,
