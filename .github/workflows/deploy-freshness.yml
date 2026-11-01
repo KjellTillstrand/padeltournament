@@ -7,8 +7,8 @@ name: Deploy freshness
 # went red. scripts/check-deploy-freshness.mjs fails when the head of main is
 # not what Pages serves (the newest github-pages publication) more than an
 # hour after its push run was created (after its committer date when it has
-# no push run, e.g. [skip ci]), or when a "Test and deploy" run has been
-# waiting, queued, pending or requested for more than an hour. A publication
+# no push run, e.g. a CI-skip marker), or when a "Test and deploy" run has
+# been waiting, queued, pending or requested for more than an hour. A publication
 # is a "success" deployment status with an environment_url, which the deploy
 # job in playwright-tests.yml sets only when actions/deploy-pages ran: its
 # environment.url is that step's page_url output, and the step runs only when

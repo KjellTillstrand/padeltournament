@@ -183,11 +183,11 @@ const unitCases = [
     const r = evaluate(input({ deployments: [deployment(OLD, 4 * HOUR)] }));
     assert.match(r.failures[0].reason, /run 500 completed with conclusion "success", yet it is not the live publication: the publication was skipped or not recorded\./);
   }],
-  ['(a) with no push run ([skip ci]) ages the head from its committer date and says so', () => {
+  ['(a) with no push run (a CI-skip marker) ages the head from its committer date and says so', () => {
     const r = evaluate(input({ head: head(HEAD, 2 * HOUR), headRuns: [], deployments: [deployment(OLD, 4 * HOUR)] }));
     assert.deepStrictEqual(codes(r), ['head-not-live']);
     assert.match(r.failures[0].reason, /is not live 120 min after its committer date \(limit 60 min\)/);
-    assert.match(r.failures[0].reason, /No push-event Test and deploy run exists for it \(a \[skip ci\] commit, or CI never started\)/);
+    assert.match(r.failures[0].reason, /No push-event Test and deploy run exists for it \(a commit carrying a CI-skip marker, or CI never started\)/);
     assert.strictEqual(r.headSinceSource, 'committer date (no push run)');
     assert.deepStrictEqual(evaluate(input({ head: head(HEAD, 59 * MIN), headRuns: [], deployments: [deployment(OLD, 4 * HOUR)] })).failures, []);
   }],
