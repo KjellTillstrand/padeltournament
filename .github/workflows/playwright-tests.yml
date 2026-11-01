@@ -20,6 +20,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Bound the job so a hung browser cannot hold the run, and the deploy that
+    # needs it, for GitHub's 6-hour default (AB#132). A timed-out job is not
+    # green, so the deploy job (needs: test) is skipped.
+    # Sizing rule: about 1.8x the longest test job of recent green runs, so a
+    # slow install on top of a slow suite still fits (the evidence is in the
+    # AB#132 commit message). Re-size whenever a browser project is added to
+    # playwright.config.js (e.g. AB#130); each one adds minutes to Run tests.
+    # Ceiling: the deploy freshness monitor (scripts/check-deploy-freshness.mjs)
+    # gives a head of main one grace hour, STALE_AFTER_MS, counted from the
+    # creation of its push run, to be live; a run waiting longer is stalled.
+    # This bound must stay at or below that hour (its self-test fails
+    # otherwise). Queue time and the deploy job come on top, so a run that
+    # nears the bound can still turn the monitor red (falsely, never falsely
+    # green). If the rule ever needs more than the hour, revisit the bound and
+    # the grace together, or split the suite; do not just raise this.
+    timeout-minutes: 60
     steps:
       # This job runs repository and third-party dependency code, so it must not
       # keep the token in .git/config after checkout.
@@ -73,7 +89,13 @@ jobs:
           PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ env.PW_JSON }}
         run: npx --no playwright test --reporter=html,json
 
+      # Upload even when the tests fail or the job hits timeout-minutes, so the
+      # report shows what failed or hung. A timeout cancels the job, and
+      # !cancelled() is then false; always() still runs. An upload cannot turn
+      # a failed or timed-out job green, so deploy (needs: test) is still
+      # skipped whenever the tests or the gate below fail.
       - name: Upload Playwright Report
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-report

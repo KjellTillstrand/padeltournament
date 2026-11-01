@@ -523,6 +523,23 @@ const unitCases = [
     assert.strictEqual(MAX_CALLS, 3 + DEPLOYMENT_LIMIT + 4);
     assert.strictEqual(WORST_CASE_MS, 17 * 18 * 1000);
   }],
+  ['coupling: the Test and deploy test job is bounded within the grace hour', () => {
+    // An unbounded test job holds the run, and the deploy that needs it, for
+    // GitHub's 6-hour default. A bound above STALE_AFTER_MS lets a run still
+    // testing outlast the grace hour the monitor gives the head of main.
+    const lines = readFileSync(TEST_AND_DEPLOY, 'utf8').split('\n');
+    const start = lines.indexOf('  test:');
+    assert.ok(start >= 0, 'playwright-tests.yml has a test job');
+    const end = lines.findIndex((line, i) => i > start && /^ {0,2}[^\s#]/.test(line));
+    const job = lines.slice(start + 1, end < 0 ? lines.length : end);
+    const bounds = job.map((line) => /^ {4}timeout-minutes:\s*(\d+)\s*$/.exec(line)).filter(Boolean);
+    assert.strictEqual(bounds.length, 1, 'the test job of playwright-tests.yml declares one job-level timeout-minutes');
+    const jobMs = Number(bounds[0][1]) * MIN;
+    assert.ok(jobMs > 0, 'the test job timeout-minutes is positive');
+    assert.ok(jobMs <= STALE_AFTER_MS,
+      `the test job timeout-minutes (${bounds[0][1]}) exceeds the monitor's grace hour (${STALE_AFTER_MS / MIN} min); ` +
+        'see COUPLING under (b) in the header of scripts/check-deploy-freshness.mjs');
+  }],
   ['coupling: the deploy job alone uses github-pages, its url only through the freshness-gated deploy-pages step', () => {
     // The monitor reads a "success" status as a publication only when it
     // carries an environment_url (see COUPLING in the script's header). That
