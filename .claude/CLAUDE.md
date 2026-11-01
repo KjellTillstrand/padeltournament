@@ -123,7 +123,10 @@ What each relaxed R1 dial does here:
   127.0.0.1:8199 and, with `reuseExistingServer: false`, an occupied port is a loud
   error before any test runs. Do not hand-start a server for the suite. (Port 8080
   on this machine is often held by another app, observed: VLC; testing against the
-  wrong server reads as an all-red suite.)
+  wrong server reads as an all-red suite.) `PW_PORT` moves the server (default 8199,
+  integer 1024-65535) so a second concurrent run, e.g. from another worktree, gets
+  its own port; `PW_WORKERS` caps local workers (default 4, positive integer; CI
+  always runs 1). An invalid value of either fails at config load, before any test.
 - Board operations from inside a worktree MUST pin
   `MOCK_BOARD_STATE=<main checkout>/.claude/mock-board.json` — the mock adapter
   resolves state at the current git toplevel, which in a worktree would fork the

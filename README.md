@@ -79,7 +79,16 @@ Microsoft Edge (channel `msedge`); if it is missing,
 keyboard-navigation tests skip on WebKit (AB#131); CI runs them on Linux WebKit.
 
 Playwright starts its own server on `127.0.0.1:8199` for the test suite — don't
-run one there yourself; an occupied port fails fast by design.
+run one there yourself; an occupied port fails fast by design. Two environment
+variables tune a local run:
+
+- `PW_PORT` sets the server's port (default `8199`; an integer from 1024 to
+  65535). Give a second run on the same machine its own port so both can run at
+  once, for example `PW_PORT=8299 npm test`.
+- `PW_WORKERS` caps the number of parallel workers (default `4`; a positive
+  integer). Lower it when two runs share the machine. CI always uses one worker.
+
+An invalid value stops the run before any test starts.
 
 ## Repository layout
 
