@@ -18,7 +18,6 @@ const SCHEDULE_DIR = path.join(__dirname, '..', 'web', 'schedules');
 // header is split on LF only: any other terminator could hide code after a
 // "// header" that this loader would still count as comment. The shipped
 // tables contain none, so such a source is rejected outright.
-// DEFERRED: AB#114 (pin LF line endings for web/schedules)
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
 const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
 const NON_LF_TERMINATORS = new RegExp(`[\\r${LINE_SEPARATOR}${PARAGRAPH_SEPARATOR}]`);
