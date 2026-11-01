@@ -12,13 +12,17 @@
   is drawn at Start by `startMexicano` in `web/index.html` (a seeded random draw made
   through `web/mexicano.js`; the seed is persisted as `mexicanoSeed`), and every later
   round is generated from the standings by `web/mexicano.js` during play.
-- Schedulers (none are part of the served app): `scheduler/whist-generate.js` generates
-  the shipped perfect-whist tables for the multiples of 4 (8, 12, 16, 20, 24 players);
-  `scheduler/engine/sitout-generate.mjs` generates the shipped rest-round tables for the
-  other twelve counts (9-23, N rounds each) from the engine. Both are deterministic and
-  self-verifying (they refuse to write a schedule that fails verification).
-  `scheduler/engine/` is the parametrized engine for any player count/round length
-  (equitable mixing, `equity` report on every result); `scheduler/combined.js` is the
+- Schedulers (Node tools, not part of the served app): `scheduler/whist-generate.js`
+  generates the shipped perfect-whist tables for the multiples of 4 (8, 12, 16, 20, 24
+  players); `scheduler/engine/sitout-generate.mjs` generates the shipped rest-round tables
+  for the other twelve counts (9-23, N rounds each) from the engine. Both are
+  deterministic and self-verifying (they refuse to write a schedule that fails
+  verification). `web/engine/` is the parametrized engine for any player count/round
+  length (equitable mixing, `equity` report on every result): plain ES modules with no
+  `node:*` imports, served by Pages and loadable in the browser (AB#126), though no app
+  page loads them yet. `web/engine/whist.mjs` holds the whist construction behind
+  `scheduler/whist-generate.js`; `scheduler/engine/` keeps only the Node tools
+  (`sitout-generate.mjs`, `prove-infeasible.mjs`). `scheduler/combined.js` is the
   superseded original solver, kept for history.
 - All state (schedule, rounds, scores, tournament name, court names) persists in
   browser localStorage — no backend, no database. See `docs/requirements.md`.

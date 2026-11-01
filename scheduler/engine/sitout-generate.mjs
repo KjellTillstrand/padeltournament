@@ -7,10 +7,10 @@
  * whist tables (scheduler/whist-generate.js).
  *
  * Length: N rounds for N players, the full rest cycle (see maxRounds in
- * index.mjs). Over it every player rests exactly B times and plays exactly
- * N - B games, so totals stay comparable (points only come from games
- * played), and nobody partners anyone twice. Equal rests need R * B to be a
- * multiple of N. For B = 1 no shorter length gives them; for B = 2 the only
+ * web/engine/index.mjs). Over it every player rests exactly B times and
+ * plays exactly N - B games, so totals stay comparable (points only come
+ * from games played), and nobody partners anyone twice. Equal rests need
+ * R * B to be a multiple of N. For B = 1 no shorter length gives them; for B = 2 the only
  * shorter one, N/2 rounds, halves the tournament; for B = 3 a shorter one
  * exists only when 3 divides N, which among these sizes is N = 15 alone
  * (5 or 10 rounds, every player resting once or twice). Its table still runs
@@ -42,7 +42,7 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defaultSeed, generateSchedule, maxRounds } from './index.mjs';
+import { defaultSeed, generateSchedule, maxRounds } from '../../web/engine/index.mjs';
 
 const SIZES = [9, 10, 11, 13, 14, 15, 17, 18, 19, 21, 22, 23];
 const SCHEDULE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'schedules');

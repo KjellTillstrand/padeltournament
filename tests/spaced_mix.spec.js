@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const path = require('path');
+const { pathToFileURL } = require('url');
 const { loadScheduleData } = require('./schedule-data.js');
 
 // R-SPACED-MIX: the shipped full-length schedules spread repeat encounters
@@ -11,7 +13,14 @@ const { loadScheduleData } = require('./schedule-data.js');
 // twice) and putting every player on every court. These checks read the
 // schedule data directly and count meetings themselves; no page needed.
 
-const { adjacentRepeatBound, zeroBackToBackRequired } = require('../scheduler/whist-generate.js');
+// The bounds the generator enforces, from the engine's whist module (an ES
+// module, so loaded with import()).
+const WHIST_MODULE = path.join(__dirname, '..', 'web', 'engine', 'whist.mjs');
+let adjacentRepeatBound;
+let zeroBackToBackRequired;
+test.beforeAll(async () => {
+  ({ adjacentRepeatBound, zeroBackToBackRequired } = await import(pathToFileURL(WHIST_MODULE).href));
+});
 
 const pairKey = (a, b) =>
   a.localeCompare(b, 'en', { numeric: true }) < 0 ? `${a}-${b}` : `${b}-${a}`;
@@ -69,7 +78,7 @@ function partnerNextToOpposition(schedule) {
 // round seats 4 players drawn from the 3 matches of the round before, so at
 // least two of them shared a match there and meet again (pigeonhole). That is
 // at least 1 repeat per match, 3 per round change, 3 x 10 = 30 over 11
-// rounds; see adjacentRepeatBound() in scheduler/whist-generate.js.
+// rounds; see adjacentRepeatBound() in web/engine/whist.mjs.
 const SPACED_SIZES = [
   { players: 16, rounds: 15 },
   { players: 20, rounds: 19 },

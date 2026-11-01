@@ -1,7 +1,7 @@
 /**
  * Parametrized scheduling engine (R-EQUITABLE-MIX).
  *
- *   import { generateSchedule } from './scheduler/engine/index.mjs';
+ *   import { generateSchedule } from './web/engine/index.mjs';
  *   const schedule = generateSchedule({ players: 14, rounds: 10, seed: 7 });
  *   if (!schedule.equity.optimal) { ... opponent counts are not all within one ... }
  *
@@ -25,9 +25,10 @@
  * apart (rest.mjs; a few milliseconds, ORDER_EVALUATIONS).
  *
  * Full-length case (players = 4n, rounds = 4n - 1): the schedule is the
- * whist construction of scheduler/whist-generate.js, i.e. a perfect mix
+ * whist construction of whist.mjs (the logic behind
+ * scheduler/whist-generate.js), i.e. a perfect mix
  * (partners exactly once, opponents exactly twice), with its rounds ordered
- * by that script's spacing stage (spacedWhist). With the default seed its
+ * by that module's spacing stage (spacedWhist). With the default seed its
  * rounds are exactly the shipped web/schedules/<N>p<N-1>r.js table.
  *
  * Latency budget (for running in a browser). The engine is synchronous and
@@ -39,7 +40,7 @@
  *     slowest shorter shape takes about 1.1 s. Proven-impossible shapes are
  *     capped at INFEASIBLE_EVALUATIONS, about 0.1 s.
  *   - Outside that budget: for 4n players below full length the whist base
- *     round search of whist-generate.js (findBaseRound, its own node budget)
+ *     round search of whist.mjs (findBaseRound, its own node budget)
  *     runs as well; unlucky seeds at 24 players take up to about 1.35 s
  *     there, and the slowest whole call seen was about 1.9 s (24/19, seed 5).
  *   - Full length (4n players, 4n - 1 rounds): spacedWhist's own budgets,
@@ -51,7 +52,7 @@
  * are constants here and can be made configurable when the app needs it.
  */
 
-import whist from '../whist-generate.js';
+import * as whist from './whist.mjs';
 import { minSumOfSquares, searchSchedule } from './search.mjs';
 import { MAX_START_EVALUATIONS, startArrangement } from './construct.mjs';
 import { costFloor } from './feasibility.mjs';
@@ -66,7 +67,7 @@ export const MAX_PLAYERS = 24;
 // evaluations (a deterministic cut-off, unlike wall time). ~3M evaluations is
 // roughly one second on a laptop; most shapes need well under 1M. It governs
 // only shorter schedules: the full-length path runs
-// whist-generate.js's spacedWhist under that script's own fixed budgets
+// whist.mjs's spacedWhist under that module's own fixed budgets
 // (SPACING_CANDIDATES base rounds, etc.), about 5 s at 24 players.
 const MAX_EVALUATIONS = 3000000;
 // The local search always gets at least this much of MAX_EVALUATIONS, however
@@ -85,7 +86,7 @@ if (MAX_EVALUATIONS - MAX_START_EVALUATIONS < MIN_SEARCH_EVALUATIONS) {
 // and runs to this cap, about 0.1 s. See feasibility.mjs for the trade-off.
 const INFEASIBLE_EVALUATIONS = 300000;
 
-/** The per-size seed whist-generate.js uses; the default here as well. */
+/** The per-size seed whist-generate.js uses (whist.mjs); the default here as well. */
 export { defaultSeed };
 
 /**
@@ -227,7 +228,7 @@ export function generateSchedule({ players, rounds, seed } = {}) {
   if (seed === undefined) seed = defaultSeed(N);
   if (!Number.isInteger(seed)) throw new TypeError(`seed must be an integer, got ${seed}`);
 
-  // Full length: the whist pipeline of whist-generate.js, including its
+  // Full length: the whist pipeline of whist.mjs, including its
   // spacing stage, so the default seed reproduces the shipped tables. It is
   // null only if no whist base round was found; the search below then starts
   // from scratch. Shorter: the search starts from the best construction,

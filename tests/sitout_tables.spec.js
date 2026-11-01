@@ -10,7 +10,7 @@ const { LINE_SEPARATOR, PARAGRAPH_SEPARATOR, parseScheduleSource, readScheduleSo
 // The in-browser scenarios live in tests/sitout_fair.spec.js.
 
 const WEB_DIR = path.join(__dirname, '..', 'web');
-const ENGINE_DIR = path.join(__dirname, '..', 'scheduler', 'engine');
+const ENGINE_DIR = path.join(__dirname, '..', 'web', 'engine');
 
 // ---------------------------------------------------------------------------
 // The shipped sit-out tables, re-verified in CI. Data only: the table files
