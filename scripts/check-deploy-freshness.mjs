@@ -97,8 +97,15 @@
 //       falling back to created_at). A re-run attempt therefore gets a fresh
 //       clock instead of being judged by the original run's age. The API does
 //       not expose when a run entered its current status, so a run that ran
-//       its tests for 30 min and then waited 31 min also trips (b); the test
-//       job takes 20-35 min, well inside the hour.
+//       its tests for 30 min and then waited 31 min also trips (b). The same
+//       hour bounds (a): the head's push run must test and deploy within it.
+//       COUPLING to the test job of playwright-tests.yml: its timeout-minutes
+//       is at most this grace hour, and the self-test pins that. Green test
+//       jobs have taken about half of it (24-33 min with four browser
+//       projects, 2026-11-01), but a run that nears its bound, plus queue
+//       time and the deploy job, can pass the hour before it publishes and
+//       trip (a), and (b) too if the run is left waiting: a false red, never
+//       a false green.
 //       "requested" is not named by the story but is included: it is the status
 //       of a run GitHub has created and not yet queued, the API's status filter
 //       accepts it, and a run stuck there blocks exactly like a queued one.
