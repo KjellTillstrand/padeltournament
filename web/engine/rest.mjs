@@ -21,7 +21,7 @@
  * to back is a gap of 1.
  */
 
-import whist from '../whist-generate.js';
+import * as whist from './whist.mjs';
 import { randInt } from './search.mjs';
 
 const { mulberry32 } = whist;

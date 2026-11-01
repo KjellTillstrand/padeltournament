@@ -22,14 +22,14 @@
  * Constraints only tighten as rounds are added, so each branch filters its
  * parent's candidate list.
  *
- * EXHAUSTIVE_FLOORS in feasibility.mjs records what this script proves; the
- * default run re-proves every entry, i.e. that no schedule costs less than
+ * EXHAUSTIVE_FLOORS in web/engine/feasibility.mjs records what this script
+ * proves; the default run re-proves every entry, i.e. that no schedule costs less than
  * lowerBound + floor (about six minutes, nearly all of it 11/7).
  */
 
 import { pathToFileURL } from 'node:url';
-import { EXHAUSTIVE_FLOORS } from './feasibility.mjs';
-import { minSumOfSquares } from './search.mjs';
+import { EXHAUSTIVE_FLOORS } from '../../web/engine/feasibility.mjs';
+import { minSumOfSquares } from '../../web/engine/search.mjs';
 
 /** Every combination of k elements of arr, in lexicographic order. */
 function combinations(arr, k) {

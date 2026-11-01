@@ -24,7 +24,7 @@
  * matchingRound.
  *
  * Whist subset. A whist tournament Wh(N) (every pair partners once and
- * opposes exactly twice) exists for N = 4n (N - 1 rounds, whist-generate.js)
+ * opposes exactly twice) exists for N = 4n (N - 1 rounds, whist.mjs)
  * and N = 4n + 1 (N rounds with one sit-out each; the cyclic development
  * above with m = N). Keeping R of its rounds never repeats a partner and
  * keeps sit-outs within one; which R rounds to keep decides the opponent
@@ -38,7 +38,7 @@
  * are court c (two teams of two), the remaining seats are the sit-outs.
  */
 
-import whist from '../whist-generate.js';
+import * as whist from './whist.mjs';
 import { costFloor } from './feasibility.mjs';
 import { minSumOfSquares, randInt } from './search.mjs';
 
@@ -564,7 +564,7 @@ export const MAX_START_EVALUATIONS =
 // is often already equitable, while shorter subsets of these cyclic designs
 // start far from it (every short run of shifts repeats the same oppositions)
 // and the search does better from scratch. Wh(4n) costs no evaluations
-// (whist-generate.js's own search) and is used at every length.
+// (whist.mjs's own search) and is used at every length.
 const MAX_DROPPED = 5;
 
 /**

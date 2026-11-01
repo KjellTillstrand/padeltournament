@@ -41,8 +41,8 @@
  */
 
 /**
- * Floors proven by exhaustive search (prove-infeasible.mjs re-proves every
- * entry): no schedule costs less than lowerBound + floor. Tight except 11/7
+ * Floors proven by exhaustive search (scheduler/engine/prove-infeasible.mjs
+ * re-proves every entry): no schedule costs less than lowerBound + floor. Tight except 11/7
  * (see above). Six of these also follow from countingInfeasible below; 6/3,
  * 9/4, 9/5 and 12/5 need the search, as does every floor above 2.
  */

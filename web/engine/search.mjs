@@ -27,7 +27,7 @@
  * returning the best arrangement seen.
  */
 
-import whist from '../whist-generate.js';
+import * as whist from './whist.mjs';
 
 // One seeded PRNG and shuffle for the whole scheduler: the whist generator's.
 const { mulberry32, shuffled } = whist;

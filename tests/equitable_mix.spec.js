@@ -3,13 +3,15 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const { loadScheduleData } = require('./schedule-data.js');
 
-// R-EQUITABLE-MIX: the scheduling engine (scheduler/engine) produces an
+// R-EQUITABLE-MIX: the scheduling engine (web/engine) produces an
 // equitable schedule for any player and round count — no repeated partners,
 // opponent counts within one of each other, sit-outs spread evenly — and the
 // same inputs and seed always give the same schedule. These checks call the
 // engine directly and count meetings from its output; no page needed.
 
-const ENGINE_DIR = path.join(__dirname, '..', 'scheduler', 'engine');
+const ENGINE_DIR = path.join(__dirname, '..', 'web', 'engine');
+// The Node-only proof tool stays with the generators.
+const PROVER = path.join(__dirname, '..', 'scheduler', 'engine', 'prove-infeasible.mjs');
 
 let generateSchedule;
 let defaultSeed;
@@ -22,7 +24,7 @@ test.beforeAll(async () => {
   ({ searchSchedule } = await import(pathToFileURL(path.join(ENGINE_DIR, 'search.mjs')).href));
   rest = await import(pathToFileURL(path.join(ENGINE_DIR, 'rest.mjs')).href);
   feasibility = await import(pathToFileURL(path.join(ENGINE_DIR, 'feasibility.mjs')).href);
-  ({ exhaustive } = await import(pathToFileURL(path.join(ENGINE_DIR, 'prove-infeasible.mjs')).href));
+  ({ exhaustive } = await import(pathToFileURL(PROVER).href));
 });
 
 // Structural check: every round seats each player exactly once, on courts
@@ -216,7 +218,7 @@ test.describe('Equitable schedules for any length', () => {
 
   test('R-EQUITABLE-MIX: formerly unbalanced shapes now keep opponent counts within one', () => {
     // All 26 shapes that missed the optimum at the default seed before the
-    // constructions of scheduler/engine/construct.mjs and the search changes
+    // constructions of web/engine/construct.mjs and the search changes
     // (AB#32), each pinned at cost === lowerBound. Built by: cyclic
     // development (e.g. 14/7, 16/7, 18/9, 20/9, 22/11, 24/10, 24/11), a
     // matching round past it (16/8, 20/10, 24/12), whist subsets (13/12,
@@ -421,8 +423,8 @@ test.describe('Equitable schedules for any length', () => {
   });
 
   test('R-EQUITABLE-MIX: the full-length default is the shipped whist table', () => {
-    // The engine reuses scheduler/whist-generate.js for the full-length case;
-    // with the default seed it must reproduce each canonical table (apart from
+    // The engine reuses web/engine/whist.mjs, the logic behind
+    // scheduler/whist-generate.js, for the full-length case; with the default seed it must reproduce each canonical table (apart from
     // the engine's added equity report). Cost: the spacing stage tries 16
     // base rounds per size, about 0.3 s at 16, 0.7 s at 20 and 5 s at 24
     // players, so this test takes about 6 s (8 and 12 players stop at their
