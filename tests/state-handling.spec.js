@@ -3967,6 +3967,15 @@ test.describe('A visible warning when the auto-save fails', () => {
   // it. It also tries, at once, each time the page is hidden or left.
   const RETRY_DELAY_MS = 1000;
 
+  // Freeze the page's clock (page.clock.install() must have run before the page
+  // loaded), so the retry delay passes only when the test says so with
+  // clock.runFor, never with the machine's load or the window's focus. Whatever
+  // was already pending is not waited for: it ran in the jump.
+  async function freezeTheClock(pageOrContext, page) {
+    const now = await page.evaluate(() => Date.now());
+    await pageOrContext.clock.pauseAt(now + 5000);
+  }
+
   // A tournament whose auto-save has failed: a score entered and refused, the
   // warning shown. Returns the state stored before, which lacks the score.
   async function failASave(page, name) {
@@ -4124,9 +4133,11 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   test('Retries are coalesced: a burst of triggers while saves still fail is one retry, and leaves the warning as it was', async ({ page }) => {
     const errors = collectErrors(page);
+    await page.clock.install();
     await refuseStateWritesOnDemand(page);
     await page.goto('/');
     const storedBefore = await failASave(page, 'Storm Cup');
+    await freezeTheClock(page, page);
     await page.evaluate(() => {
       window.warningChanges = [];
       new MutationObserver((records) => window.warningChanges.push(...records.map((r) => r.type)))
@@ -4144,6 +4155,8 @@ test.describe('A visible warning when the auto-save fails', () => {
       }
     });
     const returnsToThePage = () => page.evaluate(() => {
+      // (visible, as on a real return: a visibilitychange to hidden is not one)
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
       for (let i = 0; i < 2; i++) document.dispatchEvent(new Event('visibilitychange'));
       window.dispatchEvent(new FocusEvent('focus'));
     });
@@ -4153,17 +4166,19 @@ test.describe('A visible warning when the auto-save fails', () => {
     await freeingStorageEvents();
     // then no save is tried at once, one is tried after the delay, refused,
     expect(await refusedStateWrites(page)).toBe(refused);
-    await expect.poll(() => refusedStateWrites(page)).toBe(refused + 1);
+    await page.clock.runFor(RETRY_DELAY_MS);
+    expect(await refusedStateWrites(page)).toBe(refused + 1);
     // and nothing more follows of its own accord;
-    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    await page.clock.runFor(RETRY_DELAY_MS * 1.5);
     expect(await refusedStateWrites(page)).toBe(refused + 1);
     // a later burst of both kinds (twenty storage events, two returns to the
     // page, a focus) is again one retry.
     await freeingStorageEvents();
     await returnsToThePage();
     expect(await refusedStateWrites(page)).toBe(refused + 1);
-    await expect.poll(() => refusedStateWrites(page)).toBe(refused + 2);
-    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    await page.clock.runFor(RETRY_DELAY_MS);
+    expect(await refusedStateWrites(page)).toBe(refused + 2);
+    await page.clock.runFor(RETRY_DELAY_MS * 1.5);
     expect(await refusedStateWrites(page)).toBe(refused + 2);
     // The warning is left exactly as it was, the score on screen, the stored
     // state unchanged.
@@ -4179,6 +4194,10 @@ test.describe('A visible warning when the auto-save fails', () => {
   // migrated marker, a storage event in the other tab each time. Neither tab
   // answers those: no loop of saves between them.
   test('Two failing tabs with a pending legacy migration do not retry each other in a loop', async ({ context }) => {
+    // (two pages to set up: room for a loaded machine; the delays are the
+    // context clock's, not waited for)
+    test.setTimeout(90 * 1000);
+    await context.clock.install();
     // Given a tournament stored under the legacy key only,
     const donor = await context.newPage();
     await donor.goto('/');
@@ -4221,9 +4240,10 @@ test.describe('A visible warning when the auto-save fails', () => {
 
     // when they have settled and two more seconds pass,
     const attempts = async () => (await stateWriteAttempts(first)) + (await stateWriteAttempts(second));
-    await first.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    await freezeTheClock(context, first);
+    await context.clock.runFor(RETRY_DELAY_MS * 1.5);
     const settled = await attempts();
-    await first.waitForTimeout(2 * RETRY_DELAY_MS);
+    await context.clock.runFor(2 * RETRY_DELAY_MS);
 
     // then neither tab tried again: the few attempts are the loads' own.
     expect(await attempts()).toBe(settled);
@@ -4270,6 +4290,7 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   test('R-STATE-PERSIST: another tab shortening a value retries the failed save; adding, growing or rewriting one at its size does not', async ({ page, context }) => {
     const errors = collectErrors(page);
+    await page.clock.install();
     await refuseStateWritesOnDemand(page);
     await page.goto('/');
     // Another app on this shared origin holds a value.
@@ -4277,6 +4298,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     // Given a failed auto-save is being announced, and storage is freed (so a
     // retry here would work),
     const storedBefore = await failASave(page, 'Shrink Cup');
+    await freezeTheClock(page, page);
     await freeStorageQuietly(page, storedBefore);
     const attempts = await stateWriteAttempts(page);
     await page.evaluate(() => {
@@ -4294,28 +4316,33 @@ test.describe('A visible warning when the auto-save fails', () => {
     await expect.poll(() => page.evaluate(() => window.storageEventsSeen)).toBe(3);
     // then none of these frees room, so none retries: past the delay nothing
     // was tried and the warning stays,
-    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    await page.clock.runFor(RETRY_DELAY_MS * 1.5);
     expect(await stateWriteAttempts(page)).toBe(attempts);
     expect(await storedRaw(page, STATE_KEY)).toBe(storedBefore);
     await expectTheWarning(page);
 
     // and when it then shortens the value, the Organizer changing nothing,
     await other.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'z'));
+    await expect.poll(() => page.evaluate(() => window.storageEventsSeen)).toBe(4);
+    await page.clock.runFor(RETRY_DELAY_MS);
     // then the warning is no longer shown,
     await expectNoWarning(page);
     await other.close();
+    await page.clock.resume();
     // and progress is saved: the score entered while saving failed is stored and restored.
     await expectTheScoreSavedAndRestored(page);
     expect(errors).toEqual([]);
   });
 
-  // DEFERRED: AB#106 (timing race: the score entry must land within the 1 s retry delay)
   test('A save made while a retry is pending cancels the retry, which would only repeat it', async ({ page }) => {
     const errors = collectErrors(page);
+    await page.clock.install();
     await refuseStateWritesOnDemand(page);
     await page.goto('/');
     // Given storage still refuses the state and the warning is shown,
     await failASave(page, 'Cancel Cup');
+    // (the retry delay passes only when the test says so),
+    await freezeTheClock(page, page);
     const refused = await refusedStateWrites(page);
 
     // when a retry is pending (a return to the window) and the Organizer enters
@@ -4324,7 +4351,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     await expectARefusedSave(page, () => leftScore(page, 1).fill('20'));
     // then that save was tried, and the pending retry is not: past its delay,
     // the score's save is the only attempt.
-    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    await page.clock.runFor(RETRY_DELAY_MS * 1.5);
     expect(await refusedStateWrites(page)).toBe(refused + 1);
 
     // And when a retry is pending and the page is hidden before it runs, the
@@ -4336,7 +4363,7 @@ test.describe('A visible warning when the auto-save fails', () => {
       delete document.visibilityState;
     });
     expect(await refusedStateWrites(page)).toBe(refused + 2);
-    await page.waitForTimeout(RETRY_DELAY_MS * 1.5);
+    await page.clock.runFor(RETRY_DELAY_MS * 1.5);
     expect(await refusedStateWrites(page)).toBe(refused + 2);
     await expectTheWarning(page);
     await expect(rightScore(page, 1)).toHaveValue('4');
