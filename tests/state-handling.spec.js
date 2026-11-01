@@ -5314,7 +5314,7 @@ test.describe('An aborted Start keeps the name typed', () => {
 
   for (const format of ['americano', 'mexicano']) {
     for (const [cause, message, makeNamesInvalid] of abortCauses) {
-      test(`R-TOURNAMENT-STORE: an aborted ${format} Start (${cause}) leaves the name as typed, and the Start that follows still makes it unique`, async ({ page }) => {
+      test(`R-NAME-UNIQUE, R-TOURNAMENT-STORE: an aborted ${format} Start (${cause}) leaves the name as typed, and the Start that follows still makes it unique`, async ({ page }) => {
         const errors = collectErrors(page);
         const dialogs = collectDialogs(page);
         await page.goto('/');
