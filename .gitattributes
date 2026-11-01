@@ -1,0 +1,4 @@
+# The shipped schedule tables are generated data, and the node-only loader
+# (tests/schedule-data.js) rejects any CR in them. Pin LF in the working tree
+# whatever core.autocrlf says, and normalize to LF on commit (AB#114).
+web/schedules/*.js text eol=lf
