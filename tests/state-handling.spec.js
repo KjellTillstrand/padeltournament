@@ -5272,3 +5272,107 @@ test.describe('A visible warning when the auto-save fails', () => {
     });
   }
 });
+
+// Start gives the tournament a unique name: when a saved tournament already has
+// the name typed, it writes the name with a "-<n>" suffix to the name input. A
+// Start that aborts (invalid player names) has started nothing, so it must leave
+// the name input exactly as typed: otherwise the next save stores the tournament
+// under a name the Organizer never chose (AB#103).
+test.describe('An aborted Start keeps the name typed', () => {
+  function collectErrors(page) {
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console.error: ${message.text()}`);
+    });
+    return errors;
+  }
+
+  function collectDialogs(page) {
+    const messages = [];
+    page.on('dialog', (dialog) => {
+      messages.push(dialog.message());
+      dialog.accept();
+    });
+    return messages;
+  }
+
+  async function storedJson(page, key) {
+    return page.evaluate((k) => JSON.parse(localStorage.getItem(k)), key);
+  }
+
+  const abortCauses = [
+    ['two players share a name', 'Player names must be unique.', async (page) => {
+      await page.fill('#playerInput_0', 'Ada');
+      await page.fill('#playerInput_1', 'Ada');
+    }],
+    ['a player name is over 20 characters', 'Player names must be 20 characters or less.', async (page) => {
+      await page.fill('#playerInput_0', 'A'.repeat(21));
+      await page.fill('#playerInput_1', 'Bea');
+    }],
+  ];
+
+  for (const format of ['americano', 'mexicano']) {
+    for (const [cause, message, makeNamesInvalid] of abortCauses) {
+      test(`R-TOURNAMENT-STORE: an aborted ${format} Start (${cause}) leaves the name as typed, and the Start that follows still makes it unique`, async ({ page }) => {
+        const errors = collectErrors(page);
+        const dialogs = collectDialogs(page);
+        await page.goto('/');
+        await page.evaluate(() => localStorage.clear());
+        await page.reload();
+
+        // Given a saved tournament named "Cup",
+        await page.fill('#tournamentName', 'Cup');
+        await page.click('#startTournamentBtn');
+        await page.click('#saveTournamentBtn');
+        await page.click('#newTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(4);
+        expect((await storedJson(page, SAVED_TOURNAMENTS_KEY)).map(t => t.tournamentName)).toEqual(['Cup']);
+        await page.selectOption('#formatSelect', format);
+
+        // When the Organizer types "Cup" and starts with invalid player names,
+        await page.fill('#tournamentName', 'Cup');
+        await makeNamesInvalid(page);
+        await page.click('#startTournamentBtn');
+
+        // then the Start is refused,
+        await expect.poll(() => dialogs.length).toBe(5);
+        expect(dialogs[4]).toBe(message);
+        await expect(page.locator('.round')).toHaveCount(0);
+        await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+        // and the name input still holds the name typed, as the title does.
+        await expect(page.locator('#tournamentName')).toHaveValue('Cup');
+        await expect(page.locator('#tournamentTitle')).toHaveText('Cup');
+
+        // And the next save of the setup stores it under the name typed.
+        await page.fill('#courtNameInput_1', 'Centre');
+        const setup = await storedJson(page, STATE_KEY);
+        expect(setup.tournamentStarted).toBe(false);
+        expect(setup.tournamentName).toBe('Cup');
+
+        // When the Organizer corrects the player names and starts again,
+        await page.fill('#playerInput_0', 'Ada');
+        await page.fill('#playerInput_1', 'Bea');
+        await page.click('#startTournamentBtn');
+
+        // then the tournament starts under the unique name "Cup-1",
+        await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+        await expect(page.locator('#tournamentName')).toHaveValue('Cup-1');
+        expect((await storedJson(page, STATE_KEY)).tournamentName).toBe('Cup-1');
+        // and Save stores it as "Cup-1", next to the older "Cup".
+        await page.click('#saveTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(6);
+        expect((await storedJson(page, SAVED_TOURNAMENTS_KEY)).map(t => t.tournamentName)).toEqual(['Cup', 'Cup-1']);
+        expect(dialogs).toEqual([
+          'Tournament saved!',
+          'Do you want to save the current tournament before creating a new one?',
+          'Tournament saved!',
+          'Ready for a new tournament!',
+          message,
+          'Tournament saved!',
+        ]);
+        expect(errors).toEqual([]);
+      });
+    }
+  }
+});
