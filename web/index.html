@@ -954,10 +954,10 @@
         return; // Exit function if name is empty.
       }
 
-      // Generate unique tournament name and update input.
+      // The unique tournament name. It is written to the name input only once the
+      // tournament has started: a Start that aborts below (no schedule, invalid
+      // player names) leaves the name input as typed.
       const startName = getUniqueTournamentName(tournamentName);
-      // DEFERRED: AB#103 (aborted Start leaves a renamed name input)
-      document.getElementById("tournamentName").value = startName.name;
 
       if (tournamentFormat === "mexicano") {
         if (!startMexicano()) return;
@@ -971,6 +971,7 @@
       }
 
       // Now proceed to start the tournament.
+      document.getElementById("tournamentName").value = startName.name;
       tournamentStarted = true;
       uncheckedTournamentName = startName.checked ? null : startName.name;
       currentRoundIndex = 0;
