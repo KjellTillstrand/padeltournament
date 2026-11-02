@@ -3967,22 +3967,26 @@ test.describe('A visible warning when the auto-save fails', () => {
   // it. It also tries, at once, each time the page is hidden or left.
   const RETRY_DELAY_MS = 1000;
 
-  // Freeze the page's clock (page.clock.install(), or context.clock.install()
-  // for a page of that context, must have run before the page loaded), so the
+  // Freeze the clock of the page's context (page.clock.install(), or
+  // context.clock.install(), must have run before the page loaded), so the
   // retry delay passes only when the test says so with clock.runFor, never with
   // the machine's load or the window's focus. The pause is a jump forward (the
   // clock has been running in real time, so a pause at "now" can already lie in
   // the past); the jump runs any timer already pending, so the freeze asserts it
-  // changed nothing: no state save was attempted across it. A retry left
-  // pending by a regression would fire in the jump and fail here, not vanish
-  // into the baseline. (page.clock and context.clock are one object: the page
-  // only supplies Date.now() and the attempt count.)
+  // changed nothing: attemptCount() (by default this page's count of state-write
+  // attempts) is the same across it. A retry left pending by a regression would
+  // fire in the jump and fail here, not vanish into the baseline.
+  // page.clock and context.clock are one controller, but each page of the
+  // context has a fake clock of its own and they do not tick together (a page
+  // opened or loaded later reads another Date.now()). The pause target is
+  // therefore past the latest of them; reading only one page's Date.now() makes
+  // pauseAt fail with "Cannot fast-forward to the past" when another is ahead.
   const FREEZE_JUMP_MS = 5000;
-  async function freezeTheClock(page) {
-    const attempts = await stateWriteAttempts(page);
-    const now = await page.evaluate(() => Date.now());
-    await page.clock.pauseAt(now + FREEZE_JUMP_MS);
-    expect(await stateWriteAttempts(page)).toBe(attempts);
+  async function freezeTheClock(page, attemptCount = () => stateWriteAttempts(page)) {
+    const attempts = await attemptCount();
+    const nows = await Promise.all(page.context().pages().map((p) => p.evaluate(() => Date.now())));
+    await page.clock.pauseAt(Math.max(...nows) + FREEZE_JUMP_MS);
+    expect(await attemptCount()).toBe(attempts);
   }
 
   // A tournament whose auto-save has failed: a score entered and refused, the
@@ -3994,6 +3998,21 @@ test.describe('A visible warning when the auto-save fails', () => {
     await setStateWritesFailing(page, true);
     await expectARefusedSave(page, () => leftScore(page, 0).fill('10'));
     await expectTheWarning(page);
+    return storedBefore;
+  }
+
+  // The setup every retry test repeats, in the one order that works: the fake
+  // clock is installed before the page loads (one installed after the load does
+  // not reach the page's timers), storage refuses state writes on demand, the
+  // app opens, a save fails, and the clock is frozen. prepare() runs once the
+  // app is open, before the save fails. Returns the state stored before the failure.
+  async function openAFailingTabOnAFrozenClock(page, name, { prepare } = {}) {
+    await page.clock.install();
+    await refuseStateWritesOnDemand(page);
+    await page.goto('/');
+    if (prepare) await prepare();
+    const storedBefore = await failASave(page, name);
+    await freezeTheClock(page);
     return storedBefore;
   }
 
@@ -4027,16 +4046,27 @@ test.describe('A visible warning when the auto-save fails', () => {
     return other;
   }
 
+  // A second tab opened and driven while the clock they share is running, not
+  // paused. A tab opened under the paused clock is a page whose own fake clock
+  // starts out of step with the first tab's and never ticks, and the storage
+  // events, polls and evaluates that cross between a frozen tab and a tab being
+  // driven are what hung on Microsoft Edge (a page.evaluate of the frozen tab,
+  // right after the second tab changed storage). So the clock is resumed for the
+  // cross-tab steps. The negative checks hold either way: a retry armed by a
+  // regression fires in real time or in the clock.runFor that follows, and the
+  // attempt count shows it.
+  async function anotherTabOnARunningClock(context, openTab = anotherTab) {
+    await context.clock.resume();
+    return openTab(context);
+  }
+
   test('R-STATE-PERSIST: a failed save is retried without a further change when another tab frees storage', async ({ page, context }) => {
     const errors = collectErrors(page);
-    await page.clock.install();
-    await refuseStateWritesOnDemand(page);
-    await page.goto('/');
     // Another app on this shared origin holds some storage.
-    await page.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'x'.repeat(1000)));
     // Given a failed auto-save is being announced,
-    const storedBefore = await failASave(page, 'Freed Cup');
-    await freezeTheClock(page);
+    const storedBefore = await openAFailingTabOnAFrozenClock(page, 'Freed Cup', {
+      prepare: () => page.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'x'.repeat(1000))),
+    });
     // and the browser accepts storage again,
     await freeStorageQuietly(page, storedBefore);
 
@@ -4046,7 +4076,7 @@ test.describe('A visible warning when the auto-save fails', () => {
       window.storageEventsSeen = 0;
       window.addEventListener('storage', () => { window.storageEventsSeen++; });
     });
-    const other = await anotherTab(context);
+    const other = await anotherTabOnARunningClock(context);
     await other.evaluate(() => localStorage.removeItem('another-app-on-this-origin'));
     await expect.poll(() => page.evaluate(() => window.storageEventsSeen)).toBe(1);
     await page.clock.runFor(RETRY_DELAY_MS);
@@ -4054,7 +4084,6 @@ test.describe('A visible warning when the auto-save fails', () => {
     // then the warning is no longer shown,
     await expectNoWarning(page);
     await other.close();
-    await page.clock.resume();
     // and progress is saved: the score entered while saving failed is stored and restored.
     await expectTheScoreSavedAndRestored(page);
     expect(errors).toEqual([]);
@@ -4062,12 +4091,8 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   test('R-STATE-PERSIST: a failed save is retried without a further change when the Organizer returns to the page', async ({ page }) => {
     const errors = collectErrors(page);
-    await page.clock.install();
-    await refuseStateWritesOnDemand(page);
-    await page.goto('/');
     // Given a failed auto-save is being announced,
-    const storedBefore = await failASave(page, 'Return Cup');
-    await freezeTheClock(page);
+    const storedBefore = await openAFailingTabOnAFrozenClock(page, 'Return Cup');
     // and the Organizer switches away from the page (it becomes hidden: the save
     // is tried once, at once, and still refused),
     const refused = await refusedStateWrites(page);
@@ -4100,12 +4125,8 @@ test.describe('A visible warning when the auto-save fails', () => {
     ['pageshow', 'the page comes back from the back/forward cache']]) {
     test(`R-STATE-PERSIST: a failed save is retried without a further change when ${trigger}`, async ({ page }) => {
       const errors = collectErrors(page);
-      await page.clock.install();
-      await refuseStateWritesOnDemand(page);
-      await page.goto('/');
       // Given a failed auto-save is being announced, and storage is freed,
-      const storedBefore = await failASave(page, 'Window Cup');
-      await freezeTheClock(page);
+      const storedBefore = await openAFailingTabOnAFrozenClock(page, 'Window Cup');
       await freeStorageQuietly(page, storedBefore);
 
       // when the Organizer returns to the page (a window that was never hidden),
@@ -4143,6 +4164,7 @@ test.describe('A visible warning when the auto-save fails', () => {
         if (type === 'hidden') {
           Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
           document.dispatchEvent(new Event('visibilitychange'));
+          delete document.visibilityState; // the page's own again
         } else {
           window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
         }
@@ -4159,11 +4181,7 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   test('Retries are coalesced: a burst of triggers while saves still fail is one retry, and leaves the warning as it was', async ({ page }) => {
     const errors = collectErrors(page);
-    await page.clock.install();
-    await refuseStateWritesOnDemand(page);
-    await page.goto('/');
-    const storedBefore = await failASave(page, 'Storm Cup');
-    await freezeTheClock(page);
+    const storedBefore = await openAFailingTabOnAFrozenClock(page, 'Storm Cup');
     await page.evaluate(() => {
       window.warningChanges = [];
       new MutationObserver((records) => window.warningChanges.push(...records.map((r) => r.type)))
@@ -4267,10 +4285,8 @@ test.describe('A visible warning when the auto-save fails', () => {
 
     // when they have settled and two more seconds pass,
     const attempts = async () => (await stateWriteAttempts(first)) + (await stateWriteAttempts(second));
-    const beforeTheFreeze = await attempts();
-    await freezeTheClock(first);
-    // (the freeze's jump ran whatever was pending: in both tabs, nothing was)
-    expect(await attempts()).toBe(beforeTheFreeze);
+    // (the freeze's jump runs whatever is pending in either tab: nothing was)
+    await freezeTheClock(first, attempts);
     await context.clock.runFor(RETRY_DELAY_MS * 1.5);
     const settled = await attempts();
     await context.clock.runFor(2 * RETRY_DELAY_MS);
@@ -4284,13 +4300,9 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   test('A failing tab does not answer another tab saving the state: no retry, no overwrite', async ({ page, context }) => {
     const errors = collectErrors(page);
-    await page.clock.install();
-    await refuseStateWritesOnDemand(page);
-    await page.goto('/');
     // Given a failed auto-save is being announced, and storage is freed (so a
     // retry here would store this tab's state),
-    const storedBefore = await failASave(page, 'Shared Cup');
-    await freezeTheClock(page);
+    const storedBefore = await openAFailingTabOnAFrozenClock(page, 'Shared Cup');
     await freeStorageQuietly(page, storedBefore);
     const attempts = await stateWriteAttempts(page);
     await page.evaluate((key) => {
@@ -4300,19 +4312,25 @@ test.describe('A visible warning when the auto-save fails', () => {
 
     // when another tab of the app saves the state (it resumes Shared Cup and
     // records a score of its own),
-    const other = await context.newPage();
-    await other.goto('/');
+    const other = await anotherTabOnARunningClock(context, async (ctx) => {
+      const tab = await ctx.newPage();
+      await tab.goto('/');
+      return tab;
+    });
     await expect(other.locator('#tournamentTitle')).toHaveText('Shared Cup');
     await leftScore(other, 1).fill('20');
     await expect.poll(async () => (await storedJson(other, STATE_KEY)).schedule.rounds[0].matches[1].result)
       .toEqual({ left: '20', right: '4' });
     const theirs = await storedRaw(other, STATE_KEY);
+    // (their save did happen: the state stored is theirs, not the one from before)
+    expect(theirs).not.toBe(storedBefore);
     await expect.poll(() => page.evaluate(() => window.stateEventsSeen)).toBeGreaterThan(0);
-    await other.close();
 
     // then this tab neither retries nor writes over that save: past the retry
-    // delay (on its clock) it has attempted nothing,
+    // delay (on its clock, and the other tab, still open, runs on the same
+    // clock) it has attempted nothing,
     await page.clock.runFor(RETRY_DELAY_MS * 1.5);
+    await other.close();
     expect(await stateWriteAttempts(page)).toBe(attempts);
     expect(await storedRaw(page, STATE_KEY)).toBe(theirs);
     // and its own warning stays: its score is still not saved.
@@ -4323,15 +4341,12 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   test('R-STATE-PERSIST: another tab shortening a value retries the failed save; adding, growing or rewriting one at its size does not', async ({ page, context }) => {
     const errors = collectErrors(page);
-    await page.clock.install();
-    await refuseStateWritesOnDemand(page);
-    await page.goto('/');
     // Another app on this shared origin holds a value.
-    await page.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'x'.repeat(100)));
     // Given a failed auto-save is being announced, and storage is freed (so a
     // retry here would work),
-    const storedBefore = await failASave(page, 'Shrink Cup');
-    await freezeTheClock(page);
+    const storedBefore = await openAFailingTabOnAFrozenClock(page, 'Shrink Cup', {
+      prepare: () => page.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'x'.repeat(100))),
+    });
     await freeStorageQuietly(page, storedBefore);
     const attempts = await stateWriteAttempts(page);
     await page.evaluate(() => {
@@ -4340,7 +4355,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     });
 
     // when another tab adds a value, rewrites one at its size and grows it,
-    const other = await anotherTab(context);
+    const other = await anotherTabOnARunningClock(context);
     await other.evaluate(() => {
       localStorage.setItem('another-app-new-key', 'x');
       localStorage.setItem('another-app-on-this-origin', 'y'.repeat(100));
@@ -4361,7 +4376,6 @@ test.describe('A visible warning when the auto-save fails', () => {
     // then the warning is no longer shown,
     await expectNoWarning(page);
     await other.close();
-    await page.clock.resume();
     // and progress is saved: the score entered while saving failed is stored and restored.
     await expectTheScoreSavedAndRestored(page);
     expect(errors).toEqual([]);
@@ -4369,13 +4383,9 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   test('A save made while a retry is pending cancels the retry, which would only repeat it', async ({ page }) => {
     const errors = collectErrors(page);
-    await page.clock.install();
-    await refuseStateWritesOnDemand(page);
-    await page.goto('/');
-    // Given storage still refuses the state and the warning is shown,
-    await failASave(page, 'Cancel Cup');
-    // (the retry delay passes only when the test says so),
-    await freezeTheClock(page);
+    // Given storage still refuses the state and the warning is shown (the retry
+    // delay passes only when the test says so),
+    await openAFailingTabOnAFrozenClock(page, 'Cancel Cup');
     const refused = await refusedStateWrites(page);
 
     // when a retry is pending (a return to the window) and the Organizer enters
@@ -4412,10 +4422,9 @@ test.describe('A visible warning when the auto-save fails', () => {
         if (dialog.type() === 'beforeunload') dialog.dismiss();
         else dialog.accept();
       });
-      await refuseStateWritesOnDemand(page);
-      await page.goto('/');
-      // Given a failed auto-save is being announced,
-      const storedBefore = await failASave(page, 'Before Cup');
+      // Given a failed auto-save is being announced (on a frozen clock: the
+      // focus after the cancelled prompt must not arm a retry that runs by itself),
+      const storedBefore = await openAFailingTabOnAFrozenClock(page, 'Before Cup');
       // and the Organizer tried to leave and stayed (the prompt cancelled),
       await page.close({ runBeforeUnload: true });
       await expect.poll(() => prompts).toEqual(['beforeunload']);
@@ -4461,10 +4470,9 @@ test.describe('A visible warning when the auto-save fails', () => {
       if (dialog.type() === 'beforeunload' && stay) dialog.dismiss();
       else dialog.accept();
     });
-    await refuseStateWritesOnDemand(page);
-    await page.goto('/');
-    // Given a failed auto-save is being announced,
-    const storedBefore = await failASave(page, 'Again Cup');
+    // Given a failed auto-save is being announced (on a frozen clock: the focus
+    // after the cancelled prompt must not arm a retry that runs by itself),
+    const storedBefore = await openAFailingTabOnAFrozenClock(page, 'Again Cup');
     // and the Organizer tried to leave and stayed (the prompt cancelled),
     await page.close({ runBeforeUnload: true });
     await expect.poll(() => prompts).toEqual(['beforeunload']);
@@ -4474,6 +4482,7 @@ test.describe('A visible warning when the auto-save fails', () => {
 
     // when the Organizer reloads the page (any prompt now would be confirmed),
     stay = false;
+    await page.clock.resume(); // (the reloaded app runs on a clock that ticks)
     await page.reload();
 
     // then the save on leaving was tried again and worked: nothing asked,
@@ -4526,7 +4535,7 @@ test.describe('A visible warning when the auto-save fails', () => {
       document.dispatchEvent(new Event('visibilitychange'));
       delete document.visibilityState;
     });
-    const other = await anotherTab(context);
+    const other = await anotherTabOnARunningClock(context);
     await other.evaluate(() => localStorage.removeItem('another-app-on-this-origin'));
     await expect.poll(() => page.evaluate(() => window.storageEventsSeen)).toBe(4);
     await other.close();
