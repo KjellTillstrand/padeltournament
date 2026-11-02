@@ -48,12 +48,17 @@
 //     patterns match with Unicode case folding (the u flag), so compatibility
 //     forms (fullwidth letters and brackets, the long s) and case-fold
 //     equivalents (the Kelvin sign for k) count as the letters they stand
-//     for. Whether GitHub folds them is not known; flagging them is the
-//     fail-closed side. NFKC cannot hide a plain marker: the marker's own
-//     characters (ASCII letters, spaces, tabs, brackets, the colon and the
-//     hyphen) are stable under it, and a combining mark composing into one of
-//     them would already split the marker. It neither adds nor removes line
-//     breaks, so the line numbers reported are those of the original text.
+//     for. Two letters that neither NFKC nor that case folding maps to i, the
+//     capital I with dot above (U+0130) and the dotless small i (U+0131), are
+//     mapped to an ASCII i after NFKC, one character for one, so the length
+//     and the line count stay the same. Whether GitHub folds any of these is
+//     not known; flagging them is the fail-closed side. NFKC cannot hide a
+//     plain marker: none of a marker's structural characters (spaces, tabs,
+//     brackets, the colon, the hyphen) composes with anything, and a letter
+//     composes only with a combining mark that follows it, which, inside the
+//     marker's span, would already split the marker in the original text. It
+//     neither adds nor removes line breaks, so the line numbers reported are
+//     those of the original text.
 // The marker strings are built at runtime from their words: this file, its
 // self-test and the workflow never spell one, so the tracked-file scan passes
 // on them and a commit message quoting this code cannot carry one.
@@ -61,10 +66,13 @@
 // Re-checking: the workflow (.github/workflows/skip-markers.yml) runs on
 // opened, edited, reopened and synchronize, so editing the PR title or body,
 // or pushing, re-runs it with the current text. Its per-PR concurrency group
-// cancels a run still in progress when a newer event arrives, so the result
-// land_proposal reads is the newest one (pending until it finishes), never a
-// superseded run. Re-running a failed run from the Actions page reuses the
-// old event payload, and with it the old title and body.
+// cancels a run still in progress when a newer event arrives. A cancelled run
+// reads as failing, and the newest run as pending, until the newest run
+// finishes, so land_proposal refuses the PR until then. Narrowed, not closed:
+// a run that had already finished green is not cancelled, and stays the PR's
+// only check for the seconds before the new run's check appears (the operator
+// approves every merge). Re-running a failed run from the Actions page reuses
+// the old event payload, and with it the old title and body.
 // Accepted residual: if the PR's HEAD commit carries a marker, GitHub skips
 // every pull_request run of the PR, this one included. The PR then reports no
 // checks at all, and the forge port's land_proposal already refuses a PR whose
@@ -102,12 +110,20 @@ export const TRAILER_RE = new RegExp(`^[ \\t]*(?:[-*+][ \\t]+)?${TRAILER_KEY}[ \
 
 const lineAt = (text, index) => text.slice(0, index).split('\n').length;
 
+// The capital I with dot above and the dotless small i: neither NFKC nor the
+// u flag's case folding maps them to i (see the header).
+const TURKIC_I = /[\u0130\u0131]/g;
+
+// The text findMarkers() matches against: line breaks unified, then NFKC,
+// then TURKIC_I mapped to i. Neither of the last two steps changes the line
+// count (see the header).
+export const normalise = (text) => text.replace(/\r\n?/g, '\n').normalize('NFKC').replace(TURKIC_I, 'i');
+
 // Every marker in `text`, in order: { form, line } where form names the marker
 // in words (never the marker itself) and line is 1-based.
 export function findMarkers(text) {
   if (typeof text !== 'string') throw new TypeError('findMarkers needs a string');
-  // Line breaks first, then NFKC (see the header: it keeps the line count).
-  const t = text.replace(/\r\n?/g, '\n').normalize('NFKC');
+  const t = normalise(text);
   const found = [];
   for (const words of MARKER_WORDS) {
     for (const m of t.matchAll(markerPattern(words))) {

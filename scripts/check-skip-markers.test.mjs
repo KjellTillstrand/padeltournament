@@ -16,8 +16,9 @@
 //   - the wiring of .github/workflows/skip-markers.yml, read as text: the
 //     triggers, title and body only through env, no expression inside run:,
 //     both scan flags, read-only permissions, no persisted credentials, the
-//     per-PR concurrency group. Each assertion is also run against a mutant
-//     of the workflow, which must fail it.
+//     per-PR concurrency group, no if: and no continue-on-error other than
+//     false. Each assertion is also run against a mutant of the workflow,
+//     which must fail it.
 // Every marker below is BUILT from its words at runtime (marker(), trailer()),
 // never written out, so this file passes the tracked-file scan and a commit
 // message quoting it cannot carry a marker.
@@ -31,7 +32,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  findMarkers, InputError, MARKER_WORDS, markerPattern, TRAILER_KEY, TRAILER_RE, trackedFileSources,
+  findMarkers, InputError, MARKER_WORDS, markerPattern, normalise, TRAILER_KEY, TRAILER_RE, trackedFileSources,
 } from './check-skip-markers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +52,9 @@ const lines = (text) => findMarkers(text).map((f) => f.line);
 const cp = (...codes) => String.fromCodePoint(...codes);
 const LONG_S = cp(0x17f); // folds (and NFKC-normalises) to s
 const KELVIN = cp(0x212a); // the Kelvin sign: folds to k, NFKC gives K
+const DOTTED_I = cp(0x130); // capital I with dot above: neither NFKC nor u folds it to i
+const DOTLESS_I = cp(0x131); // dotless small i: neither NFKC nor u folds it to i
+const COMBINING_DOT = cp(0x307); // I followed by it composes (NFKC) to DOTTED_I
 // Fullwidth forms of printable ASCII (U+FF01..U+FF5E); NFKC maps them back.
 const fullwidth = (s) => [...s].map((c) => cp(c.codePointAt(0) + 0xfee0)).join('');
 const FW_L = fullwidth(L);
@@ -177,9 +181,39 @@ const unitCases = [
     const text = `one\n${marker(fullwidth('skip'), 'ci')}\r\nthree\n${FW_L}actions skip${FW_R} and ${marker(LONG_S + 'kip', 'ci')}`;
     assert.deepStrictEqual(lines(text), [2, 4, 4]);
   }],
+  ['the dotted capital I and the dotless i count as i, in every bracketed form and the trailer', () => {
+    for (const ch of [DOTTED_I, DOTLESS_I]) {
+      for (const [a, b] of MARKER_WORDS) {
+        const v = marker(a.replaceAll('i', ch), b.replaceAll('i', ch));
+        assert.notStrictEqual(v, marker(a, b), `${a} ${b} holds an i`);
+        assert.deepStrictEqual(findMarkers(v), [{ form: `"${a} ${b}" in square brackets`, line: 1 }], `${a} ${b}`);
+      }
+      assert.strictEqual(findMarkers(marker('sk' + ch + 'p', 'c' + ch)).length, 1);
+      assert.strictEqual(findMarkers(`x\n\n${TRAILER_KEY.replace('i', ch)}: true`).length, 1);
+    }
+    // The decomposed spelling: I and a combining dot, composed by NFKC first.
+    assert.strictEqual(findMarkers(marker('sk' + 'I' + COMBINING_DOT + 'p', 'ci')).length, 1);
+  }],
+  ['without the i mapping, NFKC and the u flag alone miss them (the gap it closes)', () => {
+    const p = markerPattern(['skip', 'ci']);
+    for (const ch of [DOTTED_I, DOTLESS_I]) {
+      const v = marker('sk' + ch + 'p', 'ci');
+      assert.strictEqual(withFlags(p, p.flags).test(v.normalize('NFKC')), false, 'NFKC and u alone');
+      assert.strictEqual(withFlags(p, p.flags).test(normalise(v)), true, 'with the mapping');
+    }
+  }],
+  ['the i mapping keeps the length and the line numbers', () => {
+    const s = `${DOTTED_I}x${DOTLESS_I}\n${DOTLESS_I}`;
+    assert.strictEqual(normalise(s).length, s.length);
+    assert.strictEqual(normalise(s), 'ixi\ni');
+    const text = `one\n${marker('sk' + DOTLESS_I + 'p', 'ci')}\r\nthree\n${DOTTED_I}${marker('c' + DOTTED_I, 'skip')}`;
+    assert.deepStrictEqual(lines(text), [2, 4]);
+  }],
   ['look-alikes of a non-marker stay non-markers', () => {
     for (const s of [marker(fullwidth('skipping'), 'ci'), marker(LONG_S + 'kip', 'tests'), FW_L + 'skip' + FW_R,
-      `${fullwidth(TRAILER_KEY)}: false`, `a ${TRAILER_KEY.replace('k', KELVIN)}: true here`]) {
+      `${fullwidth(TRAILER_KEY)}: false`, `a ${TRAILER_KEY.replace('k', KELVIN)}: true here`,
+      marker('sk' + DOTLESS_I + 'pping', 'ci'), marker('skip', 'c' + DOTTED_I + 's'), marker('no', 'c' + DOTLESS_I + 'd'),
+      `a ${TRAILER_KEY.replace('i', DOTLESS_I)}: true here`, `${DOTTED_I}stanbul, ${DOTLESS_I}s${DOTLESS_I}k, ${L}${DOTTED_I}${R}`]) {
       assert.deepStrictEqual(findMarkers(s), [], s);
     }
   }],
@@ -324,6 +358,20 @@ const cliCases = [
     const r = cliPr(fx);
     assert.strictEqual(r.code, 1, r.out);
     assert.match(r.out, /author, line 1: CI-skip marker \("skip ci" in square brackets\)/);
+  }],
+  ['CLI --pr: a marker with the dotless i in a commit message, or the dotted capital I in an author name, fails red', () => {
+    const msg = repo([`docs: a ${marker('sk' + DOTLESS_I + 'p', 'c' + DOTLESS_I)} push\n`]);
+    let r = cliPr(msg);
+    assert.strictEqual(r.code, 1, r.out);
+    assert.match(r.out, new RegExp(`::error::commit ${msg.head.slice(0, 12)} message, line 1: CI-skip marker \\("skip ci" in square brackets\\)`));
+    const author = repo([{ message: 'feat: clean\n', env: { GIT_AUTHOR_NAME: `A ${marker('no', 'C' + DOTTED_I)} B` } }]);
+    r = cliPr(author);
+    assert.strictEqual(r.code, 1, r.out);
+    assert.match(r.out, new RegExp(`::error::commit ${author.head.slice(0, 12)} author, line 1: CI-skip marker \\("no ci" in square brackets\\)`));
+    // A look-alike of a non-marker in the same places stays clean.
+    const clean = repo([{ message: `docs: ${marker('sk' + DOTLESS_I + 'pping', 'ci')}\n`, env: { GIT_AUTHOR_NAME: `${DOTTED_I}lker ${DOTLESS_I}` } }]);
+    r = cliPr(clean);
+    assert.strictEqual(r.code, 0, r.out);
   }],
   ['CLI --pr: commits outside base..head are not scanned', () => {
     const fx = repo([`chore: old ${FORMS[0]}\n`, ...CLEAN_MESSAGES]);
@@ -504,6 +552,18 @@ function workflowWiringProblems(text) {
   need(/^concurrency:\n {2}group: [^\n]*\$\{\{ github\.event\.pull_request\.number \}\}[^\n]*\n {2}cancel-in-progress: true[ \t]*$/m.test(t),
     'no top-level concurrency group keyed on the PR number with cancel-in-progress: true');
   need(/^jobs:\n {2}scan:\n(?: *#[^\n]*\n)* {4}name: CI-skip marker check[ \t]*$/m.test(t), 'job scan is not named CI-skip marker check');
+
+  // Nothing may skip the check or turn its failure green: no if: on any job
+  // or step (if: false skips it; a skipped job or step does not read as red),
+  // and no continue-on-error other than false (true, or an expression, lets
+  // a red step or job leave the check green). A key may be quoted.
+  lines.forEach((line, i) => {
+    const m = /^ *(?:- )?(["']?)(if|continue-on-error)\1[ \t]*:(.*)$/.exec(line);
+    if (!m) return;
+    const value = m[3].replace(/(?:^|[ \t])#.*$/, '').trim();
+    if (m[2] === 'if') problems.push(`an if: at line ${i + 1} can skip the check`);
+    else if (value !== 'false') problems.push(`continue-on-error: ${value || '(no value)'} at line ${i + 1} can turn a failure green`);
+  });
   return problems;
 }
 
@@ -515,9 +575,19 @@ const mutant = (from, to) => {
   return text.replace(from, to);
 };
 
+// Insertion points for the if: and continue-on-error mutants.
+const JOB_KEY = '    timeout-minutes: 10\n';
+const TEST_STEP = '      - name: Self-test skip marker check\n';
+const SCAN_STEP = '      - name: Fail on a skip marker in the PR title, body, commits or tracked files\n';
+
 const wiringCases = [
   ['the workflow is wired right: triggers, env-only title and body, flags, permissions, concurrency, name', () => {
     assert.deepStrictEqual(workflowWiringProblems(workflowText()), []);
+  }],
+  ['continue-on-error: false is allowed, on the job and on a step', () => {
+    const text = mutant(JOB_KEY, `${JOB_KEY}    continue-on-error: false\n`)
+      .replace(SCAN_STEP, `${SCAN_STEP}        continue-on-error: false # explicit\n`);
+    assert.deepStrictEqual(workflowWiringProblems(text), []);
   }],
   ['each wiring mutant fails the wiring check', () => {
     const mutants = [
@@ -538,11 +608,23 @@ const wiringCases = [
       ['concurrency group not per PR', mutant('${{ github.event.pull_request.number }}', '${{ github.workflow }}'), /concurrency/],
       ['pull_request_target', mutant('  pull_request:\n', '  pull_request_target:\n'), /pull_request/],
       ['job name generic', mutant('name: CI-skip marker check', 'name: scan'), /named CI-skip marker check/],
+      ['job-level continue-on-error: true', mutant(JOB_KEY, `${JOB_KEY}    continue-on-error: true\n`), /continue-on-error: true/],
+      ['scan step continue-on-error: true', mutant(SCAN_STEP, `${SCAN_STEP}        continue-on-error: true\n`), /continue-on-error: true/],
+      ['self-test step continue-on-error: true', mutant(TEST_STEP, `${TEST_STEP}        continue-on-error: true\n`), /continue-on-error: true/],
+      ['scan step continue-on-error as an expression', mutant(SCAN_STEP, `${SCAN_STEP}        continue-on-error: \${{ always() }}\n`),
+        /continue-on-error: \$\{\{ always\(\) \}\}/],
+      ['scan step if: false', mutant(SCAN_STEP, `${SCAN_STEP}        if: false\n`), /an if: at line/],
+      ['self-test step if: false', mutant(TEST_STEP, `${TEST_STEP}        if: false\n`), /an if: at line/],
+      ['job-level if: false', mutant(JOB_KEY, `${JOB_KEY}    if: false\n`), /an if: at line/],
+      ['job-level if: always()', mutant(JOB_KEY, `${JOB_KEY}    if: always()\n`), /an if: at line/],
+      ['a quoted if: key on the scan step', mutant(SCAN_STEP, `${SCAN_STEP}        'if': false\n`), /an if: at line/],
     ];
-    for (const [what, text, re] of mutants) {
+    // Every missed mutant is named, not only the first.
+    const missed = mutants.flatMap(([what, text, re]) => {
       const problems = workflowWiringProblems(text);
-      assert.ok(problems.some((p) => re.test(p)), `${what}: expected a problem matching ${re}, got ${JSON.stringify(problems)}`);
-    }
+      return problems.some((p) => re.test(p)) ? [] : [`${what}: expected a problem matching ${re}, got ${JSON.stringify(problems)}`];
+    });
+    assert.deepStrictEqual(missed, [], `${missed.length} of ${mutants.length} mutants passed the wiring check:\n${missed.join('\n')}`);
   }],
 ];
 

@@ -11,7 +11,8 @@ name: Skip markers
 # tracked file (so no file holds a marker a later commit message could quote).
 # Its header documents what counts as a marker; its self-test runs first,
 # here, and also asserts this file's wiring (triggers, env-only title and
-# body, permissions, concurrency).
+# body, permissions, concurrency, and no if: or continue-on-error that could
+# skip a step or turn its failure green).
 #
 # A separate workflow, not a step in Test and deploy, because the check must
 # re-run when the PR title or body is edited (the edited type below). Adding
@@ -31,10 +32,14 @@ on:
     types: [opened, edited, reopened, synchronize]
 
 # One run per PR at a time: a newer event (an edit, a push) cancels the run
-# still in progress, so the check land_proposal reads is the newest one, and
-# it reads as pending until that run finishes. Without this, an older run
-# finishing last could leave a stale result (green after an edit that added a
-# marker, or red after one that removed it) as the PR's check.
+# still in progress. A cancelled run reads as failing, and the newest run as
+# pending, until the newest run finishes, so land_proposal refuses the PR
+# until then. Without this, an older run finishing last could leave a stale
+# result (green after an edit that added a marker, or red after one that
+# removed it) as the PR's check. Narrowed, not closed: a run that had already
+# finished green is not cancelled, and stays the PR's only check for the
+# seconds before the new run's check appears (the operator approves every
+# merge).
 concurrency:
   group: skip-markers-${{ github.event.pull_request.number }}
   cancel-in-progress: true
