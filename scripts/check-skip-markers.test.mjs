@@ -4,13 +4,20 @@
 //
 // Usage: node scripts/check-skip-markers.test.mjs
 //
-// Two layers:
-//   - the matcher findMarkers(), against positive and negative texts;
+// Three layers:
+//   - the matcher findMarkers(), against positive and negative texts,
+//     including Unicode look-alikes built from code points;
 //   - the CLI as a black box (a child node process, as CI runs it) against a
 //     throwaway git repository in a private temp dir (removed afterwards),
-//     proving it fails red on a marker in the title, the body, a commit or a
-//     tracked file, passes clean input, and fails closed (exit 2) when it
-//     cannot read its input.
+//     proving it fails red on a marker in the title, the body, a commit
+//     message, a commit author or committer identity, or a tracked file,
+//     passes clean input, and fails closed (exit 2) when it cannot read its
+//     input (an unreadable tracked file included);
+//   - the wiring of .github/workflows/skip-markers.yml, read as text: the
+//     triggers, title and body only through env, no expression inside run:,
+//     both scan flags, read-only permissions, no persisted credentials, the
+//     per-PR concurrency group. Each assertion is also run against a mutant
+//     of the workflow, which must fail it.
 // Every marker below is BUILT from its words at runtime (marker(), trailer()),
 // never written out, so this file passes the tracked-file scan and a commit
 // message quoting it cannot carry a marker.
@@ -18,12 +25,14 @@
 
 import assert from 'node:assert';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { findMarkers, MARKER_WORDS, TRAILER_KEY } from './check-skip-markers.mjs';
+import {
+  findMarkers, InputError, MARKER_WORDS, markerPattern, TRAILER_KEY, TRAILER_RE, trackedFileSources,
+} from './check-skip-markers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = resolve(HERE, 'check-skip-markers.mjs');
@@ -37,6 +46,17 @@ const trailer = (sep = ': ') => TRAILER_KEY + sep + 'true';
 const FORMS = MARKER_WORDS.map(([a, b]) => marker(a, b));
 const forms = (text) => findMarkers(text).map((f) => f.form);
 const lines = (text) => findMarkers(text).map((f) => f.line);
+
+// Look-alikes, from code points only (this file holds none of them).
+const cp = (...codes) => String.fromCodePoint(...codes);
+const LONG_S = cp(0x17f); // folds (and NFKC-normalises) to s
+const KELVIN = cp(0x212a); // the Kelvin sign: folds to k, NFKC gives K
+// Fullwidth forms of printable ASCII (U+FF01..U+FF5E); NFKC maps them back.
+const fullwidth = (s) => [...s].map((c) => cp(c.codePointAt(0) + 0xfee0)).join('');
+const FW_L = fullwidth(L);
+const FW_R = fullwidth(R);
+// A fresh copy of a pattern with other flags, to show what the u flag adds.
+const withFlags = (re, flags) => new RegExp(re.source, flags);
 
 const unitCases = [
   ['there are exactly the five bracketed forms GitHub documents', () => {
@@ -121,6 +141,48 @@ const unitCases = [
       assert.deepStrictEqual(findMarkers(s), [], s);
     }
   }],
+  ['look-alike letters count: the long s and the Kelvin sign, in every bracketed form and the trailer', () => {
+    for (const [a, b] of MARKER_WORDS) {
+      const longS = (w) => w.replace('s', LONG_S);
+      const kelvin = (w) => w.replace('k', KELVIN);
+      for (const v of [marker(longS(a), longS(b)), marker(kelvin(a), kelvin(b))]) {
+        if (v === marker(a, b)) continue; // the pair has neither letter
+        assert.strictEqual(findMarkers(v).length, 1, `${a} ${b}`);
+      }
+    }
+    assert.strictEqual(findMarkers(marker(LONG_S + 'kip', 'ci')).length, 1);
+    assert.strictEqual(findMarkers(marker('s' + KELVIN + 'ip', 'ci')).length, 1);
+    assert.strictEqual(findMarkers(`x\n\n${TRAILER_KEY.replace('k', KELVIN)}: true`).length, 1);
+    assert.strictEqual(findMarkers(`x\n\n${TRAILER_KEY.replace('s', LONG_S)}: true`).length, 1);
+  }],
+  ['the u flag alone folds the long s and the Kelvin sign (without it, they slip through)', () => {
+    const longS = marker(LONG_S + 'kip', 'ci');
+    const kelvin = marker('s' + KELVIN + 'ip', 'ci');
+    const p = markerPattern(['skip', 'ci']);
+    assert.ok(p.flags.includes('u') && TRAILER_RE.flags.includes('u'), 'both patterns carry the u flag');
+    for (const v of [longS, kelvin]) {
+      assert.strictEqual(withFlags(p, p.flags).test(v), true, 'with u');
+      assert.strictEqual(withFlags(p, p.flags.replace('u', '')).test(v), false, 'without u (the gap this closes)');
+    }
+    const t = TRAILER_KEY.replace('k', KELVIN) + ': true';
+    assert.strictEqual(withFlags(TRAILER_RE, TRAILER_RE.flags).test(t), true);
+    assert.strictEqual(withFlags(TRAILER_RE, TRAILER_RE.flags.replace('u', '')).test(t), false);
+  }],
+  ['fullwidth letters and brackets count (NFKC), with the original line numbers', () => {
+    assert.strictEqual(findMarkers(marker(fullwidth('skip'), fullwidth('ci'))).length, 1);
+    assert.strictEqual(findMarkers(marker(fullwidth('NO'), 'ci')).length, 1);
+    assert.strictEqual(findMarkers(FW_L + 'ci skip' + FW_R).length, 1);
+    assert.strictEqual(findMarkers(FW_L + fullwidth('skip') + cp(0x3000) + fullwidth('actions') + FW_R).length, 1);
+    assert.strictEqual(findMarkers(`x\n\n${fullwidth(TRAILER_KEY)}${fullwidth(':')} ${fullwidth('true')}`).length, 1);
+    const text = `one\n${marker(fullwidth('skip'), 'ci')}\r\nthree\n${FW_L}actions skip${FW_R} and ${marker(LONG_S + 'kip', 'ci')}`;
+    assert.deepStrictEqual(lines(text), [2, 4, 4]);
+  }],
+  ['look-alikes of a non-marker stay non-markers', () => {
+    for (const s of [marker(fullwidth('skipping'), 'ci'), marker(LONG_S + 'kip', 'tests'), FW_L + 'skip' + FW_R,
+      `${fullwidth(TRAILER_KEY)}: false`, `a ${TRAILER_KEY.replace('k', KELVIN)}: true here`]) {
+      assert.deepStrictEqual(findMarkers(s), [], s);
+    }
+  }],
   ['an empty text has no marker; a non-string is refused', () => {
     assert.deepStrictEqual(findMarkers(''), []);
     assert.throws(() => findMarkers(undefined), TypeError);
@@ -143,20 +205,29 @@ const GIT_ENV = {
   GIT_AUTHOR_DATE: '2026-10-28T12:00:00Z',
   GIT_COMMITTER_DATE: '2026-10-28T12:00:00Z',
 };
-const gitIn = (dir, args, input) => execFileSync('git', ['-C', dir, ...args], { env: GIT_ENV, input, encoding: 'utf8' }).trim();
+const gitIn = (dir, args, input, env = {}) =>
+  execFileSync('git', ['-C', dir, ...args], { env: { ...GIT_ENV, ...env }, input, encoding: 'utf8' }).trim();
 
-// A fixture repository: files (name -> content) committed in a base commit,
-// then one commit per message on top, each built with plumbing (commit-tree,
-// which runs no hooks). Returns { dir, base, head }.
+// A fixture repository: files (name -> content, a name may hold one
+// directory) committed in a base commit, then one commit per message on top,
+// each built with plumbing (commit-tree, which runs no hooks). A message is a
+// string, or { message, env } to set the commit's identity (GIT_AUTHOR_NAME
+// and the like). Returns { dir, base, head }.
 function fixtureRepo(messages, files = { 'README.md': 'clean\n' }) {
   const dir = mkdtempSync(join(tmpdir(), 'skip-markers-'));
   gitIn(dir, ['init', '-q']);
-  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    writeFileSync(join(dir, name), content);
+  }
   gitIn(dir, ['add', '-A']);
   const tree = gitIn(dir, ['write-tree']);
   const base = gitIn(dir, ['commit-tree', tree], 'chore: base\n');
   let head = base;
-  for (const m of messages) head = gitIn(dir, ['commit-tree', tree, '-p', head], m);
+  for (const m of messages) {
+    const { message, env } = typeof m === 'string' ? { message: m, env: {} } : m;
+    head = gitIn(dir, ['commit-tree', tree, '-p', head], message, env);
+  }
   gitIn(dir, ['update-ref', 'HEAD', head]);
   return { dir, base, head };
 }
@@ -189,7 +260,8 @@ const cliCases = [
   ['CLI --pr: clean title, body and commits pass (exit 0)', () => {
     const r = cliPr(repo(CLEAN_MESSAGES));
     assert.strictEqual(r.code, 0, r.out);
-    assert.match(r.out, /No CI-skip marker in 4 scanned text\(s\)\./);
+    // Title, body, and per commit its message, author and committer.
+    assert.match(r.out, /No CI-skip marker in 8 scanned text\(s\)\./);
   }],
   ['CLI --pr: an empty body is allowed', () => {
     const r = cliPr(repo(CLEAN_MESSAGES), { PR_BODY: '' });
@@ -224,7 +296,34 @@ const cliCases = [
     const r = cliPr(repo([`a ${FORMS[3]}\n`]), { PR_TITLE: FORMS[1], PR_BODY: FORMS[4] });
     assert.strictEqual(r.code, 1, r.out);
     assert.strictEqual(r.out.match(/::error::/g).length, 3, r.out);
-    assert.match(r.out, /3 CI-skip marker\(s\) found in 3 scanned text\(s\)\./);
+    assert.match(r.out, /3 CI-skip marker\(s\) found in 5 scanned text\(s\)\./);
+  }],
+  ['CLI --pr: a marker in a commit author name fails red, naming the commit and the author, not quoting it', () => {
+    for (const m of FORMS) {
+      const fx = repo([{ message: 'feat: clean message\n', env: { GIT_AUTHOR_NAME: `Some ${m} One` } }, ...CLEAN_MESSAGES]);
+      const sha = gitIn(fx.dir, ['rev-parse', `${fx.head}~2`]);
+      const r = cliPr(fx);
+      assert.strictEqual(r.code, 1, r.out);
+      assert.match(r.out, new RegExp(`::error::commit ${sha.slice(0, 12)} author, line 1: CI-skip marker \\("[a-z]+ [a-z]+" in square brackets\\)`));
+      assert.strictEqual(r.out.match(/::error::/g).length, 1, r.out);
+      assert.strictEqual(r.out.includes(m), false, 'the output must not quote the marker');
+    }
+  }],
+  ['CLI --pr: a marker in a committer name, or in an author email, fails red', () => {
+    const committer = repo([...CLEAN_MESSAGES, { message: 'fix: clean\n', env: { GIT_COMMITTER_NAME: `Bot ${FORMS[1]}` } }]);
+    let r = cliPr(committer);
+    assert.strictEqual(r.code, 1, r.out);
+    assert.match(r.out, new RegExp(`::error::commit ${committer.head.slice(0, 12)} committer, line 1: CI-skip marker \\("ci skip" in square brackets\\)`));
+    const email = repo([{ message: 'fix: clean\n', env: { GIT_AUTHOR_EMAIL: `x${marker('skip', 'actions', '')}@example.invalid` } }]);
+    r = cliPr(email);
+    assert.strictEqual(r.code, 1, r.out);
+    assert.match(r.out, new RegExp(`::error::commit ${email.head.slice(0, 12)} author, line 1: CI-skip marker \\("skip actions" in square brackets\\)`));
+  }],
+  ['CLI --pr: a look-alike marker (long s) in an author name fails red', () => {
+    const fx = repo([{ message: 'feat: clean\n', env: { GIT_AUTHOR_NAME: `A ${marker(LONG_S + 'kip', 'ci')} B` } }]);
+    const r = cliPr(fx);
+    assert.strictEqual(r.code, 1, r.out);
+    assert.match(r.out, /author, line 1: CI-skip marker \("skip ci" in square brackets\)/);
   }],
   ['CLI --pr: commits outside base..head are not scanned', () => {
     const fx = repo([`chore: old ${FORMS[0]}\n`, ...CLEAN_MESSAGES]);
@@ -261,6 +360,45 @@ const cliCases = [
     assert.match(r.out, /::error::notes\.md, line 2: CI-skip marker \("skip ci" in square brackets\)/);
     assert.strictEqual(r.out.match(/::error::/g).length, 1, r.out);
   }],
+  ['trackedFileSources: a tracked file that cannot be read is an InputError, not a pass or a finding', () => {
+    const fx = repo(CLEAN_MESSAGES, { 'README.md': 'clean\n', 'notes.md': 'clean too\n' });
+    const denied = (path) => {
+      if (path.endsWith('notes.md')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return readFileSync(path);
+    };
+    assert.throws(() => trackedFileSources(fx.dir, { readFile: denied }),
+      (err) => err instanceof InputError && /cannot read tracked file notes\.md: EACCES/.test(err.message));
+    assert.strictEqual(trackedFileSources(fx.dir).length, 2);
+  }],
+  ['CLI --tracked-files: an unreadable tracked file, or one in an unsearchable directory, exits 2 (never 1)', () => {
+    const fx = repo(CLEAN_MESSAGES, { 'README.md': 'clean\n', 'locked.md': 'clean\n', 'sub/inner.md': 'clean\n' });
+    const locked = join(fx.dir, 'locked.md');
+    const sub = join(fx.dir, 'sub');
+    // Mode bits do not stop root; then the CLI cannot be made to fail a read
+    // this way, and the in-process case above is the evidence.
+    chmodSync(locked, 0o000);
+    let readable = true;
+    try {
+      readFileSync(locked);
+    } catch {
+      readable = false;
+    }
+    try {
+      if (readable) return 'skip: file modes do not stop this user (root?)';
+      let r = cliPr(fx, {}, ['--tracked-files']);
+      assert.strictEqual(r.code, 2, r.out);
+      assert.match(r.out, /::error::Skip marker check could not read its input: cannot read tracked file locked\.md: EACCES/);
+      chmodSync(locked, 0o644);
+      chmodSync(sub, 0o600); // no search bit: lstat of sub/inner.md fails with EACCES
+      r = cliPr(fx, {}, ['--tracked-files']);
+      assert.strictEqual(r.code, 2, r.out);
+      assert.match(r.out, /cannot stat tracked file sub\/inner\.md: EACCES/);
+      return undefined;
+    } finally {
+      chmodSync(locked, 0o644);
+      chmodSync(sub, 0o755);
+    }
+  }],
   ['CLI --tracked-files: untracked files are not scanned', () => {
     const fx = repo(CLEAN_MESSAGES);
     writeFileSync(join(fx.dir, 'untracked.md'), FORMS[0]);
@@ -295,12 +433,131 @@ const cliCases = [
   }],
 ];
 
+// ---- workflow wiring, read as text ------------------------------------------
+
+// The run: commands of a workflow, one string each: a one-line run: value, or
+// the lines of a block scalar (run: | or run: >) indented below its key.
+function runBlocks(lines) {
+  const blocks = [];
+  lines.forEach((line, i) => {
+    const m = /^( *)(- )?run:[ \t]*(.*)$/.exec(line);
+    if (!m) return;
+    const keyIndent = m[1].length + (m[2] ? 2 : 0);
+    if (!/^[|>]/.test(m[3])) {
+      blocks.push({ at: i, text: m[3] });
+      return;
+    }
+    const body = [];
+    for (let j = i + 1; j < lines.length && (lines[j].trim() === '' || lines[j].search(/\S/) > keyIndent); j += 1) body.push(lines[j]);
+    blocks.push({ at: i, text: body.join('\n') });
+  });
+  return blocks;
+}
+
+// What is wrong with the wiring of skip-markers.yml, as messages; [] = right.
+function workflowWiringProblems(text) {
+  const problems = [];
+  const t = text.replace(/\r\n?/g, '\n');
+  const lines = t.split('\n');
+  const need = (ok, why) => { if (!ok) problems.push(why); };
+
+  const types = /^on:\n {2}pull_request:\n {4}types:[ \t]*\[([^\]\n]*)\][ \t]*$/m.exec(t);
+  need(types, 'on: pull_request: types: is not a one-line list right under on:');
+  const listed = types ? types[1].split(',').map((s) => s.trim()) : [];
+  for (const type of ['opened', 'edited', 'reopened', 'synchronize']) {
+    need(listed.includes(type), `pull_request types do not include ${type}`);
+  }
+  need(!/pull_request_target/.test(t), 'the workflow must not run on pull_request_target');
+
+  // Title and body: each named exactly once, as an env value.
+  for (const [name, field] of [['PR_TITLE', 'title'], ['PR_BODY', 'body']]) {
+    const uses = lines.map((l, i) => [l, i]).filter(([l]) => l.includes(`github.event.pull_request.${field}`));
+    need(uses.length === 1, `github.event.pull_request.${field} must appear exactly once (found ${uses.length})`);
+    if (uses.length !== 1) continue;
+    const [line, at] = uses[0];
+    const m = new RegExp(`^( +)${name}: \\$\\{\\{ github\\.event\\.pull_request\\.${field} \\}\\}$`).exec(line);
+    need(m, `the ${field} must reach the script as ${name} in env`);
+    if (!m) continue;
+    let k = at - 1;
+    while (k >= 0 && (lines[k].trim() === '' || lines[k].search(/\S/) >= m[1].length)) k -= 1;
+    need(k >= 0 && /^ *env:[ \t]*$/.test(lines[k]), `${name} is not inside an env: block`);
+  }
+
+  const runs = runBlocks(lines);
+  for (const r of runs) need(!r.text.includes('${{'), `an expression inside run: (line ${r.at + 1})`);
+  need(runs.some((r) => /^node scripts\/check-skip-markers\.test\.mjs$/m.test(r.text)), 'the self-test is not run');
+  const scanRun = runs.find((r) => /node scripts\/check-skip-markers\.mjs\b/.test(r.text));
+  need(scanRun, 'scripts/check-skip-markers.mjs is not run');
+  if (scanRun) {
+    const args = /node scripts\/check-skip-markers\.mjs\b([^\n]*)/.exec(scanRun.text)[1].trim().split(/\s+/);
+    need(args.includes('--pr') && args.includes('--tracked-files'), 'the check is not run with both --pr and --tracked-files');
+    // Its step (from the step's "- name:" to its run:) feeds it the PR variables.
+    let s = scanRun.at;
+    while (s >= 0 && !/^ *- name:/.test(lines[s])) s -= 1;
+    const step = lines.slice(Math.max(s, 0), scanRun.at).join('\n');
+    for (const v of ['PR_TITLE', 'PR_BODY', 'BASE_SHA', 'HEAD_SHA']) need(new RegExp(`^ +${v}: `, 'm').test(step), `the check step does not set ${v}`);
+  }
+
+  need(/^permissions:\n {2}contents: read[ \t]*\n(?! )/m.test(t), 'top-level permissions are not exactly contents: read');
+  need((t.match(/^ *permissions:/gm) ?? []).length === 1, 'permissions are declared more than once (a job-level grant)');
+  need(/^ +persist-credentials: false[ \t]*$/m.test(t), 'checkout does not set persist-credentials: false');
+  need(/^concurrency:\n {2}group: [^\n]*\$\{\{ github\.event\.pull_request\.number \}\}[^\n]*\n {2}cancel-in-progress: true[ \t]*$/m.test(t),
+    'no top-level concurrency group keyed on the PR number with cancel-in-progress: true');
+  need(/^jobs:\n {2}scan:\n(?: *#[^\n]*\n)* {4}name: CI-skip marker check[ \t]*$/m.test(t), 'job scan is not named CI-skip marker check');
+  return problems;
+}
+
+const workflowText = () => readFileSync(WORKFLOW, 'utf8');
+// A mutant of the workflow: `from` must occur (so the mutant really differs).
+const mutant = (from, to) => {
+  const text = workflowText();
+  assert.ok(text.includes(from), `mutant source text not found: ${from}`);
+  return text.replace(from, to);
+};
+
+const wiringCases = [
+  ['the workflow is wired right: triggers, env-only title and body, flags, permissions, concurrency, name', () => {
+    assert.deepStrictEqual(workflowWiringProblems(workflowText()), []);
+  }],
+  ['each wiring mutant fails the wiring check', () => {
+    const mutants = [
+      ['edited dropped from the triggers', mutant('opened, edited, reopened', 'opened, reopened'), /do not include edited/],
+      ['synchronize dropped', mutant(', synchronize]', ']'), /do not include synchronize/],
+      ['the title read inside run:', mutant('run: node scripts/check-skip-markers.mjs --pr --tracked-files',
+        'run: node scripts/check-skip-markers.mjs --pr --tracked-files "${{ github.event.pull_request.title }}"'), /expression inside run:|exactly once/],
+      ['an expression inside a block run:', mutant('run: node scripts/check-skip-markers.test.mjs',
+        'run: |\n          echo "${{ github.sha }}"\n          node scripts/check-skip-markers.test.mjs'), /expression inside run:/],
+      ['--tracked-files dropped', mutant('check-skip-markers.mjs --pr --tracked-files', 'check-skip-markers.mjs --pr'), /both --pr and --tracked-files/],
+      ['--pr dropped', mutant('check-skip-markers.mjs --pr --tracked-files', 'check-skip-markers.mjs --tracked-files'), /both --pr and --tracked-files/],
+      ['PR_BODY moved out of env', mutant('          PR_BODY: ${{ github.event.pull_request.body }}\n', '')
+        .replace('    steps:\n', '    steps:\n      # PR_BODY: ${{ github.event.pull_request.body }}\n'), /PR_BODY|body/],
+      ['write permission', mutant('  contents: read', '  contents: write'), /contents: read/],
+      ['a second permission', mutant('  contents: read\n', '  contents: read\n  pull-requests: write\n'), /contents: read/],
+      ['credentials persisted', mutant('persist-credentials: false', 'persist-credentials: true'), /persist-credentials/],
+      ['no cancel-in-progress', mutant('cancel-in-progress: true', 'cancel-in-progress: false'), /concurrency/],
+      ['concurrency group not per PR', mutant('${{ github.event.pull_request.number }}', '${{ github.workflow }}'), /concurrency/],
+      ['pull_request_target', mutant('  pull_request:\n', '  pull_request_target:\n'), /pull_request/],
+      ['job name generic', mutant('name: CI-skip marker check', 'name: scan'), /named CI-skip marker check/],
+    ];
+    for (const [what, text, re] of mutants) {
+      const problems = workflowWiringProblems(text);
+      assert.ok(problems.some((p) => re.test(p)), `${what}: expected a problem matching ${re}, got ${JSON.stringify(problems)}`);
+    }
+  }],
+];
+
 let failed = 0;
-const all = [...unitCases, ...cliCases];
+let skipped = 0;
+const all = [...unitCases, ...cliCases, ...wiringCases];
 try {
   for (const [name, fn] of all) {
     try {
-      await fn();
+      const result = await fn();
+      if (typeof result === 'string' && result.startsWith('skip')) {
+        skipped += 1;
+        console.log(`skip  ${name} (${result.slice(5).trim()})`);
+        continue;
+      }
       console.log(`ok    ${name}`);
     } catch (err) {
       failed += 1;
@@ -311,5 +568,6 @@ try {
   for (const dir of temps) rmSync(dir, { recursive: true, force: true });
 }
 
-console.log(`\n${all.length - failed}/${all.length} skip marker self-test cases passed`);
+console.log(`\n${all.length - failed - skipped}/${all.length} skip marker self-test cases passed` +
+  (skipped > 0 ? `, ${skipped} skipped` : ''));
 process.exit(failed === 0 ? 0 : 1);

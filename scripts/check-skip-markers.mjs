@@ -3,15 +3,18 @@
 //
 // Usage: node scripts/check-skip-markers.mjs [--pr] [--tracked-files]
 //   --pr             scans the pull request: PR_TITLE (required, non-empty),
-//                    PR_BODY (required, may be empty) and the message of every
-//                    commit in BASE_SHA..HEAD_SHA (both required, full shas;
-//                    read with git from the current checkout, which must hold
-//                    both commits, so no token is needed).
+//                    PR_BODY (required, may be empty) and, for every commit in
+//                    BASE_SHA..HEAD_SHA (both required, full shas), its
+//                    message, its author identity and its committer identity
+//                    (each "name <email>", each a place of its own). Read with
+//                    git from the current checkout, which must hold both
+//                    commits, so no token is needed.
 //   --tracked-files  scans every file git tracks in the current checkout.
 //   At least one flag is required. Exit 0: no marker found. Exit 1: a marker
 //   was found (each one is named, by place and line, never quoted). Exit 2:
 //   the input could not be read (a missing variable, a bad sha, git failing,
-//   an empty commit range); the check fails closed rather than pass unseen.
+//   an empty commit range, a tracked file that cannot be read); the check
+//   fails closed rather than pass unseen.
 //
 // Why: GitHub skips every push and pull_request workflow run whose commit
 // message carries a skip marker, wherever in the message it appears (inside
@@ -22,7 +25,10 @@
 // A squash merge composes its message from the PR title and the commit
 // messages (and the PR body, if the repository's squash setting is changed to
 // use it); a rebase merge keeps each commit message; a merge commit carries
-// the title. Scanning all three covers every merge method.
+// the title. Scanning all three covers every merge method. GitHub's default
+// squash message also appends a Co-authored-by line, built from a commit's
+// author identity, for every other author on the branch, so author and
+// committer identities are scanned too.
 // Tracked files are scanned so that no file in the repository holds a marker
 // a later commit message could quote.
 //
@@ -38,15 +44,27 @@
 //     end of a commit message, but a squash merge may append one commit's
 //     message after another, so any line of that shape is flagged. A mention
 //     inside a sentence or backticks is not a trailer and is not flagged.
+//   - look-alikes: every text is NFKC-normalised before matching, and the
+//     patterns match with Unicode case folding (the u flag), so compatibility
+//     forms (fullwidth letters and brackets, the long s) and case-fold
+//     equivalents (the Kelvin sign for k) count as the letters they stand
+//     for. Whether GitHub folds them is not known; flagging them is the
+//     fail-closed side. NFKC cannot hide a plain marker: the marker's own
+//     characters (ASCII letters, spaces, tabs, brackets, the colon and the
+//     hyphen) are stable under it, and a combining mark composing into one of
+//     them would already split the marker. It neither adds nor removes line
+//     breaks, so the line numbers reported are those of the original text.
 // The marker strings are built at runtime from their words: this file, its
 // self-test and the workflow never spell one, so the tracked-file scan passes
 // on them and a commit message quoting this code cannot carry one.
 //
 // Re-checking: the workflow (.github/workflows/skip-markers.yml) runs on
 // opened, edited, reopened and synchronize, so editing the PR title or body,
-// or pushing, re-runs it with the current text. Re-running a failed run from
-// the Actions page reuses the old event payload, and with it the old title
-// and body.
+// or pushing, re-runs it with the current text. Its per-PR concurrency group
+// cancels a run still in progress when a newer event arrives, so the result
+// land_proposal reads is the newest one (pending until it finishes), never a
+// superseded run. Re-running a failed run from the Actions page reuses the
+// old event payload, and with it the old title and body.
 // Accepted residual: if the PR's HEAD commit carries a marker, GitHub skips
 // every pull_request run of the PR, this one included. The PR then reports no
 // checks at all, and the forge port's land_proposal already refuses a PR whose
@@ -77,8 +95,10 @@ const CLOSE = '\\x5d'; // right square bracket, as a regex escape
 const GAP = '[ \\t]*';
 
 // One regex per word pair, so a finding can name its form.
-export const markerPattern = ([a, b]) => new RegExp(`${OPEN}${GAP}${a}${GAP}${b}${GAP}${CLOSE}`, 'gi');
-export const TRAILER_RE = new RegExp(`^[ \\t]*(?:[-*+][ \\t]+)?${TRAILER_KEY}[ \\t]*:[ \\t]*true[ \\t]*$`, 'gim');
+// The u flag makes the i flag fold by Unicode case folding (the Kelvin sign
+// matches k, the long s matches s), on top of the NFKC step in findMarkers().
+export const markerPattern = ([a, b]) => new RegExp(`${OPEN}${GAP}${a}${GAP}${b}${GAP}${CLOSE}`, 'giu');
+export const TRAILER_RE = new RegExp(`^[ \\t]*(?:[-*+][ \\t]+)?${TRAILER_KEY}[ \\t]*:[ \\t]*true[ \\t]*$`, 'gimu');
 
 const lineAt = (text, index) => text.slice(0, index).split('\n').length;
 
@@ -86,7 +106,8 @@ const lineAt = (text, index) => text.slice(0, index).split('\n').length;
 // in words (never the marker itself) and line is 1-based.
 export function findMarkers(text) {
   if (typeof text !== 'string') throw new TypeError('findMarkers needs a string');
-  const t = text.replace(/\r\n?/g, '\n');
+  // Line breaks first, then NFKC (see the header: it keeps the line count).
+  const t = text.replace(/\r\n?/g, '\n').normalize('NFKC');
   const found = [];
   for (const words of MARKER_WORDS) {
     for (const m of t.matchAll(markerPattern(words))) {
@@ -109,7 +130,14 @@ const escapeData = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').r
 
 const git = (args) => execFileSync('git', args, { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 
-// [{ place, text }] for the pull request: title, body, each commit message.
+// The fields read per commit, one per line before the message: git strips
+// line breaks (and angle brackets, from names) out of identities when it
+// writes a commit, so a field can never run into the next one.
+const COMMIT_FORMAT = ['%H', '%an', '%ae', '%cn', '%ce'].join('%n') + '%n%B';
+const COMMIT_FIELDS = 5;
+
+// [{ place, text }] for the pull request: title, body, and per commit its
+// message, author identity and committer identity.
 export function prSources(env) {
   const { PR_TITLE: title, PR_BODY: body, BASE_SHA: base, HEAD_SHA: head } = env;
   if (typeof title !== 'string' || title.trim() === '') throw new InputError('PR_TITLE is missing or empty');
@@ -118,25 +146,40 @@ export function prSources(env) {
   if (!SHA_RE.test(head ?? '')) throw new InputError('HEAD_SHA is not a full commit sha');
   let out;
   try {
-    out = git(['log', '-z', '--format=%H%n%B', `${base}..${head}`]).toString('utf8');
+    out = git(['log', '-z', `--format=${COMMIT_FORMAT}`, `${base}..${head}`]).toString('utf8');
   } catch (err) {
     const why = err.stderr ? err.stderr.toString('utf8').trim().split('\n')[0] : err.message;
     throw new InputError(`git log ${base.slice(0, 12)}..${head.slice(0, 12)} failed: ${why}`);
   }
-  const commits = out.split('\0').filter((r) => r !== '').map((r) => {
-    const nl = r.indexOf('\n');
-    const sha = nl === -1 ? r : r.slice(0, nl);
-    if (!SHA_RE.test(sha)) throw new InputError('git log returned a record without a commit sha');
-    return { place: `commit ${sha.slice(0, 12)} message`, text: nl === -1 ? '' : r.slice(nl + 1) };
-  });
+  const records = out.split('\0').filter((r) => r !== '');
   // A pull request always has at least one commit; none means the range was
   // not the PR's (wrong shas, or history not fetched), so nothing was seen.
-  if (commits.length === 0) throw new InputError(`no commits in ${base.slice(0, 12)}..${head.slice(0, 12)}`);
+  if (records.length === 0) throw new InputError(`no commits in ${base.slice(0, 12)}..${head.slice(0, 12)}`);
+  const commits = records.flatMap((r) => {
+    const fields = [];
+    let at = 0;
+    for (let i = 0; i < COMMIT_FIELDS; i += 1) {
+      const nl = r.indexOf('\n', at);
+      if (nl === -1) throw new InputError('git log returned a commit record without all its fields');
+      fields.push(r.slice(at, nl));
+      at = nl + 1;
+    }
+    const [sha, authorName, authorEmail, committerName, committerEmail] = fields;
+    if (!SHA_RE.test(sha)) throw new InputError('git log returned a record without a commit sha');
+    const id = `commit ${sha.slice(0, 12)}`;
+    return [
+      { place: `${id} message`, text: r.slice(at) },
+      { place: `${id} author`, text: `${authorName} <${authorEmail}>` },
+      { place: `${id} committer`, text: `${committerName} <${committerEmail}>` },
+    ];
+  });
   return [{ place: 'PR title', text: title }, { place: 'PR body', text: body }, ...commits];
 }
 
 // [{ place, text }] for every tracked regular file that is text (no NUL byte).
-export function trackedFileSources(root = process.cwd()) {
+// A tracked file that exists but cannot be read is an InputError (exit 2),
+// never a pass and never a finding. `readFile` is a seam for the self-test.
+export function trackedFileSources(root = process.cwd(), { readFile = readFileSync } = {}) {
   let out;
   try {
     out = git(['-C', root, 'ls-files', '-z']).toString('utf8');
@@ -151,11 +194,18 @@ export function trackedFileSources(root = process.cwd()) {
     let st;
     try {
       st = lstatSync(full);
-    } catch {
-      continue; // tracked but deleted in the working tree: nothing to read
+    } catch (err) {
+      // Tracked but deleted in the working tree: nothing to read.
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') continue;
+      throw new InputError(`cannot stat tracked file ${path}: ${err.code ?? err.message}`);
     }
     if (!st.isFile()) continue; // symlinks, submodules
-    const buf = readFileSync(full);
+    let buf;
+    try {
+      buf = readFile(full);
+    } catch (err) {
+      throw new InputError(`cannot read tracked file ${path}: ${err.code ?? err.message}`);
+    }
     if (buf.includes(0)) continue; // binary
     sources.push({ place: path, text: buf.toString('utf8') });
   }
