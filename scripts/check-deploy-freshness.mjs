@@ -81,8 +81,8 @@
 //       re-run of the push run keeps its created_at, so a re-run does not
 //       restart the clock: the head has not been live for that long. The
 //       message then says the run is being re-run rather than stuck. With no
-//       such run (a [skip ci] push, CI never started, or the run not created
-//       yet) the committer date is used instead.
+//       such run (a push carrying a CI-skip marker, CI never started, or the
+//       run not created yet) the committer date is used instead.
 //       (a) also fires when the run on main failed or never ran, which is not a
 //       stalled publication; its error therefore says what is known about the
 //       head's run (none, being re-run, still running/waiting, or completed
@@ -337,7 +337,7 @@ const OUTCOME = new Map([
 // What is known about the head's push run, for the (a) message.
 function describeHeadRun(run, now) {
   if (!run) {
-    return 'No push-event Test and deploy run exists for it (a [skip ci] commit, or CI never started), ' +
+    return 'No push-event Test and deploy run exists for it (a commit carrying a CI-skip marker, or CI never started), ' +
       'so nothing will publish it before the next push to main.';
   }
   const ref = `Its Test and deploy run ${run.id}`;

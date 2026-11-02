@@ -144,7 +144,17 @@ What each relaxed R1 dial does here:
   messages and the PR title (the PR body too, if the squash setting is changed to
   it): the push run, and with it the Pages deploy, then never starts. Observed
   2026-10-28: merge 00206a9 (PR #71, AB#65) went undeployed. Describe the marker in
-  words, as here. A PR check for it is AB#128.
+  words, as here. Since AB#128 the "Skip markers" workflow (check "CI-skip marker
+  check", `.github/workflows/skip-markers.yml`) fails a PR whose title, body, commit
+  messages, commit identities (author and committer) or tracked files carry a marker;
+  it is a required-by-process check, so `land_proposal` refuses the PR while it is red
+  or pending. An edit or push cancels a run still in progress; the cancelled run reads
+  as failing, and the newest run as pending, until the newest run finishes. A run that
+  had already finished green is not cancelled and stays the PR's only check for the
+  seconds before the new run's check appears (narrowed, not closed; the operator
+  approves every merge). Squash setting: changing the default squash commit message
+  to "Pull request title and description" is recommended to the operator, not changed
+  by AB#128.
 
 ## Agent Overrides
 none

@@ -1,0 +1,82 @@
+name: Skip markers
+
+# PR check (AB#128): fails when merging the pull request would carry a CI-skip
+# marker into main. GitHub skips every push run whose commit message carries
+# one, anywhere in the message, so such a merge silently skips the Test and
+# deploy run on main, and with it the Pages deploy (merge 00206a9, PR #71,
+# went undeployed that way). scripts/check-skip-markers.mjs scans the PR title,
+# the PR body, every commit message on the PR and every commit's author and
+# committer identity (what a squash, rebase or merge commit is built from; a
+# default squash adds Co-authored-by lines from author identities), plus every
+# tracked file (so no file holds a marker a later commit message could quote).
+# Its header documents what counts as a marker; its self-test runs first,
+# here, and also asserts this file's wiring (triggers, env-only title and
+# body, permissions, concurrency, and no if: or continue-on-error that could
+# skip a step or turn its failure green).
+#
+# A separate workflow, not a step in Test and deploy, because the check must
+# re-run when the PR title or body is edited (the edited type below). Adding
+# edited to Test and deploy would re-run its whole browser suite on every
+# title or body edit, and re-running a finished run reuses its old payload,
+# so a fixed title would never be seen. The forge port's land_proposal refuses
+# a PR with any failing check, so this one blocks landing like the others.
+# To re-check after fixing the title or body: the edit itself re-runs this.
+
+# Least privilege, read-only: the commits are read with git from the checkout,
+# the title and body from the event payload; no API call, no write scope.
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+# One run per PR at a time: a newer event (an edit, a push) cancels the run
+# still in progress. A cancelled run reads as failing, and the newest run as
+# pending, until the newest run finishes, so land_proposal refuses the PR
+# until then. Without this, an older run finishing last could leave a stale
+# result (green after an edit that added a marker, or red after one that
+# removed it) as the PR's check. Narrowed, not closed: a run that had already
+# finished green is not cancelled, and stays the PR's only check for the
+# seconds before the new run's check appears (the operator approves every
+# merge).
+concurrency:
+  group: skip-markers-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    # The check name GitHub shows on the PR (the job id stays scan).
+    name: CI-skip marker check
+    runs-on: ubuntu-latest
+    # Seconds of work; the bound only stops a hung git or runner.
+    timeout-minutes: 10
+    steps:
+      # Full history, so BASE_SHA..HEAD_SHA (the PR's commits) can be listed
+      # without a token: the token must not stay in .git/config, as the PR's
+      # own code runs below.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # No dependencies to install: the check uses only Node built-ins.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      # Prove the matcher still finds every marker form before trusting a pass.
+      - name: Self-test skip marker check
+        run: node scripts/check-skip-markers.test.mjs
+
+      # The title and body reach the script only through env, never through an
+      # expression inside run:, so their text cannot become shell code.
+      - name: Fail on a skip marker in the PR title, body, commits or tracked files
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/check-skip-markers.mjs --pr --tracked-files
