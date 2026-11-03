@@ -656,24 +656,33 @@ const unitCases = [
       'The Deploy freshness workflow is "disabled_inactivity", not "active": GitHub disabled it after 60 days without ' +
         'repository activity. Its scheduled check of the Pages deploy is off, so a stalled deploy would go unseen. ' +
         'Enable it again under Actions > Deploy freshness.');
-    assert.match(said('disabled_manually'), /: it was disabled by hand\./);
-    assert.match(said('disabled_fork'), /: it is disabled in this fork\./);
-    assert.match(said('deleted'), /: its workflow file was deleted\./);
-    // A state GitHub adds later, or one that names an inherited property, is not "active" either.
-    assert.match(said('paused'), /"paused", not "active": it does not run\./);
-    assert.match(said('constructor'), /"constructor", not "active": it does not run\./);
+    assert.match(said('disabled_manually'), /: it was disabled by hand\. .* Enable it again under Actions > Deploy freshness\.$/);
+    assert.match(said('disabled_fork'), /: it is disabled in this fork\. .* Enable it again under Actions > Deploy freshness\.$/);
+    // The remedy fits the state: a deleted workflow cannot be enabled in the UI, it must be restored.
+    assert.strictEqual(said('deleted'),
+      'The Deploy freshness workflow is "deleted", not "active": its workflow file was deleted. Its scheduled check of ' +
+        'the Pages deploy is off, so a stalled deploy would go unseen. Restore .github/workflows/deploy-freshness.yml on main.');
+    // A state GitHub adds later, or one that names an inherited property, is not "active" either,
+    // and gets a neutral remedy (no guess at a UI action that may not apply).
+    assert.strictEqual(said('paused'),
+      'The Deploy freshness workflow is "paused", not "active": it does not run. Its scheduled check of the Pages ' +
+        'deploy is off, so a stalled deploy would go unseen. Find out what the state means before relying on the monitor again.');
+    assert.match(said('constructor'), /"constructor", not "active": it does not run\. .* Find out what the state means/);
     assert.match(said('Active'), /"Active", not "active"/);
+    for (const state of ['deleted', 'paused', 'constructor', 'Active']) assert.doesNotMatch(said(state), /Enable it again|Actions >/, state);
   }],
   ['liveness (d): no successful scheduled run within 26 h -> monitor-stale; exactly 26 h passes, 1 ms more fails', () => {
     assert.strictEqual(WINDOW, 26 * HOUR);
     assert.deepStrictEqual(evaluateLiveness(staleWith(WINDOW)).failures, []);
     const r = evaluateLiveness(staleWith(WINDOW + 1));
     assert.deepStrictEqual(codes(r), ['monitor-stale']);
+    // The age rounds UP: one millisecond past 26 h never reads as "26 h ago" next to "the last 26 h".
     assert.strictEqual(r.failures[0].reason,
       'The Deploy freshness workflow has had no successful scheduled run on main in the last 26 h (its newest was ' +
-        'run 900, created 2026-10-02T09:59:59.999Z, 26 h ago). Its newest scheduled run, 900, created 1560 min ago, ' +
-        'is that success: the schedule has stopped firing (GitHub dropped or delayed every run since). ' +
-        'https://github.com/o/r/actions/runs/900');
+        'run 900, created 2026-10-02T09:59:59.999Z, 27 h ago). That run is also its newest scheduled run: the ' +
+        'schedule has stopped firing (GitHub dropped or delayed every run since). https://github.com/o/r/actions/runs/900');
+    const agePrinted = (age) => /, (\d+) h ago\)/.exec(evaluateLiveness(staleWith(age)).failures[0].reason)[1];
+    assert.deepStrictEqual([WINDOW + HOUR - 1, WINDOW + HOUR, WINDOW + HOUR + 1, 30 * HOUR].map(agePrinted), ['27', '27', '28', '30']);
   }],
   ['liveness (d): the newest scheduled run says why (red, cancelled, timed out, still running, never fired)', () => {
     const said = (...latest) => {
@@ -691,9 +700,37 @@ const unitCases = [
     assert.deepStrictEqual(codes(never), ['monitor-stale']);
     assert.strictEqual(never.failures[0].reason,
       'The Deploy freshness workflow has had no successful scheduled run on main in the last 26 h (none was found). ' +
-        'It has no scheduled run on main at all: its schedule has never fired.');
+        'No scheduled run on main was listed: its schedule has never fired, or GitHub\'s run listing has not caught up.');
     const onlyRed = evaluateLiveness(alive({ successes: [], latest: [schedRun(901, HOUR, 'completed', 'failure')] }));
     assert.match(onlyRed.failures[0].reason, /\(none was found\)\. Its newest scheduled run, 901, .* ended "failure"/);
+  }],
+  ['liveness (d): a success in the any-status listing counts (a run that succeeded between the two fetches)', () => {
+    // CR1: the success listing returned an old success, then the scheduled run finished "success" before
+    // the any-status listing was fetched. That run is fresh evidence: no false monitor-stale.
+    const race = evaluateLiveness(staleWith(30 * HOUR, schedRun(901, 10 * MIN)));
+    assert.deepStrictEqual(race.failures, []);
+    assert.strictEqual(race.newestSuccess.id, 901);
+    assert.strictEqual(race.latestRun.id, 901);
+    // The same when the success listing came back empty.
+    const empty = evaluateLiveness(alive({ successes: [], latest: [schedRun(901, 10 * MIN)] }));
+    assert.deepStrictEqual(empty.failures, []);
+    assert.strictEqual(empty.newestSuccess.id, 901);
+    // A latest success is still judged by its age: stale is stale, and the message calls it that success.
+    const old = evaluateLiveness(alive({ successes: [], latest: [schedRun(901, 30 * HOUR)] }));
+    assert.deepStrictEqual(codes(old), ['monitor-stale']);
+    assert.match(old.failures[0].reason, /\(its newest was run 901, created .*, 30 h ago\)\. That run is also its newest scheduled run: /);
+    // Only a completed "success" counts: a fresh run still in progress, or a fresh red one, is no evidence.
+    for (const notYet of [schedRun(901, 10 * MIN, 'in_progress'), schedRun(901, 10 * MIN, 'completed', 'failure')]) {
+      assert.deepStrictEqual(codes(evaluateLiveness(staleWith(30 * HOUR, notYet))), ['monitor-stale']);
+    }
+    // Listings that disagree (the any-status one lagging behind the success one) never say a success
+    // "does not pass": the message is truthful, and the verdict rests on the newer success.
+    const lag = evaluateLiveness(staleWith(30 * HOUR, schedRun(899, 40 * HOUR)));
+    assert.deepStrictEqual(codes(lag), ['monitor-stale']);
+    assert.strictEqual(lag.newestSuccess.id, 900);
+    assert.match(lag.failures[0].reason,
+      /\(its newest was run 900, .*, 30 h ago\)\. Its newest scheduled run, 899, created 2400 min ago, ended "success" too but is older than that one \(the run listings disagree\), so it shows no fresher success\. /);
+    assert.doesNotMatch(lag.failures[0].reason, /does not pass/);
   }],
   ['liveness: a disabled and stale monitor reports both', () => {
     const r = evaluateLiveness({ ...staleWith(40 * HOUR), workflow: monitor('disabled_manually') });
@@ -745,14 +782,17 @@ const unitCases = [
     const LIVENESS = 'breaks the monitor liveness wiring (AB#122; see Liveness in scripts/check-deploy-freshness.mjs)';
     const code = (line) => line.replace(/(^|\s)#.*$/, '').trimEnd();
     const lines = readFileSync(TEST_AND_DEPLOY, 'utf8').split('\n');
-    const jobOf = (key) => {
-      const start = lines.indexOf(`  ${key}:`);
-      assert.ok(start >= 0, `playwright-tests.yml has a ${key} job`);
-      const end = lines.findIndex((line, i) => i > start && /^ {0,2}[^\s#]/.test(line));
-      return lines.slice(start + 1, end < 0 ? lines.length : end).map(code).filter((line) => line.trim() !== '');
+    // A job of a workflow file, its lines with comments and blank lines dropped.
+    const jobIn = (fileLines, file) => (key) => {
+      const start = fileLines.indexOf(`  ${key}:`);
+      assert.ok(start >= 0, `${file} has a ${key} job`);
+      const end = fileLines.findIndex((line, i) => i > start && /^ {0,2}[^\s#]/.test(line));
+      return fileLines.slice(start + 1, end < 0 ? fileLines.length : end).map(code).filter((line) => line.trim() !== '');
     };
+    const jobOf = jobIn(lines, 'playwright-tests.yml');
+    const unpinned = (line) => line.replace(/^( {8}uses: actions\/[a-z-]+@)[0-9a-f]{40}$/, '$1<sha>');
     // The whole job, line for line (comments dropped); only the pinned action shas may change.
-    const job = jobOf('monitor-liveness').map((line) => line.replace(/^( {8}uses: actions\/[a-z-]+@)[0-9a-f]{40}$/, '$1<sha>'));
+    const job = jobOf('monitor-liveness').map(unpinned);
     assert.deepStrictEqual(job, [
       '    runs-on: ubuntu-latest',
       "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
@@ -787,9 +827,37 @@ const unitCases = [
     const mentions = lines.map(code).filter((line) => /monitor-liveness/.test(line));
     assert.deepStrictEqual(mentions, ['  monitor-liveness:'], `only the job key names monitor-liveness; nothing needs it (${LIVENESS})`);
     // The 26 h window is sized for an hourly schedule.
-    const crons = readFileSync(WORKFLOW, 'utf8').split('\n').map(code).filter((line) => /cron:/.test(line));
+    const monitorLines = readFileSync(WORKFLOW, 'utf8').split('\n');
+    const crons = monitorLines.map(code).filter((line) => /cron:/.test(line));
     assert.strictEqual(crons.length, 1, 'deploy-freshness.yml has one cron');
     assert.match(crons[0], /^ {4}- cron: '[0-5]?[0-9] \* \* \* \*'$/, `deploy-freshness.yml must stay hourly; the liveness window assumes it`);
+    // Liveness counts a scheduled run that ended "success" as proof the monitor works, so the monitor
+    // must not be able to succeed without checking: its job is pinned line for line (only the action
+    // shas may change, and they must be Test and deploy's pins), and nothing in the file may swallow
+    // a failure (continue-on-error on the job or step, or a defaults: block swapping the run shell).
+    const freshnessJob = jobIn(monitorLines, 'deploy-freshness.yml')('freshness');
+    assert.deepStrictEqual(freshnessJob.map(unpinned), [
+      '    runs-on: ubuntu-latest',
+      '    timeout-minutes: 10',
+      '    steps:',
+      '      - name: Checkout repository',
+      '        uses: actions/checkout@<sha>',
+      '        with:',
+      '          persist-credentials: false',
+      '      - name: Setup Node.js',
+      '        uses: actions/setup-node@<sha>',
+      '        with:',
+      "          node-version: '22'",
+      '      - name: Check the head of main is live on Pages',
+      '        env:',
+      '          GITHUB_TOKEN: ${{ github.token }}',
+      '        run: node scripts/check-deploy-freshness.mjs',
+    ], `the freshness job of deploy-freshness.yml ${LIVENESS}:\n${freshnessJob.join('\n')}`);
+    for (const use of freshnessJob.filter((line) => /uses: actions\//.test(line))) {
+      assert.ok(pins(/uses: actions\//).has(use.trim()), `deploy-freshness.yml ${use.trim()} is not Test and deploy's pin`);
+    }
+    const swallow = monitorLines.map(code).filter((line) => /continue-on-error|^\s*defaults\s*:/.test(line));
+    assert.deepStrictEqual(swallow, [], `deploy-freshness.yml must not swallow a failure (${LIVENESS})`);
   }],
 ];
 
@@ -1008,6 +1076,7 @@ const cliCases = [
       assert.strictEqual(r.hits.deployments, 1);
     }
   }],
+  // DEFERRED: AB#155 (preexisting-timing-flake)
   ['CLI: a request that never answers times out, and the run still exits 2 on its own', async () => {
     const r = await cli(freshRoutes({ 'commits/heads/main': 'hang' }), { DEPLOY_FRESHNESS_TIMEOUT_MS: '200' });
     assert.strictEqual(r.code, 2, r.out);
@@ -1155,15 +1224,49 @@ const cliCases = [
     assert.strictEqual(off.code, 1, off.out);
     assert.match(off.out, /^::error::MONITOR LIVENESS \(monitor-disabled\): The Deploy freshness workflow is "disabled_inactivity", not "active": GitHub disabled it after 60 days/m);
     assert.doesNotMatch(off.out, /monitor-stale|MONITOR LIVENESS OK/);
+    // 29.5 h old when the fixture is built; the child reads its clock seconds later, and the age rounds up.
     const stale = await cli(liveRoutes({
-      [`${LIVE_RUNS}?success`]: onePage(schedRun(900, 30 * HOUR, 'completed', 'success', now)),
+      [`${LIVE_RUNS}?success`]: onePage(schedRun(900, 30 * HOUR - 30 * MIN, 'completed', 'success', now)),
       [LIVE_RUNS]: onePage(schedRun(950, HOUR, 'completed', 'timed_out', now)),
     }), {}, ['--liveness']);
     assert.strictEqual(stale.code, 1, stale.out);
     assert.match(stale.out, /^::error::MONITOR LIVENESS \(monitor-stale\): The Deploy freshness workflow has had no successful scheduled run on main in the last 26 h \(its newest was run 900, .*, 30 h ago\)\. Its newest scheduled run, 950, created 60 min ago, ended "timed_out"/m);
     const never = await cli(liveRoutes({ [`${LIVE_RUNS}?success`]: onePage(), [LIVE_RUNS]: onePage() }), {}, ['--liveness']);
     assert.strictEqual(never.code, 1, never.out);
-    assert.match(never.out, /\(monitor-stale\): .* \(none was found\)\. It has no scheduled run on main at all/);
+    assert.match(never.out, /\(monitor-stale\): .* \(none was found\)\. No scheduled run on main was listed/);
+  }],
+  ['CLI --liveness: a scheduled run that succeeded between the two listings counts; it is not a false red', async () => {
+    const r = await cli(liveRoutes({
+      [`${LIVE_RUNS}?success`]: onePage(schedRun(900, 30 * HOUR, 'completed', 'success', now)),
+      [LIVE_RUNS]: onePage(schedRun(901, 5 * MIN, 'completed', 'success', now)),
+    }), {}, ['--liveness']);
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /^newest scheduled success: run 901, created /m);
+    assert.match(r.out, /^MONITOR LIVENESS OK: /m);
+  }],
+  ['CLI --liveness: an empty page whose total_count says more is "none listed", never CANNOT EVALUATE', async () => {
+    const emptyOf = (n) => [200, { total_count: n, workflow_runs: [] }];
+    // No success listed, but the any-status listing holds a fresh success: alive (exit 0).
+    const healed = await cli(liveRoutes({ [`${LIVE_RUNS}?success`]: emptyOf(3) }), {}, ['--liveness']);
+    assert.strictEqual(healed.code, 0, healed.out);
+    assert.match(healed.out, /^newest scheduled success: run 900, /m);
+    // No success listed, and the newest run is red: staleness judged as usual (exit 1, monitor-stale).
+    const red = await cli(liveRoutes({
+      [`${LIVE_RUNS}?success`]: emptyOf(3),
+      [LIVE_RUNS]: onePage(schedRun(950, HOUR, 'completed', 'failure', now)),
+    }), {}, ['--liveness']);
+    assert.strictEqual(red.code, 1, red.out);
+    assert.match(red.out, /^::error::MONITOR LIVENESS \(monitor-stale\): .* \(none was found\)\. Its newest scheduled run, 950, .* ended "failure"/m);
+    // No run of any status listed: a fresh success still passes; a stale one is worded without "never fired" certainty.
+    const fresh = await cli(liveRoutes({ [LIVE_RUNS]: emptyOf(5) }), {}, ['--liveness']);
+    assert.strictEqual(fresh.code, 0, fresh.out);
+    const lagging = await cli(liveRoutes({
+      [`${LIVE_RUNS}?success`]: onePage(schedRun(900, 30 * HOUR, 'completed', 'success', now)),
+      [LIVE_RUNS]: emptyOf(5),
+    }), {}, ['--liveness']);
+    assert.strictEqual(lagging.code, 1, lagging.out);
+    assert.match(lagging.out, /\(monitor-stale\): .* \(its newest was run 900, .*\)\. No scheduled run on main was listed: its schedule has never fired, or GitHub's run listing has not caught up\.$/m);
+    for (const r of [healed, red, fresh, lagging]) assert.doesNotMatch(r.out, /CANNOT EVALUATE/);
   }],
   ['CLI --liveness: a transient error is retried once; one that persists, or a wrong answer, exits 2, never 0', async () => {
     const retried = await cli(liveRoutes({ [LIVE_WF]: (n) => (n === 1 ? [502, { message: 'bad gateway' }] : [200, monitor()]) }), {}, ['--liveness']);
@@ -1173,11 +1276,15 @@ const cliCases = [
     for (const [over, re] of [
       [{ [LIVE_WF]: [500, { message: 'boom' }] }, `GET ${LIVE_WF} failed after 2 attempts: HTTP 500$`],
       [{ [`${LIVE_RUNS}?success`]: [503, { message: 'boom' }] }, `GET ${LIVE_RUNS}\\?branch=main&event=schedule&status=success&per_page=1 failed after 2 attempts: HTTP 503$`],
-      [{ [LIVE_WF]: [404, { message: 'Not Found' }] }, `GET ${LIVE_WF} returned HTTP 404$`],
+      // A removed or renamed workflow file answers 404: the likely cause is named (only for the workflow GET).
+      [{ [LIVE_WF]: [404, { message: 'Not Found' }] }, `GET ${LIVE_WF} returned HTTP 404 \\(the workflow file may have been removed or renamed\\)$`],
+      [{ [LIVE_RUNS]: [404, { message: 'Not Found' }] }, `GET ${LIVE_RUNS}\\?branch=main&event=schedule&per_page=1 returned HTTP 404$`],
       [{ [LIVE_WF]: [403, { message: 'Resource not accessible by integration' }] }, `GET ${LIVE_WF} returned HTTP 403$`],
-      [{ [`${LIVE_RUNS}?success`]: [200, { total_count: 3, workflow_runs: [] }] }, 'runs listing for successful scheduled runs holds 0 runs of 3; expected the newest one$'],
       [{ [LIVE_RUNS]: [200, { total_count: 2, workflow_runs: [schedRun(1, HOUR, 'completed', 'success', now), schedRun(2, HOUR, 'completed', 'success', now)] }] },
-        'runs listing for scheduled runs holds 2 runs of 2; expected the newest one$'],
+        'runs listing for scheduled runs holds 2 runs of 2; expected at most the newest one$'],
+      [{ [`${LIVE_RUNS}?success`]: [200, { total_count: 2, workflow_runs: [schedRun(1, HOUR, 'completed', 'success', now), schedRun(2, HOUR, 'completed', 'success', now)] }] },
+        'runs listing for successful scheduled runs holds 2 runs of 2; expected at most the newest one$'],
+      [{ [`${LIVE_RUNS}?success`]: [200, { total_count: '1', workflow_runs: [] }] }, 'runs listing for successful scheduled runs has an unexpected shape$'],
       [{ [LIVE_RUNS]: [200, { workflow_runs: 'x' }] }, 'runs listing for scheduled runs has an unexpected shape$'],
       [{ [`${LIVE_RUNS}?success`]: onePage(schedRun(900, HOUR, 'completed', 'failure', now)) }, 'successful run #0 did not end "success"$'],
       [{ [LIVE_WF]: [200, '<html>not json'] }, `GET ${LIVE_WF} did not return JSON$`],

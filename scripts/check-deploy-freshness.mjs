@@ -485,12 +485,13 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
 // ----------------------------------------------------------- Liveness ----
 // (AB#122) The freshness monitor above runs only on its schedule, and a
 // schedule can go silent with nothing turning red: GitHub drops or delays
-// scheduled runs under load (observed here: the hourly cron fired 23 times in
-// its first ~5.5 days, a median 6.2 h and at most 10.8 h apart, 2026-10-29 to
-// 2026-11-03), disables the schedule after 60 days without repository
-// activity, and a workflow can be disabled by hand. --liveness turns that
-// into a red run of Test and deploy (its monitor-liveness job, on pushes to
-// main), whose failure GitHub mails to the operator. It fails when either:
+// scheduled runs under load (observed here: the hourly cron fired 24 times in
+// its first ~5.8 days, 2026-10-29 to 2026-11-03; its 23 gaps were a median
+// 6.2 h and at most 10.8 h), disables the schedule after 60 days without
+// repository activity, and a workflow can be disabled by hand. --liveness
+// turns that into a red run of Test and deploy (its monitor-liveness job, on
+// pushes to main), whose failure GitHub mails to the operator. It fails when
+// either:
 //   (c) monitor-disabled: the Deploy freshness workflow's state is not
 //       "active" (disabled_manually, disabled_inactivity, disabled_fork,
 //       deleted, or any state GitHub adds later);
@@ -503,12 +504,26 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
 //       workflow_dispatch proves the script runs, not that the schedule does.
 //       The age is the run's created_at (when the scheduler created it), so a
 //       manual re-run of an old scheduled run does not make it fresh.
+//       Evidence comes from both listings: the newest scheduled run of any
+//       status counts as a success when it ended "success". The listings are
+//       fetched one after the other, so a scheduled run that succeeds between
+//       them shows up only in the second; it is as good a success as one from
+//       the first, and judging the older one would be a false red.
+//       An empty page is "none listed", even when its total_count says more
+//       runs exist: the listing is served from an eventually consistent index
+//       (a run just deleted by retention, a count that lags), and that quirk
+//       must not wedge the check at CANNOT EVALUATE on every push. With no
+//       success listed, (d) judges staleness as usual (and passes if the other
+//       listing holds a recent success); with no run of any status listed, only
+//       the message's wording changes.
 // Window: 26 h is about 2.4 times the longest observed gap between scheduled
 // runs (10.8 h), so ordinary dropped runs do not flap it red, and it still
 // names a monitor that has been silent or red for more than a day. A monitor
 // that is genuinely red for longer (a deploy stalled for a day) also trips
 // (d): the same problem, reported once more, to the operator.
 // Boundary: strict, as above: exactly 26 h passes, one millisecond more fails.
+// Ages are printed in whole hours rounded UP, so a failing age never reads as
+// "26 h" next to the 26 h window.
 // Accepted residuals: (1) it runs only when something is pushed to main, so a
 // dead monitor in an idle repo is seen at the next push, not before; and after
 // 60 idle days GitHub disables the schedule while nothing pushes, so this
@@ -517,8 +532,12 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
 // that is its self-test's job.
 // Fetch bounds: LIVENESS_CALLS (3) calls of one item each: the workflow, its
 // newest successful scheduled run on main, its newest scheduled run on main
-// (any status; it only words the message). Same retry rule and per-call
-// time bound as above: LIVENESS_WORST_CASE_MS = 3 x 18 s = 54 s.
+// (any status; a success there counts, anything else only words the
+// message). Same retry rule and per-call time bound as above:
+// LIVENESS_WORST_CASE_MS = 3 x 18 s = 54 s. A 404 for the workflow names its
+// likely cause (the workflow file removed or renamed) and exits 2 like any
+// other failed call; a removed file that GitHub keeps listing as "active"
+// is caught by (d) within the window instead.
 // "Cannot determine" (an API call failing after its one retry, an unexpected
 // shape, a listing that did not answer the question asked) exits 2 with a
 // CANNOT EVALUATE annotation, never 0: a liveness check that passes when it
@@ -532,14 +551,17 @@ export const LIVENESS_CALLS = 3;
 export const LIVENESS_WORST_CASE_MS =
   LIVENESS_CALLS * (ATTEMPTS * REQUEST_TIMEOUT_MS + (ATTEMPTS - 1) * RETRY_DELAY_MS);
 
-// Why a workflow state other than "active" stops the monitor. A Map, so an
-// API-supplied state can never select an inherited object property.
+// Why a workflow state other than "active" stops the monitor, and what turns
+// it back on. A Map, so an API-supplied state can never select an inherited
+// object property. A state not listed here gets UNKNOWN_STATE.
+const ENABLE_IN_UI = 'Enable it again under Actions > Deploy freshness.';
 const DISABLED = new Map([
-  ['disabled_manually', 'it was disabled by hand'],
-  ['disabled_inactivity', 'GitHub disabled it after 60 days without repository activity'],
-  ['disabled_fork', 'it is disabled in this fork'],
-  ['deleted', 'its workflow file was deleted'],
+  ['disabled_manually', ['it was disabled by hand', ENABLE_IN_UI]],
+  ['disabled_inactivity', ['GitHub disabled it after 60 days without repository activity', ENABLE_IN_UI]],
+  ['disabled_fork', ['it is disabled in this fork', ENABLE_IN_UI]],
+  ['deleted', ['its workflow file was deleted', `Restore .github/workflows/${MONITOR_WORKFLOW_FILE} on main.`]],
 ]);
+const UNKNOWN_STATE = ['it does not run', 'Find out what the state means before relying on the monitor again.'];
 
 // A run from a scheduled-runs-on-main listing, validated. A run of another
 // event or branch means the listing did not answer the question asked.
@@ -557,17 +579,29 @@ function scheduledRun(r, label, now) {
   };
 }
 
+// Whole hours, rounded up: an age just over the window never prints as the
+// window itself. (The window is a whole number of hours, so it prints exactly.)
 function hours(ms) {
-  return `${Math.floor(ms / 3600000)} h`;
+  return `${Math.ceil(ms / 3600000)} h`;
 }
 
+const succeeded = (run) => run.status === 'completed' && run.conclusion === 'success';
+
 // What the newest scheduled run says about why there is no recent success.
+// newestSuccess already takes in latest when latest succeeded, so a latest
+// success here is either newestSuccess itself or, when the listings disagree,
+// an older one.
 function describeLatestRun(latest, newestSuccess, now) {
-  if (!latest) return 'It has no scheduled run on main at all: its schedule has never fired.';
+  if (!latest) {
+    return 'No scheduled run on main was listed: its schedule has never fired, or GitHub\'s run listing has not caught up.';
+  }
   const url = latest.url ? ` ${clean(latest.url, 120)}` : '';
-  const ref = `Its newest scheduled run, ${latest.id}, created ${minutes(now - latest.at)} ago,`;
   if (newestSuccess && latest.id === newestSuccess.id) {
-    return `${ref} is that success: the schedule has stopped firing (GitHub dropped or delayed every run since).${url}`;
+    return `That run is also its newest scheduled run: the schedule has stopped firing (GitHub dropped or delayed every run since).${url}`;
+  }
+  const ref = `Its newest scheduled run, ${latest.id}, created ${minutes(now - latest.at)} ago,`;
+  if (succeeded(latest)) {
+    return `${ref} ended "success" too but is older than that one (the run listings disagree), so it shows no fresher success.${url}`;
   }
   if (latest.status !== 'completed') return `${ref} is still "${clean(latest.status, 20)}".${url}`;
   return `${ref} ended "${clean(latest.conclusion ?? 'none', 20)}": the monitor runs but does not pass; see that run.${url}`;
@@ -584,6 +618,7 @@ function describeLatestRun(latest, newestSuccess, now) {
  * @param {object[]} input.latest      its newest scheduled runs on main, any status (same fields)
  * @returns {{failures: {code: string, reason: string}[], state: string,
  *            newestSuccess: {id: number, at: number}|undefined, latestRun: {id: number, at: number}|undefined}}
+ *            newestSuccess is the newest success in either list (latest counts when it ended "success").
  * @throws {InputError} when any input is missing or malformed (fail closed)
  */
 export function evaluateLiveness({ now, workflow, successes, latest } = {}) {
@@ -608,16 +643,21 @@ export function evaluateLiveness({ now, workflow, successes, latest } = {}) {
     const run = scheduledRun(r, `latest run #${i}`, now);
     if (!latestRun || newer(run, latestRun) < 0) latestRun = run;
   }
+  // A newest run that ended "success" is a success too (see Liveness above:
+  // it may have finished between the two listings).
+  if (latestRun && succeeded(latestRun) && (!newestSuccess || newer(latestRun, newestSuccess) < 0)) {
+    newestSuccess = latestRun;
+  }
 
   const failures = [];
   const { state } = workflow;
   if (state !== 'active') {
+    const [why, remedy] = DISABLED.get(state) ?? UNKNOWN_STATE;
     failures.push({
       code: 'monitor-disabled',
       reason:
-        `The Deploy freshness workflow is "${clean(state, 30)}", not "active": ` +
-        `${DISABLED.get(state) ?? 'it does not run'}. Its scheduled check of the Pages deploy is off, so a ` +
-        'stalled deploy would go unseen. Enable it again under Actions > Deploy freshness.',
+        `The Deploy freshness workflow is "${clean(state, 30)}", not "active": ${why}. Its scheduled check of ` +
+        `the Pages deploy is off, so a stalled deploy would go unseen. ${remedy}`,
     });
   }
   const age = newestSuccess ? now - newestSuccess.at : Infinity;
@@ -686,11 +726,18 @@ function shorterThan(name, max, min) {
   return ms;
 }
 
-// A runs listing page, validated; refuses a partial list.
-function runsOf(page, what) {
+// The shape every runs listing page must have; the callers add their own
+// rules on how many runs it may hold.
+function runsPageOf(page, what) {
   if (!isObject(page) || !Array.isArray(page.workflow_runs) || !Number.isSafeInteger(page.total_count)) {
     throw new InputError(`runs listing for ${what} has an unexpected shape`);
   }
+  return page;
+}
+
+// A runs listing page, validated; refuses a partial list.
+function runsOf(page, what) {
+  runsPageOf(page, what);
   if (page.total_count > page.workflow_runs.length) {
     throw new InputError(
       `${page.total_count} runs are ${what}, more than one page (${RUN_PAGE}) holds; not judging a partial list`,
@@ -709,13 +756,13 @@ function transient(res) {
 }
 
 // A one-item runs listing page (per_page=1), validated: the newest run, if any.
+// total_count is not checked against the rows: the index behind it is
+// eventually consistent, so an empty page with a count above 0 is read as
+// "none listed" (see Liveness above), never as an unanswerable listing.
 function newestOf(page, what) {
-  if (!isObject(page) || !Array.isArray(page.workflow_runs) || !Number.isSafeInteger(page.total_count)) {
-    throw new InputError(`runs listing for ${what} has an unexpected shape`);
-  }
-  const runs = page.workflow_runs;
-  if (runs.length > 1 || (page.total_count > 0) !== (runs.length > 0)) {
-    throw new InputError(`runs listing for ${what} holds ${runs.length} runs of ${page.total_count}; expected the newest one`);
+  const runs = runsPageOf(page, what).workflow_runs;
+  if (runs.length > 1) {
+    throw new InputError(`runs listing for ${what} holds ${runs.length} runs of ${page.total_count}; expected at most the newest one`);
   }
   return runs;
 }
@@ -731,7 +778,8 @@ function client() {
   const timeoutMs = shorterThan('DEPLOY_FRESHNESS_TIMEOUT_MS', REQUEST_TIMEOUT_MS, 1);
   const retryDelayMs = shorterThan('DEPLOY_FRESHNESS_RETRY_DELAY_MS', RETRY_DELAY_MS, 0);
 
-  const get = async (path) => {
+  // notFound: an optional likely cause, named when the answer is HTTP 404.
+  const get = async (path, notFound) => {
     let why;
     for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
       if (attempt > 1) await new Promise((ok) => setTimeout(ok, retryDelayMs));
@@ -756,7 +804,10 @@ function client() {
         await res.body?.cancel().catch(() => {});
         continue;
       }
-      if (!res.ok) throw new InputError(`GET ${path} returned HTTP ${res.status}`);
+      if (!res.ok) {
+        const cause = res.status === 404 && notFound ? ` (${notFound})` : '';
+        throw new InputError(`GET ${path} returned HTTP ${res.status}${cause}`);
+      }
       let text;
       try {
         text = await res.text();
@@ -787,7 +838,11 @@ async function main() {
 }
 
 async function liveness(get, now) {
-  const workflow = await get(`actions/workflows/${MONITOR_WORKFLOW_FILE}`);
+  // DEFERRED: AB#155 (sequential-independent-calls)
+  const workflow = await get(
+    `actions/workflows/${MONITOR_WORKFLOW_FILE}`,
+    'the workflow file may have been removed or renamed',
+  );
   const scheduled = `actions/workflows/${MONITOR_WORKFLOW_FILE}/runs?branch=main&event=schedule`;
   const successes = newestOf(await get(`${scheduled}&status=success&per_page=1`), 'successful scheduled runs');
   const latest = newestOf(await get(`${scheduled}&per_page=1`), 'scheduled runs');
