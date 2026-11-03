@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// Deploy freshness monitor (AB#65).
+// Deploy freshness monitor (AB#65), and its liveness check (AB#122).
 //
 // Usage: GITHUB_REPOSITORY=<owner>/<repo> GITHUB_TOKEN=<token> \
-//          node scripts/check-deploy-freshness.mjs
+//          node scripts/check-deploy-freshness.mjs [--liveness]
+//   Without an argument it is the freshness monitor described below. With
+//   --liveness it checks the monitor itself instead (see "Liveness" further
+//   down, above evaluateLiveness()). Any other argument exits 2.
 //   GITHUB_API_URL is honoured (Actions sets it); it defaults to
 //   https://api.github.com. Only https, or http to a loopback host (used by
 //   the self-test), is accepted, so the token is never sent in clear text.
@@ -137,7 +140,8 @@
 // Exit codes:
 //   0  the head of main is live (or still in its grace hour) and no run is
 //      stalled
-//   1  one or more of the failures above (each printed as an ::error:: line)
+//   1  one or more of the failures above (each printed as an ::error:: line);
+//      with --liveness, (c) or (d) below
 //   2  the monitor could not see: bad environment, an API call failed (after
 //      one retry) or returned an unexpected shape, a timestamp in the future,
 //      or a listing exceeded the bounds below. A monitor that cannot see never
@@ -478,6 +482,159 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
   };
 }
 
+// ----------------------------------------------------------- Liveness ----
+// (AB#122) The freshness monitor above runs only on its schedule, and a
+// schedule can go silent with nothing turning red: GitHub drops or delays
+// scheduled runs under load (observed here: the hourly cron fired 23 times in
+// its first ~5.5 days, a median 6.2 h and at most 10.8 h apart, 2026-10-29 to
+// 2026-11-03), disables the schedule after 60 days without repository
+// activity, and a workflow can be disabled by hand. --liveness turns that
+// into a red run of Test and deploy (its monitor-liveness job, on pushes to
+// main), whose failure GitHub mails to the operator. It fails when either:
+//   (c) monitor-disabled: the Deploy freshness workflow's state is not
+//       "active" (disabled_manually, disabled_inactivity, disabled_fork,
+//       deleted, or any state GitHub adds later);
+//   (d) monitor-stale: it has no SCHEDULED run on main that ended "success"
+//       and was created within LIVENESS_WINDOW_MS (26 h). Only conclusion
+//       "success" counts: a run its timeout-minutes killed ends "cancelled"
+//       or "timed_out", and a red monitor ("failure") is not proof the
+//       schedule is healthy either, so all of those are no evidence of
+//       liveness. Only the "schedule" event counts: a manual
+//       workflow_dispatch proves the script runs, not that the schedule does.
+//       The age is the run's created_at (when the scheduler created it), so a
+//       manual re-run of an old scheduled run does not make it fresh.
+// Window: 26 h is about 2.4 times the longest observed gap between scheduled
+// runs (10.8 h), so ordinary dropped runs do not flap it red, and it still
+// names a monitor that has been silent or red for more than a day. A monitor
+// that is genuinely red for longer (a deploy stalled for a day) also trips
+// (d): the same problem, reported once more, to the operator.
+// Boundary: strict, as above: exactly 26 h passes, one millisecond more fails.
+// Accepted residuals: (1) it runs only when something is pushed to main, so a
+// dead monitor in an idle repo is seen at the next push, not before; and after
+// 60 idle days GitHub disables the schedule while nothing pushes, so this
+// check cannot fire then either (recorded in .claude/CLAUDE.md, Deploy).
+// (2) It proves the monitor runs and passes, not that the monitor is right;
+// that is its self-test's job.
+// Fetch bounds: LIVENESS_CALLS (3) calls of one item each: the workflow, its
+// newest successful scheduled run on main, its newest scheduled run on main
+// (any status; it only words the message). Same retry rule and per-call
+// time bound as above: LIVENESS_WORST_CASE_MS = 3 x 18 s = 54 s.
+// "Cannot determine" (an API call failing after its one retry, an unexpected
+// shape, a listing that did not answer the question asked) exits 2 with a
+// CANNOT EVALUATE annotation, never 0: a liveness check that passes when it
+// cannot see is the silence it exists to remove. The job runs beside the
+// test job and the deploy job does not need it, so a red here never blocks a
+// publication; re-running the failed job clears a transient one.
+
+export const MONITOR_WORKFLOW_FILE = 'deploy-freshness.yml';
+export const LIVENESS_WINDOW_MS = 26 * 60 * 60 * 1000;
+export const LIVENESS_CALLS = 3;
+export const LIVENESS_WORST_CASE_MS =
+  LIVENESS_CALLS * (ATTEMPTS * REQUEST_TIMEOUT_MS + (ATTEMPTS - 1) * RETRY_DELAY_MS);
+
+// Why a workflow state other than "active" stops the monitor. A Map, so an
+// API-supplied state can never select an inherited object property.
+const DISABLED = new Map([
+  ['disabled_manually', 'it was disabled by hand'],
+  ['disabled_inactivity', 'GitHub disabled it after 60 days without repository activity'],
+  ['disabled_fork', 'it is disabled in this fork'],
+  ['deleted', 'its workflow file was deleted'],
+]);
+
+// A run from a scheduled-runs-on-main listing, validated. A run of another
+// event or branch means the listing did not answer the question asked.
+function scheduledRun(r, label, now) {
+  if (!isObject(r)) throw new InputError(`${label} is not an object`);
+  if (r.event !== 'schedule' || r.head_branch !== 'main') throw new InputError(`${label} is not a scheduled run on main`);
+  if (typeof r.status !== 'string') throw new InputError(`${label} has no status`);
+  if (r.conclusion != null && typeof r.conclusion !== 'string') throw new InputError(`${label} has a malformed conclusion`);
+  return {
+    id: intId(r.id, label),
+    at: past(time(r.created_at, `${label} created_at`), now, `${label} created_at`),
+    status: r.status,
+    conclusion: r.conclusion ?? null,
+    url: r.html_url,
+  };
+}
+
+function hours(ms) {
+  return `${Math.floor(ms / 3600000)} h`;
+}
+
+// What the newest scheduled run says about why there is no recent success.
+function describeLatestRun(latest, newestSuccess, now) {
+  if (!latest) return 'It has no scheduled run on main at all: its schedule has never fired.';
+  const url = latest.url ? ` ${clean(latest.url, 120)}` : '';
+  const ref = `Its newest scheduled run, ${latest.id}, created ${minutes(now - latest.at)} ago,`;
+  if (newestSuccess && latest.id === newestSuccess.id) {
+    return `${ref} is that success: the schedule has stopped firing (GitHub dropped or delayed every run since).${url}`;
+  }
+  if (latest.status !== 'completed') return `${ref} is still "${clean(latest.status, 20)}".${url}`;
+  return `${ref} ended "${clean(latest.conclusion ?? 'none', 20)}": the monitor runs but does not pass; see that run.${url}`;
+}
+
+/**
+ * Decide whether the Deploy freshness monitor is alive. Pure: no I/O, no clock.
+ *
+ * @param {object} input
+ * @param {number} input.now           current time, epoch ms
+ * @param {object} input.workflow      GET repos/{repo}/actions/workflows/deploy-freshness.yml (path, state)
+ * @param {object[]} input.successes   its newest successful scheduled runs on main (id, event,
+ *                                     head_branch, status, conclusion, created_at, html_url)
+ * @param {object[]} input.latest      its newest scheduled runs on main, any status (same fields)
+ * @returns {{failures: {code: string, reason: string}[], state: string,
+ *            newestSuccess: {id: number, at: number}|undefined, latestRun: {id: number, at: number}|undefined}}
+ * @throws {InputError} when any input is missing or malformed (fail closed)
+ */
+export function evaluateLiveness({ now, workflow, successes, latest } = {}) {
+  if (typeof now !== 'number' || !Number.isFinite(now)) throw new InputError('"now" is not a time');
+  if (!isObject(workflow) || typeof workflow.state !== 'string') throw new InputError('monitor workflow has no state');
+  if (workflow.path !== `.github/workflows/${MONITOR_WORKFLOW_FILE}`) {
+    throw new InputError(`monitor workflow is not .github/workflows/${MONITOR_WORKFLOW_FILE}`);
+  }
+  if (!Array.isArray(successes)) throw new InputError('successful runs is not an array');
+  if (!Array.isArray(latest)) throw new InputError('latest runs is not an array');
+
+  let newestSuccess;
+  for (const [i, r] of successes.entries()) {
+    const run = scheduledRun(r, `successful run #${i}`, now);
+    if (run.status !== 'completed' || run.conclusion !== 'success') {
+      throw new InputError(`successful run #${i} did not end "success"`);
+    }
+    if (!newestSuccess || newer(run, newestSuccess) < 0) newestSuccess = run;
+  }
+  let latestRun;
+  for (const [i, r] of latest.entries()) {
+    const run = scheduledRun(r, `latest run #${i}`, now);
+    if (!latestRun || newer(run, latestRun) < 0) latestRun = run;
+  }
+
+  const failures = [];
+  const { state } = workflow;
+  if (state !== 'active') {
+    failures.push({
+      code: 'monitor-disabled',
+      reason:
+        `The Deploy freshness workflow is "${clean(state, 30)}", not "active": ` +
+        `${DISABLED.get(state) ?? 'it does not run'}. Its scheduled check of the Pages deploy is off, so a ` +
+        'stalled deploy would go unseen. Enable it again under Actions > Deploy freshness.',
+    });
+  }
+  const age = newestSuccess ? now - newestSuccess.at : Infinity;
+  if (age > LIVENESS_WINDOW_MS) {
+    const since = newestSuccess
+      ? `its newest was run ${newestSuccess.id}, created ${iso(newestSuccess.at)}, ${hours(age)} ago`
+      : 'none was found';
+    failures.push({
+      code: 'monitor-stale',
+      reason:
+        `The Deploy freshness workflow has had no successful scheduled run on main in the last ` +
+        `${hours(LIVENESS_WINDOW_MS)} (${since}). ${describeLatestRun(latestRun, newestSuccess, now)}`,
+    });
+  }
+  return { failures, state, newestSuccess, latestRun };
+}
+
 // ---------------------------------------------------------------- CLI ----
 
 function cannotSee(message) {
@@ -489,7 +646,8 @@ function cannotSee(message) {
   if (token && token.length >= 4) {
     for (let n = token.length; n >= Math.min(token.length, 8); n -= 1) text = text.replaceAll(token.slice(0, n), '***');
   }
-  console.log(`::error::DEPLOY FRESHNESS: CANNOT EVALUATE - ${clean(text, 400)}`);
+  const title = process.argv.includes('--liveness') ? 'MONITOR LIVENESS' : 'DEPLOY FRESHNESS';
+  console.log(`::error::${title}: CANNOT EVALUATE - ${clean(text, 400)}`);
   console.error('A monitor that cannot see never reports green.');
   process.exit(EXIT_CANNOT_SEE);
 }
@@ -550,7 +708,20 @@ function transient(res) {
   return undefined;
 }
 
-async function main() {
+// A one-item runs listing page (per_page=1), validated: the newest run, if any.
+function newestOf(page, what) {
+  if (!isObject(page) || !Array.isArray(page.workflow_runs) || !Number.isSafeInteger(page.total_count)) {
+    throw new InputError(`runs listing for ${what} has an unexpected shape`);
+  }
+  const runs = page.workflow_runs;
+  if (runs.length > 1 || (page.total_count > 0) !== (runs.length > 0)) {
+    throw new InputError(`runs listing for ${what} holds ${runs.length} runs of ${page.total_count}; expected the newest one`);
+  }
+  return runs;
+}
+
+// The authenticated GET the checks share, after validating the environment.
+function client() {
   const repo = process.env.GITHUB_REPOSITORY ?? '';
   const token = process.env.GITHUB_TOKEN ?? '';
   if (!REPO_RE.test(repo)) throw new InputError('GITHUB_REPOSITORY must be set to <owner>/<repo>');
@@ -601,10 +772,41 @@ async function main() {
     }
     throw new InputError(`GET ${path} failed after ${ATTEMPTS} attempts: ${why}`);
   };
+  return get;
+}
 
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== '--liveness')) {
+    throw new InputError('usage: check-deploy-freshness.mjs [--liveness]');
+  }
+  const get = client();
   // One clock for the scan and the decision.
   const now = Date.now();
+  await (args[0] === '--liveness' ? liveness : freshness)(get, now);
+}
 
+async function liveness(get, now) {
+  const workflow = await get(`actions/workflows/${MONITOR_WORKFLOW_FILE}`);
+  const scheduled = `actions/workflows/${MONITOR_WORKFLOW_FILE}/runs?branch=main&event=schedule`;
+  const successes = newestOf(await get(`${scheduled}&status=success&per_page=1`), 'successful scheduled runs');
+  const latest = newestOf(await get(`${scheduled}&per_page=1`), 'scheduled runs');
+
+  const result = evaluateLiveness({ now, workflow, successes, latest });
+  const describe = (run) => (run ? `run ${run.id}, created ${iso(run.at)} (${minutes(now - run.at)} ago)` : '(none)');
+  console.log(`monitor workflow:        ${MONITOR_WORKFLOW_FILE}, state "${clean(result.state, 30)}"`);
+  console.log(`newest scheduled success: ${describe(result.newestSuccess)}`);
+  console.log(`newest scheduled run:    ${describe(result.latestRun)}`);
+  console.log(`window:                  ${hours(LIVENESS_WINDOW_MS)}`);
+  if (result.failures.length > 0) {
+    for (const f of result.failures) console.log(`::error::MONITOR LIVENESS (${f.code}): ${f.reason}`);
+    console.error(`MONITOR LIVENESS FAILED: ${result.failures.length} problem(s); see the errors above.`);
+    process.exit(EXIT_STALE);
+  }
+  console.log(`MONITOR LIVENESS OK: Deploy freshness is active and had a successful scheduled run within ${hours(LIVENESS_WINDOW_MS)}.`);
+}
+
+async function freshness(get, now) {
   const head = await get('commits/heads/main');
   // Validated before it is put into a URL.
   const headSha = sha(isObject(head) ? head.sha : undefined, 'main head sha');

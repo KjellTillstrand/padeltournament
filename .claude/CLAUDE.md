@@ -65,6 +65,16 @@ uploads `web/` as a Pages artifact and publishes it with `actions/deploy-pages` 
 "GitHub Actions" — the old `gh-pages` branch is no longer published to, though not yet
 deleted). CI/release is a trust boundary; the workflow, its gate scripts and the
 requirements manifest are gate-protected paths.
+- Monitoring: `.github/workflows/deploy-freshness.yml` ("Deploy freshness", AB#65) checks
+  hourly that the head of main is live on Pages. Its liveness (AB#122): the
+  `monitor-liveness` job of Test and deploy, on every push to `main`, fails when that
+  workflow is not active or has had no successful scheduled run in 26 h
+  (`scripts/check-deploy-freshness.mjs --liveness`). Either failure reaches the operator as
+  GitHub's failed-run email.
+- Accepted risk (operator, 2026-10-31, AB#122): if the repo is idle for 60 days, GitHub
+  disables the Deploy freshness schedule and nothing runs at all, so the liveness check
+  cannot fire then. It also fires only on a push to `main`, so a dead monitor is seen at
+  the next push, not before.
 
 ## Delivery Path
 PR + required CI. Drained PRs target `main` and land only once the `Test and deploy`

@@ -26,9 +26,13 @@ name: Deploy freshness
 on:
   schedule:
     # Hourly, at an off-peak minute (scheduled runs at :00 are the most delayed).
-    # DEFERRED: AB#122 - monitor liveness: GitHub may delay or drop scheduled
-    # runs and disables the schedule after 60 days without repository
-    # activity; nothing goes red when this monitor itself stops running.
+    # GitHub delays or drops many of these runs (here, a median 6.2 h apart).
+    # Liveness (AB#122): the monitor-liveness job of Test and deploy, on every
+    # push to main, fails when this workflow is not active or has had no
+    # successful scheduled run in 26 h (check-deploy-freshness.mjs --liveness).
+    # The self-test pins this schedule as hourly; the 26 h window assumes it.
+    # Accepted gap: after 60 days without repository activity GitHub disables
+    # this schedule, and with nothing pushed the liveness job does not run.
     - cron: '17 * * * *'
   workflow_dispatch:
 
