@@ -36,7 +36,7 @@ test.describe('General Functionality of Tournament Manager', () => {
     const leftInput = page.locator('.result-overlay-left input').first();
     await leftInput.fill('10');
     // Allow auto-calculation and saving.
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(500); // DEFERRED: AB#154 (remaining-real-clock-wait)
 
     // When the page is reloaded.
     await page.reload();
@@ -3974,25 +3974,56 @@ test.describe('A visible warning when the auto-save fails', () => {
   // the test (no tick in real time, no resume). The pause is a jump forward (the
   // clock has been running in real time, so a pause at "now" can already lie in
   // the past); the jump runs any timer already pending, so the freeze asserts it
-  // changed nothing: attemptCount() (by default this page's count of state-write
-  // attempts; a test with several app tabs passes the sum) is the same across it.
-  // A retry left pending by a regression would fire in the jump and fail here,
-  // not vanish into the baseline.
+  // changed nothing: attemptCount() is the same across it. By default that is the
+  // sum of the state-write attempts of the page and of every tab named (a tab
+  // without the counting script counts as none), so a save armed in any of them
+  // fails here; a test may pass its own attemptCount. A retry left pending by a
+  // regression would fire in the jump and fail here, not vanish into the baseline.
   // Each page of the context has a fake clock of its own, so the pause target is
   // past the latest Date.now() of the page and of the tabs named (reading only
   // one makes pauseAt fail with "Cannot fast-forward to the past" when another
-  // is ahead). Every tab the test uses is opened BEFORE the pause, so that all
-  // of them are paused and advanced together: a tab opened under the pause gets a
-  // clock out of step with the others that never ticks, and the storage events
-  // and evaluates crossing between it and a frozen tab hang on Microsoft Edge.
+  // is ahead). The invariant: every tab that coexists with a frozen tab is
+  // opened BEFORE the pause, so that all of them are paused and advanced
+  // together; a tab opened after every frozen tab is closed is safe, as its
+  // clock then has nothing to be out of step with. A tab opened under the pause
+  // gets a clock out of step with the others that never ticks. That shape was
+  // suspected in the Microsoft Edge failures of these tests seen in CI (6 of 10
+  // runs after AB#137); the hang was not reproduced locally, even under load, so
+  // the cause is unconfirmed and the invariant is a precaution.
   // Only the tabs named are evaluated: a page that is closing, or sits on a
   // dialog, must not be asked.
   const FREEZE_JUMP_MS = 5000;
-  async function freezeTheClock(page, attemptCount = () => stateWriteAttempts(page), tabs = []) {
-    const attempts = await attemptCount();
+  async function totalStateWriteAttempts(pages) {
+    const counts = await Promise.all(pages.map((p) => p.evaluate(() => window.stateWriteAttempts || 0)));
+    return counts.reduce((sum, n) => sum + n, 0);
+  }
+  async function freezeTheClock(page, { attemptCount, tabs = [] } = {}) {
+    const count = attemptCount || (() => totalStateWriteAttempts([page, ...tabs]));
+    const attempts = await count();
     const nows = await Promise.all([page, ...tabs].map((p) => p.evaluate(() => Date.now())));
     await page.clock.pauseAt(Math.max(...nows) + FREEZE_JUMP_MS);
-    expect(await attemptCount()).toBe(attempts);
+    expect(await count()).toBe(attempts);
+  }
+
+  // The tab counts its attempts to write the state (it refuses none), so that
+  // the freeze covers it: a save armed in an app tab other than the first.
+  async function countStateWriteAttempts(tab) {
+    await tab.addInitScript((stateKey) => {
+      window.stateWriteAttempts = 0;
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === stateKey) window.stateWriteAttempts++;
+        return setItem.call(this, key, value);
+      };
+    }, STATE_KEY);
+  }
+
+  // One tick short of the retry delay the warning is still shown; the last tick
+  // runs the retry.
+  async function runToTheRetryDelay(page) {
+    await page.clock.runFor(RETRY_DELAY_MS - 1);
+    await expectTheWarning(page);
+    await page.clock.runFor(1);
   }
 
   // A tournament whose auto-save has failed: a score entered and refused, the
@@ -4023,7 +4054,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     if (prepare) await prepare();
     const storedBefore = await failASave(page, name);
     const other = openOtherTab ? await openOtherTab(page.context()) : undefined;
-    await freezeTheClock(page, undefined, other ? [other] : []);
+    await freezeTheClock(page, { tabs: other ? [other] : [] });
     return { storedBefore, other };
   }
 
@@ -4041,7 +4072,7 @@ test.describe('A visible warning when the auto-save fails', () => {
   async function expectTheScoreSavedAndRestored(page) {
     expect((await storedJson(page, STATE_KEY)).schedule.rounds[0].matches[0].result)
       .toEqual({ left: '10', right: '14' });
-    await page.reload();
+    await page.reload(); // DEFERRED: AB#154 (reload-onto-forever-paused-clock)
     await expectNoWarning(page);
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
     await expect(leftScore(page, 0)).toHaveValue('10');
@@ -4077,9 +4108,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     await other.evaluate(() => localStorage.removeItem('another-app-on-this-origin'));
     await expect.poll(() => page.evaluate(() => window.storageEventsSeen)).toBe(1);
     // then the retry has not run yet, one tick short of its delay,
-    await page.clock.runFor(RETRY_DELAY_MS - 1);
-    await expectTheWarning(page);
-    await page.clock.runFor(1);
+    await runToTheRetryDelay(page);
 
     // then the warning is no longer shown,
     await expectNoWarning(page);
@@ -4237,6 +4266,9 @@ test.describe('A visible warning when the auto-save fails', () => {
   test('Two failing tabs with a pending legacy migration do not retry each other in a loop', async ({ context }) => {
     // (two pages to set up: room for a loaded machine; the delays are the
     // context clock's, not waited for)
+    // (set up by hand, not openAFailingTabOnAFrozenClock: that helper opens one
+    // failing tab plus one other, while this test has two failing app tabs
+    // seeded from the legacy key)
     test.setTimeout(90 * 1000);
     await context.clock.install();
     // Given a tournament stored under the legacy key only,
@@ -4282,7 +4314,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     // when they have settled and two more seconds pass,
     const attempts = async () => (await stateWriteAttempts(first)) + (await stateWriteAttempts(second));
     // (the freeze's jump runs whatever is pending in either tab: nothing was)
-    await freezeTheClock(first, attempts, [second]);
+    await freezeTheClock(first, { attemptCount: attempts, tabs: [second] });
     await context.clock.runFor(RETRY_DELAY_MS * 1.5);
     const settled = await attempts();
     await context.clock.runFor(2 * RETRY_DELAY_MS);
@@ -4302,6 +4334,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     const { other } = await openAFailingTabOnAFrozenClock(page, 'Shared Cup', {
       openOtherTab: async (ctx) => {
         const tab = await ctx.newPage();
+        await countStateWriteAttempts(tab);
         await tab.goto('/');
         await expect(tab.locator('#tournamentTitle')).toHaveText('Shared Cup');
         return tab;
@@ -4310,7 +4343,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     // (the other tab's loading re-saved the state in its own form: that is the
     // state stored now, and the one this tab must leave alone)
     const storedByLoading = await storedRaw(page, STATE_KEY);
-    await freeStorageQuietly(page, storedByLoading);
+    await freeStorageQuietly(page, storedByLoading); // DEFERRED: AB#154 (tautological-stored-check)
     const attempts = await stateWriteAttempts(page);
     await page.evaluate((key) => {
       window.stateEventsSeen = 0;
@@ -4372,9 +4405,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     // and when it then shortens the value, the Organizer changing nothing,
     await other.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'z'));
     await expect.poll(() => page.evaluate(() => window.storageEventsSeen)).toBe(4);
-    await page.clock.runFor(RETRY_DELAY_MS - 1);
-    await expectTheWarning(page);
-    await page.clock.runFor(1);
+    await runToTheRetryDelay(page);
     // then the warning is no longer shown,
     await expectNoWarning(page);
     await other.close();
@@ -4500,6 +4531,8 @@ test.describe('A visible warning when the auto-save fails', () => {
 
   test('While saving works, storage events, returning to and leaving the page save nothing', async ({ page, context }) => {
     const errors = collectErrors(page);
+    // (set up by hand, not openAFailingTabOnAFrozenClock: no save fails in this
+    // test, the point being that nothing is written while saving works)
     await page.clock.install();
     await refuseStateWritesOnDemand(page);
     await page.goto('/');
@@ -4511,7 +4544,7 @@ test.describe('A visible warning when the auto-save fails', () => {
     // (another app on this shared origin holds a value, and has a tab open),
     await page.evaluate(() => localStorage.setItem('another-app-on-this-origin', 'x'));
     const other = await anotherTab(context);
-    await freezeTheClock(page, undefined, [other]);
+    await freezeTheClock(page, { tabs: [other] });
     const attempts = await stateWriteAttempts(page);
     const stored = await storedRaw(page, STATE_KEY);
     await page.evaluate(() => {
@@ -4605,9 +4638,11 @@ test.describe('A visible warning when the auto-save fails', () => {
 
     // Given a failed auto-save is being announced (Calm Cup resumed in a new
     // page) and storage works again, the page not told,
+    // (set up by hand, not openAFailingTabOnAFrozenClock: Calm Cup was started
+    // and closed above on the real clock, and is resumed here)
     const second = await context.newPage();
     second.on('dialog', (dialog) => { prompts.push(dialog.type()); dialog.accept(); });
-    await second.clock.install();
+    await second.clock.install(); // DEFERRED: AB#154 (install-after-page-loaded)
     await refuseStateWritesOnDemand(second);
     await second.goto('/');
     await expect(leftScore(second, 0)).toHaveValue('10');
@@ -4615,8 +4650,11 @@ test.describe('A visible warning when the auto-save fails', () => {
     await setStateWritesFailing(second, true);
     await expectARefusedSave(second, () => leftScore(second, 1).fill('20'));
     await expectTheWarning(second);
+    // (the verification tab is opened before the pause, while it coexists with
+    // the frozen page; it only reads the stored state after that page closes)
+    const check = await anotherTab(context);
     // (on a frozen clock: no retry armed by a focus may save before the page is left)
-    await freezeTheClock(second);
+    await freezeTheClock(second, { tabs: [check] });
     await freeStorageQuietly(second, storedBefore);
     // when the Organizer closes the page,
     closed = second.waitForEvent('close');
@@ -4625,12 +4663,12 @@ test.describe('A visible warning when the auto-save fails', () => {
     // then the save on leaving worked, so nothing asked, and the page closed
     // with the score stored.
     expect(prompts).toEqual([]);
-    const check = await anotherTab(context);
     expect(JSON.parse(await check.evaluate((k) => localStorage.getItem(k), STATE_KEY))
       .schedule.rounds[0].matches[1].result).toEqual({ left: '20', right: '4' });
     await check.close();
   });
 
+  // DEFERRED: AB#154 (leave-test-without-fake-clock)
   test('Leaving asks nothing when the save on leaving is the first to fail', async ({ page }) => {
     const prompts = [];
     page.on('dialog', (dialog) => { prompts.push(dialog.type()); dialog.accept(); });
