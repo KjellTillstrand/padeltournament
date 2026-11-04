@@ -487,7 +487,7 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
 // schedule can go silent with nothing turning red: GitHub drops or delays
 // scheduled runs under load (observed here: the hourly cron fired 24 times in
 // its first ~5.8 days, 2026-10-29 to 2026-11-03; its 23 gaps were a median
-// 6.2 h and at most 10.8 h), disables the schedule after 60 days without
+// 6.1 h and at most 10.8 h), disables the schedule after 60 days without
 // repository activity, and a workflow can be disabled by hand. --liveness
 // turns that into a red run of Test and deploy (its monitor-liveness job, on
 // pushes to main), whose failure GitHub mails to the operator. It fails when
@@ -515,7 +515,10 @@ export function evaluate({ now, head, headRuns, deployments, runs } = {}) {
 //       must not wedge the check at CANNOT EVALUATE on every push. With no
 //       success listed, (d) judges staleness as usual (and passes if the other
 //       listing holds a recent success); with no run of any status listed, only
-//       the message's wording changes.
+//       the message's wording changes. A red (d) with no success listed says so
+//       as what was listed, not as a fact: the success listing may be lagging.
+//       Only when neither listing holds a run does it say the schedule may
+//       never have fired.
 // Window: 26 h is about 2.4 times the longest observed gap between scheduled
 // runs (10.8 h), so ordinary dropped runs do not flap it red, and it still
 // names a monitor that has been silent or red for more than a day. A monitor
@@ -587,19 +590,26 @@ function hours(ms) {
 
 const succeeded = (run) => run.status === 'completed' && run.conclusion === 'success';
 
+// How long ago a run was created, never negative: a created_at inside the
+// FUTURE_SKEW_MS allowance (clocks that disagree) reads as "0 min ago".
+const ago = (at, now) => `${minutes(Math.max(0, now - at))} ago`;
+
 // What the newest scheduled run says about why there is no recent success.
 // newestSuccess already takes in latest when latest succeeded, so a latest
 // success here is either newestSuccess itself or, when the listings disagree,
 // an older one.
 function describeLatestRun(latest, newestSuccess, now) {
+  if (!latest && !newestSuccess) {
+    return 'No scheduled run on main was listed either: its schedule has never fired, or GitHub\'s run listings have not caught up.';
+  }
   if (!latest) {
-    return 'No scheduled run on main was listed: its schedule has never fired, or GitHub\'s run listing has not caught up.';
+    return 'No scheduled run of any status was listed: that listing lags behind the success one, so it shows no newer run.';
   }
   const url = latest.url ? ` ${clean(latest.url, 120)}` : '';
   if (newestSuccess && latest.id === newestSuccess.id) {
     return `That run is also its newest scheduled run: the schedule has stopped firing (GitHub dropped or delayed every run since).${url}`;
   }
-  const ref = `Its newest scheduled run, ${latest.id}, created ${minutes(now - latest.at)} ago,`;
+  const ref = `Its newest scheduled run, ${latest.id}, created ${ago(latest.at, now)},`;
   if (succeeded(latest)) {
     return `${ref} ended "success" too but is older than that one (the run listings disagree), so it shows no fresher success.${url}`;
   }
@@ -633,9 +643,7 @@ export function evaluateLiveness({ now, workflow, successes, latest } = {}) {
   let newestSuccess;
   for (const [i, r] of successes.entries()) {
     const run = scheduledRun(r, `successful run #${i}`, now);
-    if (run.status !== 'completed' || run.conclusion !== 'success') {
-      throw new InputError(`successful run #${i} did not end "success"`);
-    }
+    if (!succeeded(run)) throw new InputError(`successful run #${i} did not end "success"`);
     if (!newestSuccess || newer(run, newestSuccess) < 0) newestSuccess = run;
   }
   let latestRun;
@@ -662,14 +670,16 @@ export function evaluateLiveness({ now, workflow, successes, latest } = {}) {
   }
   const age = newestSuccess ? now - newestSuccess.at : Infinity;
   if (age > LIVENESS_WINDOW_MS) {
-    const since = newestSuccess
-      ? `its newest was run ${newestSuccess.id}, created ${iso(newestSuccess.at)}, ${hours(age)} ago`
-      : 'none was found';
+    // With no success listed at all, a lagging success listing cannot be ruled
+    // out: say what was listed, not that no success exists. The verdict stays red.
+    const finding = newestSuccess
+      ? `has had no successful scheduled run on main in the last ${hours(LIVENESS_WINDOW_MS)} ` +
+        `(its newest was run ${newestSuccess.id}, created ${iso(newestSuccess.at)}, ${hours(age)} ago)`
+      : `shows no successful scheduled run on main in the last ${hours(LIVENESS_WINDOW_MS)} ` +
+        '(none was listed; the success listing may be lagging)';
     failures.push({
       code: 'monitor-stale',
-      reason:
-        `The Deploy freshness workflow has had no successful scheduled run on main in the last ` +
-        `${hours(LIVENESS_WINDOW_MS)} (${since}). ${describeLatestRun(latestRun, newestSuccess, now)}`,
+      reason: `The Deploy freshness workflow ${finding}. ${describeLatestRun(latestRun, newestSuccess, now)}`,
     });
   }
   return { failures, state, newestSuccess, latestRun };
@@ -736,14 +746,13 @@ function runsPageOf(page, what) {
 }
 
 // A runs listing page, validated; refuses a partial list.
+// DEFERRED: AB#155 (quirk-tolerance-one-call-site)
 function runsOf(page, what) {
-  runsPageOf(page, what);
-  if (page.total_count > page.workflow_runs.length) {
-    throw new InputError(
-      `${page.total_count} runs are ${what}, more than one page (${RUN_PAGE}) holds; not judging a partial list`,
-    );
+  const { total_count: total, workflow_runs: runs } = runsPageOf(page, what);
+  if (total > runs.length) {
+    throw new InputError(`${total} runs are ${what}, more than one page (${RUN_PAGE}) holds; not judging a partial list`);
   }
-  return page.workflow_runs;
+  return runs;
 }
 
 // Worth one retry: a server error, or a rate limit (429, or a 403 that says so).
@@ -760,9 +769,9 @@ function transient(res) {
 // eventually consistent, so an empty page with a count above 0 is read as
 // "none listed" (see Liveness above), never as an unanswerable listing.
 function newestOf(page, what) {
-  const runs = runsPageOf(page, what).workflow_runs;
+  const { total_count: total, workflow_runs: runs } = runsPageOf(page, what);
   if (runs.length > 1) {
-    throw new InputError(`runs listing for ${what} holds ${runs.length} runs of ${page.total_count}; expected at most the newest one`);
+    throw new InputError(`runs listing for ${what} holds ${runs.length} runs of ${total}; expected at most the newest one`);
   }
   return runs;
 }
@@ -848,7 +857,7 @@ async function liveness(get, now) {
   const latest = newestOf(await get(`${scheduled}&per_page=1`), 'scheduled runs');
 
   const result = evaluateLiveness({ now, workflow, successes, latest });
-  const describe = (run) => (run ? `run ${run.id}, created ${iso(run.at)} (${minutes(now - run.at)} ago)` : '(none)');
+  const describe = (run) => (run ? `run ${run.id}, created ${iso(run.at)} (${ago(run.at, now)})` : '(none)');
   console.log(`monitor workflow:        ${MONITOR_WORKFLOW_FILE}, state "${clean(result.state, 30)}"`);
   console.log(`newest scheduled success: ${describe(result.newestSuccess)}`);
   console.log(`newest scheduled run:    ${describe(result.latestRun)}`);

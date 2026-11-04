@@ -26,7 +26,7 @@ name: Deploy freshness
 on:
   schedule:
     # Hourly, at an off-peak minute (scheduled runs at :00 are the most delayed).
-    # GitHub delays or drops many of these runs (here, a median 6.2 h apart).
+    # GitHub delays or drops many of these runs (here, a median 6.1 h apart).
     # Liveness (AB#122): the monitor-liveness job of Test and deploy, on every
     # push to main, fails when this workflow is not active or has had no
     # successful scheduled run in 26 h (check-deploy-freshness.mjs --liveness).
