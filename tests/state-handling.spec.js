@@ -4650,11 +4650,8 @@ test.describe('A visible warning when the auto-save fails', () => {
     await setStateWritesFailing(second, true);
     await expectARefusedSave(second, () => leftScore(second, 1).fill('20'));
     await expectTheWarning(second);
-    // (the verification tab is opened before the pause, while it coexists with
-    // the frozen page; it only reads the stored state after that page closes)
-    const check = await anotherTab(context);
     // (on a frozen clock: no retry armed by a focus may save before the page is left)
-    await freezeTheClock(second, { tabs: [check] });
+    await freezeTheClock(second);
     await freeStorageQuietly(second, storedBefore);
     // when the Organizer closes the page,
     closed = second.waitForEvent('close');
@@ -4663,7 +4660,11 @@ test.describe('A visible warning when the auto-save fails', () => {
     // then the save on leaving worked, so nothing asked, and the page closed
     // with the score stored.
     expect(prompts).toEqual([]);
-    expect(JSON.parse(await check.evaluate((k) => localStorage.getItem(k), STATE_KEY))
+    // (the verification tab is opened only now, after the frozen page closed, so
+    // its clock has nothing to be out of step with; the stored state is polled,
+    // as the close can resolve before the leave-save's write lands)
+    const check = await anotherTab(context);
+    await expect.poll(async () => JSON.parse(await check.evaluate((k) => localStorage.getItem(k), STATE_KEY))
       .schedule.rounds[0].matches[1].result).toEqual({ left: '20', right: '4' });
     await check.close();
   });
