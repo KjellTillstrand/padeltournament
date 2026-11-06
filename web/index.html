@@ -972,6 +972,8 @@
 
       // Now proceed to start the tournament.
       document.getElementById("tournamentName").value = startName.name;
+      // Setting .value fires no input event, so refresh the title here (AB#117).
+      document.getElementById("tournamentTitle").textContent = startName.name;
       tournamentStarted = true;
       uncheckedTournamentName = startName.checked ? null : startName.name;
       currentRoundIndex = 0;
