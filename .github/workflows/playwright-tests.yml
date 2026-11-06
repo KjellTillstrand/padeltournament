@@ -238,3 +238,42 @@ jobs:
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
         with:
           artifact_name: ${{ env.PAGES_ARTIFACT }}
+
+  # Liveness of the Deploy freshness monitor (AB#122): fails when that
+  # scheduled workflow is not "active", or has had no successful scheduled run
+  # on main for more than 26 h (scripts/check-deploy-freshness.mjs --liveness;
+  # its header has the rules and the window's reasoning). A red run here is
+  # mailed to the operator like any failed Test and deploy run.
+  # Push to main only: what it judges is main's monitor, not the change under
+  # review, so on a pull request it would block an unrelated PR (land_proposal
+  # refuses failing checks), including a PR that fixes the monitor.
+  # No needs, and nothing needs it: it reports even when the tests fail, and a
+  # red here never holds back the deploy job. Cannot-evaluate (an API call
+  # failing after its one retry) is red too (exit 2); re-run the job.
+  monitor-liveness:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Three API calls, 54 s worst case (LIVENESS_WORST_CASE_MS); the rest is
+    # for checkout and setup-node. The self-test asserts the margin.
+    timeout-minutes: 5
+    # Read-only: contents for checkout, actions for the workflow and its runs.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # The token is passed to the check as an env var only.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Node built-ins only: no install, no npm cache.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Check the Deploy freshness monitor is alive
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-deploy-freshness.mjs --liveness
