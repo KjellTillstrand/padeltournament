@@ -54,8 +54,9 @@ default court names). Unknown values fall back to `default`.
 
 Requirements: Node.js ≥ 20.
 
+<!-- DEFERRED: AB#158 (npm start runs vite, which is not yet a devDependency) -->
 ```sh
-npm install     # once
+npm ci          # once (and after each lockfile change), as CI does
 npm start       # vite dev server serving the app locally
 npm test        # full Playwright suite (all five projects, listed below)
 ```
@@ -66,16 +67,28 @@ To run some of them, name each one and quote names with a space, for example
 `npm test -- --project=webkit --project="Microsoft Edge"`. A project you don't
 name doesn't run, `unit` included.
 
-<!-- DEFERRED: AB#135 install privileges, npm ci vs install, bundled-browser wording -->
-The browser projects need Playwright's bundled browsers. WebKit is part of the
-gate, so install it too before a local run: `npx --no playwright install webkit`
-(or `npx --no playwright install chromium firefox webkit` on a fresh machine).
-Run `npm install` first: `--no` makes npx use the project's pinned Playwright
+`npm ci` installs exactly what `package-lock.json` records and fails if the
+lockfile and `package.json` disagree; `npm install` also works, but may update
+the lockfile. The `chromium`, `firefox` and `webkit` projects need Playwright's
+bundled browsers, all three part of the gate:
+`npx --no playwright install chromium firefox webkit` downloads them into your
+user cache (`~/.cache/ms-playwright` on Linux, `~/Library/Caches/ms-playwright`
+on macOS) and needs no root. `--no` makes npx run the Playwright that `npm ci` installed
 and fail rather than download another version. On Linux (Debian or Ubuntu), add
-`--with-deps` to install the browsers' OS libraries too, as CI does; WebKit
-does not launch without them. The `Microsoft Edge` project uses the installed
-Microsoft Edge (channel `msedge`); if it is missing,
-`npx --no playwright install msedge` installs it. On macOS a few
+`--with-deps`, as CI does, to install the OS libraries the browsers need to
+launch: it runs `apt-get` as root, through `sudo` (or `su`), for every browser
+named, not only WebKit. On macOS `--with-deps` installs nothing extra.
+
+The `Microsoft Edge` project is not a bundled browser: it runs the Microsoft
+Edge installed on the machine (channel `msedge`; CI uses the one preinstalled
+on its runner). If Edge is missing, `npx --no playwright install msedge`
+installs it system-wide, as root through `sudo`: on Linux (Debian or Ubuntu,
+x86-64 only) it adds Microsoft's apt signing key
+(`/etc/apt/trusted.gpg.d/microsoft.gpg`) and package source
+(`/etc/apt/sources.list.d/microsoft-edge-stable.list`), then installs
+`microsoft-edge-stable`; on macOS it installs Microsoft's Edge package into
+`/Applications`. If Edge is already installed, the command says so and changes
+nothing; `--force` reinstalls it over the existing one. On macOS a few
 keyboard-navigation tests skip on WebKit (AB#131); CI runs them on Linux WebKit.
 
 Playwright starts its own server on `127.0.0.1:8199` for the test suite — don't
