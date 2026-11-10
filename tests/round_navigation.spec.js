@@ -230,4 +230,45 @@ test.describe('R-ROUND-NAV: Round navigation', () => {
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 1');
     expect(await organizer.asksFor(AFocusRingIsShown)).toBe(false);
   });
+
+  // --- A schedule that fails to load (AB#112) ---
+  // New Tournament drops the tournament and loads the default schedule. When that
+  // schedule's module is missing (its script failed to load), the round shown
+  // before must not stay on screen with live controls over no schedule.
+
+  // @verifies REQ-9
+  test('R-ROUND-NAV: A New Tournament whose schedule fails to load leaves no round controls behind', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    const dialogs = [];
+    page.on('dialog', async (dialog) => {
+      dialogs.push(dialog.message());
+      // "Save the current tournament first?": no. Every alert: OK.
+      if (dialog.type() === 'confirm') await dialog.dismiss(); else await dialog.accept();
+    });
+    const organizer = theOrganizer(page);
+    const container = page.locator('#tournamentContainer');
+
+    // Given a tournament in progress at round 2,
+    await organizer.attemptsTo(StartTheTournament('Nav Lost Schedule'), GoToTheNextRound);
+    expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+    // whose default schedule's module is gone, as when its script failed to load,
+    await page.evaluate(() => { delete window.schedule12p11r; });
+
+    // When the Organizer starts a New Tournament without saving the current one,
+    await page.click('#newTournamentBtn');
+    await expect.poll(() => dialogs.length).toBe(2);
+    expect(dialogs).toEqual([
+      'Do you want to save the current tournament before creating a new one?',
+      'Ready for a new tournament!',
+    ]);
+
+    // Then no round is shown, so none of its controls (PREVIOUS/NEXT ROUND, Save,
+    // New Tournament, score inputs) is left to act on the cleared tournament,
+    await expect(container.locator('.round')).toHaveCount(0);
+    await expect(container.getByRole('button')).toHaveCount(0);
+    await expect(container.locator('input')).toHaveCount(0);
+    // and no page error fired.
+    expect(errors).toEqual([]);
+  });
 });
