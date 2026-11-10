@@ -57,4 +57,34 @@ test.describe('Tournament Save Unique Name Functionality', () => {
     // ...and the other should have a "-1" suffix (or similar) ensuring uniqueness.
     expect(names.some(name => /^Test Tournament-\d+$/.test(name))).toBe(true);
   });
+
+  for (const format of ['americano', 'mexicano']) {
+    test(`R-NAME-UNIQUE: a ${format} Start that makes a duplicate name unique shows the unique name in the title at once`, async ({ page }) => {
+      const dialogs = [];
+      page.on('dialog', (dialog) => {
+        dialogs.push(dialog.message());
+        dialog.accept();
+      });
+
+      // Given a saved tournament named "Test Tournament" exists.
+      await page.fill('#tournamentName', 'Test Tournament');
+      await page.click('#startTournamentBtn');
+      await page.click('#saveTournamentBtn');
+      await page.click('#newTournamentBtn');
+      await expect.poll(() => dialogs.length).toBe(4);
+      const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), SAVED_TOURNAMENTS_KEY);
+      expect(saved.map(t => t.tournamentName)).toEqual(['Test Tournament']);
+      await page.selectOption('#formatSelect', format);
+
+      // When the Organizer types the same name and starts.
+      await page.fill('#tournamentName', 'Test Tournament');
+      await page.click('#startTournamentBtn');
+
+      // Then the tournament runs under the unique name,
+      await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+      await expect(page.locator('#tournamentName')).toHaveValue('Test Tournament-1');
+      // and the visible title shows it at once, without a reload.
+      await expect(page.locator('#tournamentTitle')).toHaveText('Test Tournament-1');
+    });
+  }
 });
