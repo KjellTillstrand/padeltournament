@@ -2351,7 +2351,7 @@
     function goToRound(roundIndex, button) {
       const hadFocus = document.activeElement === button;
       currentRoundIndex = roundIndex;
-      displayRound(currentRoundIndex); // which saves
+      displayRound(currentRoundIndex); // (saves when it shows a round)
       if (!hadFocus) return;
       const same = document.querySelector(
         '#tournamentContainer .round-header [data-round-step="' + button.dataset.roundStep + '"]');
