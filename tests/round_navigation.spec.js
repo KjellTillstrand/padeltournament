@@ -304,15 +304,20 @@ test.describe('R-ROUND-NAV: Round navigation', () => {
         await page.click('#deleteTournamentBtn');
       }
       await expect.poll(() => dialogs.length).toBe(2);
-      expect(dialogs).toEqual([
+      const expectedDialogs = [
         route === 'New'
           ? 'Do you want to save the current tournament before creating a new one?'
           : 'Are you sure you want to delete "Nav Lost Schedule"? Your secret sauce will vanish forever!',
         route === 'New' ? 'Ready for a new tournament!' : 'Tournament "Nav Lost Schedule" deleted!',
-      ]);
+      ];
+      expect(dialogs).toEqual(expectedDialogs);
 
       // Then the schedule's load failure was reported (so the failure path ran),
-      expect(consoleErrors).toEqual(['Unknown module name: ' + moduleName]);
+      // (polled: the console event may arrive a tick after the dialogs; a missing
+      // report fails here on timeout, any other console error fails the toEqual below)
+      const expectedError = 'Unknown module name: ' + moduleName;
+      await expect.poll(() => consoleErrors).toContain(expectedError);
+      expect(consoleErrors.filter((text) => text !== expectedError)).toEqual([]);
       // no round is shown, so none of its controls (PREVIOUS/NEXT ROUND, Save,
       // New Tournament, score inputs) is left to act on the cleared tournament,
       await expect(container.locator('.round')).toHaveCount(0);
@@ -321,16 +326,20 @@ test.describe('R-ROUND-NAV: Round navigation', () => {
       // the dropped tournament's next-round announcement is gone with it,
       await expect(announcer).toHaveText('');
       expect(await announcer.evaluate((element) => 'key' in element.dataset)).toBe(false);
-      // the setup view is still usable: a new tournament can be set up and started,
+      // the setup view is shown with Start enabled (usable as such in Mexicano only),
       await expect(page.locator('#settingsContainer')).toBeVisible();
       await expect(page.locator('#startTournamentBtn')).toBeEnabled();
-      // (Mexicano draws its own player inputs; an Americano setup is left with an
-      // empty player table here, as generatePlayerInputs is skipped: not asserted.)
+      // (Mexicano rebuilds its player inputs. Americano rebuilds the table from an
+      // empty player list, so it is empty there, and pressing Start alerts "Please
+      // load a schedule first": recovery is only by picking another schedule. That
+      // residual is owned by AB#159 and is not asserted here.)
       if (format === 'mexicano') {
         expect(await page.locator('#playerInputsContainer input').count()).toBeGreaterThan(0);
       }
       // and no page error fired.
       expect(errors).toEqual([]);
+      // and no late extra dialog arrived while the assertions ran.
+      expect(dialogs).toEqual(expectedDialogs);
     });
   }
 });
