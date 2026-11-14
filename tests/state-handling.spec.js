@@ -2676,6 +2676,52 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
+  // A stored state with nothing in it to recover is dropped like any unusable one
+  // but never replaces the backup: blank (whitespace only), or JSON that is not
+  // an object (null, a number, a string). AB#102.
+  for (const [description, raw] of [
+    ['a single space', ' '],
+    ['a newline', '\n'],
+    ['the JSON null', 'null'],
+    ['a JSON number', '42'],
+    ['a JSON string', '"x"'],
+  ]) {
+    test(`R-STATE-PERSIST: a contentless stored state (${description}) falls back to a fresh setup and keeps the earlier backup`, async ({ page }) => {
+      const errors = collectErrors(page);
+      // Given a stored state with nothing to recover in it, and a backup from earlier.
+      await plantStorageOnce(page, { [STATE_KEY]: raw, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+      // When the app loads.
+      await page.goto('/');
+
+      // Then the tournament setup is presented and the contentless value is dropped,
+      await expectAFreshSetup(page);
+      expect(await storedRaw(page, STATE_KEY)).toBeNull();
+      // and the earlier backup is kept, not replaced by it.
+      expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(PREVIOUS_BACKUP);
+      await expectATournamentCanStart(page, 'Recovered Cup');
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('R-STATE-PERSIST: an unusable stored object padded with whitespace still replaces the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given an unusable stored state that is a JSON object (it holds something to
+    // recover) with whitespace around it, and a backup from earlier.
+    const raw = '\n  {"schedule": "P1", "tournamentStarted": true}  \n';
+    await plantStorageOnce(page, { [STATE_KEY]: raw, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented and the unusable value is dropped,
+    await expectAFreshSetup(page);
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    // and the backup holds it byte-for-byte, in place of the older one.
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(raw);
+    expect(errors).toEqual([]);
+  });
+
   // A stored state longer than the backup limit is dropped without a backup;
   // one of exactly that length is still backed up. MAX_BACKUP_LENGTH in the app.
   const MAX_BACKUP_LENGTH = 1000000;
