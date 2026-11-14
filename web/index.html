@@ -762,11 +762,18 @@
 
 
     // Save current tournament.
-    // Returns whether the tournament was stored.
+    // Returns whether the tournament was stored. Storage that refuses the saved
+    // list's read refuses the Save, with an alert: nothing is renamed or written.
     function saveTournament() {
       if (!currentSchedule) return false;
+      const read = readSavedTournamentsForAction();
+      if (!read.ok) {
+        alertStorageBlocked("saved");
+        return false;
+      }
+      const savedTournaments = read.list;
       const typedName = document.getElementById("tournamentName").value.trim() || "Unnamed Tournament";
-      const tournamentName = checkedTournamentName(typedName);
+      const tournamentName = checkedTournamentName(typedName, savedTournaments);
       // DEFERRED: AB#104 (the rename is adopted before the write and stays if the write fails)
       adoptCheckedTournamentName(typedName, tournamentName);
       const savedTournament = {
@@ -779,7 +786,6 @@
         totalPoints: totalPoints,
         savedAt: new Date().toISOString()
       };
-      let savedTournaments = readSavedTournaments();
       const existingIndex = savedTournaments.findIndex(t => t.tournamentName === tournamentName);
       if (existingIndex !== -1) {
         savedTournaments[existingIndex] = savedTournament;
@@ -792,9 +798,15 @@
       return saved;
     }
 
-    // Load tournament.
+    // Load tournament. Storage that refuses the saved list's read refuses the
+    // Load, with an alert: the running tournament is kept.
     function loadTournament() {
-      let savedTournaments = readSavedTournaments();
+      const read = readSavedTournamentsForAction();
+      if (!read.ok) {
+        alertStorageBlocked("loaded");
+        return;
+      }
+      const savedTournaments = read.list;
       const dropdown = document.getElementById("savedTournamentSelect");
       const selectedIndex = parseInt(dropdown.value, 10);
       if (!isNaN(selectedIndex) && savedTournaments[selectedIndex]) {
@@ -838,21 +850,34 @@
     // the name typed or, for the name that went unchecked at Start, the unique
     // name it is checked to (checkedTournamentName). That rename is applied only
     // once the Organizer confirms, so a cancelled Delete changes nothing.
+    // Storage that refuses the saved list's read refuses the Delete, with an
+    // alert, before the confirmation, or after it (read again for the write):
+    // nothing is renamed, written or reset.
     // Accepted multi-tab risk (localStorage has no compare-and-set): another tab
     // may save under the checked name while the confirmation is open; that save
     // is then the one deleted.
+    // DEFERRED: AB#104 (Delete reads the saved list twice: for the confirmation's name and for its write)
     function deleteTournament() {
       const typedName = document.getElementById("tournamentName").value.trim();
       if (!typedName) {
         alert("No tournament name provided.");
         return;
       }
-      const tournamentName = checkedTournamentName(typedName);
+      const read = readSavedTournamentsForAction();
+      if (!read.ok) {
+        alertStorageBlocked("deleted");
+        return;
+      }
+      const tournamentName = checkedTournamentName(typedName, read.list);
       // DEFERRED: AB#104 (Delete of an unchecked name reports a delete nothing matched; adopting before the reset is a redundant write)
       if (confirm(`Are you sure you want to delete "${tournamentName}"? Your secret sauce will vanish forever!`)) {
+        const current = readSavedTournamentsForAction();
+        if (!current.ok) {
+          alertStorageBlocked("deleted");
+          return;
+        }
         adoptCheckedTournamentName(typedName, tournamentName);
-        let savedTournaments = readSavedTournaments();
-        savedTournaments = savedTournaments.filter(t => t.tournamentName !== tournamentName);
+        const savedTournaments = current.list.filter(t => t.tournamentName !== tournamentName);
         writeAppValue(SAVED_TOURNAMENTS_KEY, savedTournaments);
         populateSavedTournamentDropdown();
         resetTournamentState();
@@ -894,24 +919,23 @@
     }
 
     // The name Save or Delete is to write the saved list under, given typedName,
-    // the name the name input holds: typedName, unless it is the name that went
-    // unchecked at Start (uncheckedTournamentName). That one is checked now, as
-    // Start would have: the result is the unique name (uniqueNameAmong), so that
-    // neither replaces nor deletes an older saved tournament of the same name.
+    // the name the name input holds, and savedTournaments, the saved list the
+    // action has read (readSavedTournamentsForAction): typedName, unless it is the
+    // name that went unchecked at Start (uncheckedTournamentName). That one is
+    // checked now, as Start would have: the result is the unique name
+    // (uniqueNameAmong), so that neither replaces nor deletes an older saved
+    // tournament of the same name.
     // Neither the app's tournament state nor the saved list is changed here: the
     // action applies the result once it goes ahead (adoptCheckedTournamentName),
-    // so an action the Organizer cancels leaves both as they were. (The list's
-    // read, as every list read does, may drop a stale pending saved-list
-    // migration once the key holds a value: pendingMigrationFor.) Storage that
-    // still refuses the saved list throws here, as the list's read in Save and
-    // Delete would, and the name stays unchecked.
-    // DEFERRED: AB#104 (Save and Delete read the saved list twice: here and for their write)
-    function checkedTournamentName(typedName) {
+    // so an action the Organizer cancels leaves both as they were. Storage that
+    // still refuses the saved list refuses the action before it gets here, and
+    // the name stays unchecked.
+    function checkedTournamentName(typedName, savedTournaments) {
       if (typedName !== uncheckedTournamentName) return typedName;
-      return uniqueNameAmong(typedName, readSavedTournaments());
+      return uniqueNameAmong(typedName, savedTournaments);
     }
 
-    // Apply checkedTournamentName(typedName), checkedName, as the action goes
+    // Apply checkedTournamentName's result for typedName, checkedName, as the action goes
     // ahead: the unchecked name is checked from now on, and the tournament is
     // renamed to the unique name (the name input, the title and the stored state).
     function adoptCheckedTournamentName(typedName, checkedName) {
@@ -1437,10 +1461,35 @@
     // which reads the stored state once, readRawStoredState, turns an unreadable
     // value into "nothing stored", and Start's name check, which writes nothing
     // from the list, a storage read that throws into "name not checked":
-    // getUniqueTournamentName.)
-    // DEFERRED: AB#101 (Save/Load/Delete/New Tournament with storage fully blocked)
+    // getUniqueTournamentName. Save, Load and Delete read the list through
+    // readSavedTournamentsForAction and refuse when it cannot be read.)
     function readSavedTournaments() {
       return readSavedTournamentsFrom(localStorage.getItem(SAVED_TOURNAMENTS_KEY));
+    }
+
+    // The saved tournaments for Save, Load or Delete: { ok: true, list } with the
+    // list as readSavedTournaments gives it, or { ok: false } (logged) when
+    // storage refuses the read, with whatever error (a DOMException with blocked
+    // site data; a TypeError with storage disabled, where localStorage is null).
+    // The action must then refuse (alertStorageBlocked) and write nothing: an
+    // unreadable list is never taken for an empty one. As in
+    // getUniqueTournamentName, only the read of storage is caught: an error past
+    // it (readSavedTournamentsFrom) is a bug, no storage refusal, and is thrown.
+    function readSavedTournamentsForAction() {
+      let raw;
+      try {
+        raw = localStorage.getItem(SAVED_TOURNAMENTS_KEY);
+      } catch (err) {
+        console.warn("Could not read the saved tournaments:", err);
+        return { ok: false };
+      }
+      return { ok: true, list: readSavedTournamentsFrom(raw) };
+    }
+
+    // Tell the Organizer that an action on the saved tournaments was refused
+    // because storage could not be read; outcome: "saved", "loaded" or "deleted".
+    function alertStorageBlocked(outcome) {
+      alert(`Browser storage is blocked, so the tournament could not be ${outcome}.`);
     }
 
     // The usable saved tournaments given raw, the saved list just read from
