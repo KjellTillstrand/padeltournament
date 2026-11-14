@@ -2685,6 +2685,7 @@ test.describe('Malformed or hostile persisted state', () => {
     ['the JSON null', 'null'],
     ['a JSON number', '42'],
     ['a JSON string', '"x"'],
+    ['a JSON boolean', 'true'],
   ]) {
     test(`R-STATE-PERSIST: a contentless stored state (${description}) falls back to a fresh setup and keeps the earlier backup`, async ({ page }) => {
       const errors = collectErrors(page);
@@ -2703,6 +2704,57 @@ test.describe('Malformed or hostile persisted state', () => {
       expect(errors).toEqual([]);
     });
   }
+
+  // An array is an object to the classifier, so one holding data still replaces
+  // the backup (operator-confirmed, AB#102).
+  test('R-STATE-PERSIST: an unusable stored array holding data still replaces the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given an unusable stored state that is a JSON array holding data, and a backup from earlier.
+    const raw = '[1, 2]';
+    await plantStorageOnce(page, { [STATE_KEY]: raw, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented and the unusable value is dropped,
+    await expectAFreshSetup(page);
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    // and the backup holds it byte-for-byte, in place of the older one.
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(raw);
+    expect(errors).toEqual([]);
+  });
+
+  // The restore-failure path backs up the raw stored string, so a blank value
+  // keeps the earlier backup there too. AB#102.
+  test('R-STATE-PERSIST: a blank stored state whose initial view throws falls back to a fresh setup and keeps the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given a blank stored state, a backup from earlier, and a fault that makes
+    // the first page lookup after load throw, once: the initial view fails.
+    await plantStorageOnce(page, { [STATE_KEY]: '  ', [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+    await page.addInitScript(() => {
+      let armed = false;
+      window.addEventListener('load', () => { armed = true; }); // before the app's own handler
+      const getElementById = Document.prototype.getElementById;
+      Document.prototype.getElementById = function (id) {
+        if (armed) {
+          armed = false;
+          throw new Error('the initial view failed');
+        }
+        return getElementById.call(this, id);
+      };
+    });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented,
+    await expectAFreshSetup(page);
+    // the blank value is no backup: the earlier one is kept,
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(PREVIOUS_BACKUP);
+    // and the rescue is logged as the one error.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not restore the saved tournament');
+  });
 
   test('R-STATE-PERSIST: an unusable stored object padded with whitespace still replaces the earlier backup', async ({ page }) => {
     const errors = collectErrors(page);
