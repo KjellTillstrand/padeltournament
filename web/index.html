@@ -2351,10 +2351,7 @@
     function goToRound(roundIndex, button) {
       const hadFocus = document.activeElement === button;
       currentRoundIndex = roundIndex;
-      displayRound(currentRoundIndex);
-      // displayRound saves too, but not when it has no round to show: the stale
-      // buttons of a New or Delete whose default schedule failed to load.
-      saveTournamentState();
+      displayRound(currentRoundIndex); // (saves when it shows a round)
       if (!hadFocus) return;
       const same = document.querySelector(
         '#tournamentContainer .round-header [data-round-step="' + button.dataset.roundStep + '"]');
@@ -2630,8 +2627,13 @@
     function loadScheduleFromModule(moduleName) {
       const schedule = scheduleForModule(moduleName);
       if (!schedule) {
-        // DEFERRED: AB#112 (the previous round's controls stay live here)
         console.error("Unknown module name:", moduleName);
+        // No schedule to load, but the round shown still leaves the screen, as it
+        // does below: its controls must not act on a tournament dropped meanwhile
+        // (New or Delete) (AB#112).
+        cancelStandingsRedraw();
+        document.getElementById("tournamentContainer").textContent = "";
+        clearNextRoundAnnouncement();
         return;
       }
       abandonPendingState(); // the new schedule replaces the tournament held

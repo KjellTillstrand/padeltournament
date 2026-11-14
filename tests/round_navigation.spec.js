@@ -230,4 +230,116 @@ test.describe('R-ROUND-NAV: Round navigation', () => {
     expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 1');
     expect(await organizer.asksFor(AFocusRingIsShown)).toBe(false);
   });
+
+  // --- A schedule that fails to load (AB#112) ---
+  // New Tournament drops the tournament and loads the default schedule. When that
+  // schedule's module is missing (its script failed to load), the round shown
+  // before must not stay on screen with live controls over no schedule.
+
+  // One scenario, four variants: the route that drops the tournament (New, or
+  // Delete through resetTournamentState) x the format in progress (Americano, or
+  // Mexicano, whose round shows the next-round announcement). The titles keep
+  // the R-ROUND-NAV: prefix; the first is the round-1 title, unchanged.
+  const failedLoadVariants = [
+    { route: 'New', format: 'americano',
+      title: 'R-ROUND-NAV: A New Tournament whose schedule fails to load leaves no round controls behind' },
+    { route: 'Delete', format: 'americano',
+      title: 'R-ROUND-NAV: A Delete Tournament whose schedule fails to load leaves no round controls behind' },
+    { route: 'New', format: 'mexicano',
+      title: 'R-ROUND-NAV: A New Tournament whose schedule fails to load leaves no round controls or announcement behind in Mexicano' },
+    { route: 'Delete', format: 'mexicano',
+      title: 'R-ROUND-NAV: A Delete Tournament whose schedule fails to load leaves no round controls or announcement behind in Mexicano' },
+  ];
+
+  for (const { route, format, title } of failedLoadVariants) {
+    // @verifies REQ-9
+    test(title, async ({ page }) => {
+      const errors = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      const consoleErrors = [];
+      page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+      const dialogs = [];
+      page.on('dialog', async (dialog) => {
+        dialogs.push(dialog.message());
+        // New asks "save first?": no. Delete asks "are you sure?": yes. Every alert: OK.
+        if (dialog.type() === 'confirm') {
+          if (route === 'New') await dialog.dismiss(); else await dialog.accept();
+        } else await dialog.accept();
+      });
+      const organizer = theOrganizer(page);
+      const container = page.locator('#tournamentContainer');
+      const announcer = page.locator('#nextRoundAnnouncement');
+
+      // Given a tournament in progress at round 2 (Mexicano: round 1, still
+      // waiting for scores, so the next-round announcement is set),
+      if (format === 'mexicano') {
+        await page.selectOption('#formatSelect', 'mexicano');
+        await page.selectOption('#playerCountSelect', '8');
+        await organizer.attemptsTo(StartTheTournament('Nav Lost Schedule'));
+        await expect(announcer).toContainText('Waiting for a valid score on');
+      } else {
+        await organizer.attemptsTo(StartTheTournament('Nav Lost Schedule'), GoToTheNextRound);
+        expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
+      }
+      // whose default schedule's module is gone, as when its script failed to load.
+      // The module is the select's default option (read from the page, so a changed
+      // default cannot make this vacuous), and it was there until now.
+      const moduleName = await page.evaluate(() => {
+        const select = document.getElementById('scheduleSelect');
+        const defaultOption = Array.from(select.options).find((option) => option.defaultSelected);
+        const global = 'schedule' + defaultOption.value.replace(/\.js$/, '');
+        const present = typeof window[global] === 'object' && window[global] !== null;
+        const chosen = select.value === defaultOption.value;
+        if (present && chosen) delete window[global];
+        return present && chosen ? defaultOption.value : null;
+      });
+      expect(moduleName, 'the default schedule module was loaded and chosen before it was deleted').not.toBeNull();
+
+      // When the Organizer drops the tournament,
+      if (route === 'New') {
+        await page.click('#newTournamentBtn');
+      } else {
+        // Delete lives in the settings, which the running tournament hides.
+        await page.click('#toggleSettingsBtn');
+        await page.click('#deleteTournamentBtn');
+      }
+      await expect.poll(() => dialogs.length).toBe(2);
+      const expectedDialogs = [
+        route === 'New'
+          ? 'Do you want to save the current tournament before creating a new one?'
+          : 'Are you sure you want to delete "Nav Lost Schedule"? Your secret sauce will vanish forever!',
+        route === 'New' ? 'Ready for a new tournament!' : 'Tournament "Nav Lost Schedule" deleted!',
+      ];
+      expect(dialogs).toEqual(expectedDialogs);
+
+      // Then the schedule's load failure was reported (so the failure path ran),
+      // (polled: the console event may arrive a tick after the dialogs; a missing
+      // report fails here on timeout, any other console error fails the toEqual below)
+      const expectedError = 'Unknown module name: ' + moduleName;
+      await expect.poll(() => consoleErrors).toContain(expectedError);
+      expect(consoleErrors.filter((text) => text !== expectedError)).toEqual([]);
+      // no round is shown, so none of its controls (PREVIOUS/NEXT ROUND, Save,
+      // New Tournament, score inputs) is left to act on the cleared tournament,
+      await expect(container.locator('.round')).toHaveCount(0);
+      await expect(container.getByRole('button')).toHaveCount(0);
+      await expect(container.locator('input')).toHaveCount(0);
+      // the dropped tournament's next-round announcement is gone with it,
+      await expect(announcer).toHaveText('');
+      expect(await announcer.evaluate((element) => 'key' in element.dataset)).toBe(false);
+      // the setup view is shown with Start enabled (usable as such in Mexicano only),
+      await expect(page.locator('#settingsContainer')).toBeVisible();
+      await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+      // (Mexicano rebuilds its player inputs. Americano rebuilds the table from an
+      // empty player list, so it is empty there, and pressing Start alerts "Please
+      // load a schedule first": recovery is only by picking another schedule. That
+      // residual is owned by AB#159 and is not asserted here.)
+      if (format === 'mexicano') {
+        expect(await page.locator('#playerInputsContainer input').count()).toBeGreaterThan(0);
+      }
+      // and no page error fired.
+      expect(errors).toEqual([]);
+      // and no late extra dialog arrived while the assertions ran.
+      expect(dialogs).toEqual(expectedDialogs);
+    });
+  }
 });
