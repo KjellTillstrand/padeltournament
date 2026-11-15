@@ -631,25 +631,42 @@
     // threw. So such a state can still be recovered by hand from the backup, unless
     // it is longer than MAX_BACKUP_LENGTH (logged, not backed up) or the backup
     // write fails (logged); neither blocks the fallback. One generation only: each
-    // backup overwrites the last, except that with nothing stored (null) or an
-    // empty stored string, which holds nothing to recover, the last backup is kept.
+    // backup overwrites the last, except that with nothing stored (null) or a
+    // stored value that holds nothing to recover (isContentlessStoredState), the
+    // last backup is kept.
     // Only the stored state is backed up: an unusable saved tournament is skipped
     // and dropped from storage, with no backup, the next time the saved list is
     // written. A reset the Organizer chose (New Tournament, another schedule) is no
     // fallback and backs nothing up.
     function backupStoredState(raw) {
-      // DEFERRED: AB#102 (contentless stored state must not overwrite the backup)
-      if (raw === null || raw === "") return;
+      if (raw === null) return;
       if (raw.length > MAX_BACKUP_LENGTH) {
         console.warn("Not backing up a stored tournament state longer than " + MAX_BACKUP_LENGTH +
           " characters:", STATE_BACKUP_KEY, raw.length);
         return;
       }
+      if (isContentlessStoredState(raw)) return;
       try {
         localStorage.setItem(STATE_BACKUP_KEY, raw);
       } catch (err) {
         console.warn("Could not back up the stored tournament state:", STATE_BACKUP_KEY, err);
       }
+    }
+
+    // Whether a raw stored state holds nothing to recover: it is blank (empty or
+    // whitespace only), or it parses as JSON to something other than an object
+    // (null, a number, a string, a boolean). A value that does not parse at all
+    // may be a damaged tournament, so it does not count as contentless; nor does
+    // an array, which can hold data.
+    function isContentlessStoredState(raw) {
+      if (raw.trim() === "") return true;
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (err) {
+        return false;
+      }
+      return parsed === null || typeof parsed !== "object";
     }
 
     // The raw stored state, or null when there is none or storage cannot be read

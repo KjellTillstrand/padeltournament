@@ -2676,6 +2676,104 @@ test.describe('Malformed or hostile persisted state', () => {
     expect(errors).toEqual([]);
   });
 
+  // A stored state with nothing in it to recover is dropped like any unusable one
+  // but never replaces the backup: blank (whitespace only), or JSON that is not
+  // an object (null, a number, a string). AB#102.
+  for (const [description, raw] of [
+    ['a single space', ' '],
+    ['a newline', '\n'],
+    ['the JSON null', 'null'],
+    ['a JSON number', '42'],
+    ['a JSON string', '"x"'],
+    ['a JSON boolean', 'true'],
+  ]) {
+    test(`R-STATE-PERSIST: a contentless stored state (${description}) falls back to a fresh setup and keeps the earlier backup`, async ({ page }) => {
+      const errors = collectErrors(page);
+      // Given a stored state with nothing to recover in it, and a backup from earlier.
+      await plantStorageOnce(page, { [STATE_KEY]: raw, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+      // When the app loads.
+      await page.goto('/');
+
+      // Then the tournament setup is presented and the contentless value is dropped,
+      await expectAFreshSetup(page);
+      expect(await storedRaw(page, STATE_KEY)).toBeNull();
+      // and the earlier backup is kept, not replaced by it.
+      expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(PREVIOUS_BACKUP);
+      await expectATournamentCanStart(page, 'Recovered Cup');
+      expect(errors).toEqual([]);
+    });
+  }
+
+  // An array is an object to the classifier, so one holding data still replaces
+  // the backup (operator-confirmed, AB#102).
+  test('R-STATE-PERSIST: an unusable stored array holding data still replaces the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given an unusable stored state that is a JSON array holding data, and a backup from earlier.
+    const raw = '[1, 2]';
+    await plantStorageOnce(page, { [STATE_KEY]: raw, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented and the unusable value is dropped,
+    await expectAFreshSetup(page);
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    // and the backup holds it byte-for-byte, in place of the older one.
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(raw);
+    expect(errors).toEqual([]);
+  });
+
+  // The restore-failure path backs up the raw stored string, so a blank value
+  // keeps the earlier backup there too. AB#102.
+  test('R-STATE-PERSIST: a blank stored state whose initial view throws falls back to a fresh setup and keeps the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given a blank stored state, a backup from earlier, and a fault that makes
+    // the first page lookup after load throw, once: the initial view fails.
+    await plantStorageOnce(page, { [STATE_KEY]: '  ', [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+    await page.addInitScript(() => {
+      let armed = false;
+      window.addEventListener('load', () => { armed = true; }); // before the app's own handler
+      const getElementById = Document.prototype.getElementById;
+      Document.prototype.getElementById = function (id) {
+        if (armed) {
+          armed = false;
+          throw new Error('the initial view failed');
+        }
+        return getElementById.call(this, id);
+      };
+    });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented,
+    await expectAFreshSetup(page);
+    // the blank value is no backup: the earlier one is kept,
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(PREVIOUS_BACKUP);
+    // and the rescue is logged as the one error.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('console.error: Could not restore the saved tournament');
+  });
+
+  test('R-STATE-PERSIST: an unusable stored object padded with whitespace still replaces the earlier backup', async ({ page }) => {
+    const errors = collectErrors(page);
+    // Given an unusable stored state that is a JSON object (it holds something to
+    // recover) with whitespace around it, and a backup from earlier.
+    const raw = '\n  {"schedule": "P1", "tournamentStarted": true}  \n';
+    await plantStorageOnce(page, { [STATE_KEY]: raw, [STATE_BACKUP_KEY]: PREVIOUS_BACKUP });
+
+    // When the app loads.
+    await page.goto('/');
+
+    // Then the tournament setup is presented and the unusable value is dropped,
+    await expectAFreshSetup(page);
+    expect(await storedRaw(page, STATE_KEY)).toBeNull();
+    // and the backup holds it byte-for-byte, in place of the older one.
+    expect(await storedRaw(page, STATE_BACKUP_KEY)).toBe(raw);
+    expect(errors).toEqual([]);
+  });
+
   // A stored state longer than the backup limit is dropped without a backup;
   // one of exactly that length is still backed up. MAX_BACKUP_LENGTH in the app.
   const MAX_BACKUP_LENGTH = 1000000;
