@@ -5747,6 +5747,105 @@ test.describe('A visible warning when the auto-save fails', () => {
     expect(errors).toEqual(LOAD_ERRORS_WITH_STORAGE_REFUSED);
   });
 
+  // New Tournament's "save first" runs the same Save as the button, so a failed
+  // write of the saved list there must not adopt the checked name either, and
+  // the running tournament is kept, not reset (AB#104).
+  test('R-NAME-UNIQUE, R-TOURNAMENT-STORE: after an unchecked Start, New Tournament saving first whose write fails leaves the name unrenamed and keeps the running tournament', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given a saved tournament "Blocked Cup", and a tournament of that name
+    // started while storage was refused, which works again,
+    const olderList = await saveATournamentAs(context, 'Blocked Cup');
+    await startUncheckedThenRecover(page, 'Blocked Cup');
+    // where writing the saved list fails (as when storage is full), reads working,
+    await page.evaluate((key) => {
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, value) {
+        if (k === key) throw new DOMException('Storage is full', 'QuotaExceededError');
+        return setItem.call(this, k, value);
+      };
+    }, SAVED_TOURNAMENTS_KEY);
+    const storedState = await storedRaw(page, STATE_KEY);
+
+    // when the Organizer starts a new tournament and asks to save the current one first,
+    await page.click('#newTournamentBtn');
+
+    // then the failure is reported and the tournament is kept,
+    await expect.poll(() => dialogs.length).toBe(3);
+    expect(dialogs).toEqual([
+      'Do you want to save the current tournament before creating a new one?',
+      'The tournament could not be saved.',
+      'The current tournament was kept, because it could not be saved.',
+    ]);
+    // not renamed, on screen or stored, and not reset,
+    await expect(page.locator('#tournamentName')).toHaveValue('Blocked Cup');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Blocked Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(page.locator('#settingsContainer')).toBeHidden();
+    expect(await storedRaw(page, STATE_KEY)).toBe(storedState);
+    // and the saved tournaments are as they were.
+    expect(await storedJson(page, SAVED_TOURNAMENTS_KEY)).toEqual(olderList);
+    expect(errors).toEqual(LOAD_ERRORS_WITH_STORAGE_REFUSED);
+  });
+
+  // AB#104: an error from the storage getter itself that is no DOMException,
+  // while localStorage cannot be read at all (not null), is a bug, not a
+  // refusal: isStorageRefusal rethrows it. Installed once the page is open.
+  test('R-STATE-PERSIST: a storage getter that throws an error that is no DOMException surfaces on Save and is not reported as blocked storage', async ({ page }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    await page.goto('/');
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await startTournament(page, 'Bug Cup');
+    await page.evaluate(() => {
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        get() { throw new TypeError('getter bug, not a storage refusal'); },
+      });
+    });
+
+    await page.click('#saveTournamentBtn');
+
+    await expect.poll(() => errors.length).toBeGreaterThan(0);
+    expect(errors[0]).toMatch(/^pageerror: .*getter bug, not a storage refusal/);
+    expect(dialogs).toEqual([]);
+    await expect(page.locator('#tournamentTitle')).toHaveText('Bug Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+  });
+
+  // AB#104: with the load's try/catch gone, the dropdown's own handling of a
+  // refused read is all there is: one logged error, no uncaught error, the
+  // dropdown as it was, and the page opens.
+  test('R-TOURNAMENT-STORE, R-STATE-PERSIST: when the saved list cannot be read at load, listing it logs one error, throws nothing and leaves the dropdown as it was', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    await saveATournamentAs(context, 'Older Cup');
+    await refuseSavedListReads(page);
+
+    await page.goto('/');
+
+    // the page opens, the error is logged once and nothing was uncaught (the
+    // other errors logged are the load's legacy migrations, which cannot read either),
+    const listingErrors = () => errors.filter((e) => e === 'console.error: Could not list the saved tournaments.');
+    const uncaught = () => errors.filter((e) => e.startsWith('pageerror:'));
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await expect.poll(() => errors.length).toBe(LOAD_ERRORS_WITH_STORAGE_REFUSED.length);
+    expect(listingErrors()).toHaveLength(1);
+    expect(uncaught()).toEqual([]);
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(0);
+    // and listing again while it still cannot be read keeps what the dropdown held.
+    await page.evaluate(() => {
+      const option = document.createElement('option');
+      option.textContent = 'Held entry';
+      document.getElementById('savedTournamentSelect').appendChild(option);
+      populateSavedTournamentDropdown();
+    });
+    await expect.poll(() => listingErrors().length).toBe(2);
+    expect(uncaught()).toEqual([]);
+    await expect(page.locator('#savedTournamentSelect option')).toHaveText(['Held entry']);
+    expect(dialogs).toEqual([]);
+  });
+
   // AB#104: only the browser refusing storage counts as blocked storage: a
   // DOMException, or any error while localStorage is null or absent (storage
   // disabled), as the tests above pin. Any other error reading the saved list
