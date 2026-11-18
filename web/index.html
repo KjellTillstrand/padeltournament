@@ -869,7 +869,9 @@
     // confirmation, no write, no reset. That is always so for a name still
     // unchecked, as its unique name is one no save has.
     // Storage that refuses the saved list's read refuses the Delete, with an
-    // alert, before the confirmation, or after it: nothing is written or reset.
+    // alert, before the confirmation, or after it: a refused read writes and
+    // resets nothing. The result of the write is not checked: a write that fails
+    // after a read that worked still resets the tournament (tracked on AB#160).
     // The list is read again once the Organizer has confirmed, and the save is
     // deleted from that fresh list, so a save another tab made while the
     // confirmation was open is kept, and a save it deleted meanwhile is found

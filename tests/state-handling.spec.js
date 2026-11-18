@@ -5161,6 +5161,36 @@ test.describe('A visible warning when the auto-save fails', () => {
     expect(dialogs).toEqual([]);
   });
 
+  // The same, with a copy layer that throws a DOMException: the one reader's
+  // catch covers the read of storage only, so an error past it is thrown even
+  // when it looks like a refusal. A catch widened to the copy layer would take
+  // this for blocked storage and let Start go on with the name unchecked.
+  test('R-STATE-PERSIST: a DOMException from the saved list\'s copy layer is no storage refusal: it stops Start and is not reported as blocked storage', async ({ page }) => {
+    const errors = collectErrors(page);
+    const dialogs = collectDialogs(page);
+    // Given readable storage, and a copy layer for the saved list that fails
+    // with a DOMException,
+    await page.goto('/');
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    expect(await probeTheStorage(page)).toBe('readable');
+    await page.evaluate(() => {
+      window.copySavedTournamentList = () => { throw new DOMException('past the read', 'SecurityError'); };
+    });
+
+    // when the Organizer starts a tournament,
+    await page.fill('#tournamentName', 'Bug Cup');
+    await page.click('#startTournamentBtn');
+
+    // then the error surfaces, it is not logged as a refusal, and the tournament
+    // does not start (so its name is not left unchecked).
+    await expect.poll(() => errors.length).toBe(1);
+    expect(errors).toEqual([expect.stringMatching(/^pageerror: .*past the read/)]);
+    await expect(page.locator('#settingsContainer')).toBeVisible();
+    await expect(page.locator('#startTournamentBtn')).toBeEnabled();
+    await expect(page.locator('.round-header')).toHaveCount(0);
+    expect(dialogs).toEqual([]);
+  });
+
   // The safeguard is bound to the name that went unchecked at Start: once the
   // Organizer has typed another name, Save replaces, and Delete deletes, the
   // saved tournament of that name, as for any tournament.
@@ -5692,6 +5722,45 @@ test.describe('A visible warning when the auto-save fails', () => {
     expect(await storageWrites(page)).toBe(0);
     expect(await storedRaw(page, SAVED_TOURNAMENTS_KEY)).toBe('[]');
     // and keeps the running tournament, not reset.
+    await expect(page.locator('#tournamentTitle')).toHaveText('Older Cup');
+    await expect(page.locator('.round-header .left')).toHaveText('Round 1');
+    await expect(leftScore(page, 0)).toHaveValue('10');
+    await expect(page.locator('#startTournamentBtn')).toBeDisabled();
+    expect(errors).toEqual([]);
+  });
+
+  // A Delete of a name that is saved asks for confirmation; when the Organizer
+  // dismisses it, nothing happens: the save stays and the tournament runs on.
+  test('R-TOURNAMENT-STORE: a Delete of a saved name whose confirmation the Organizer dismisses writes nothing, keeps the save and keeps the running tournament', async ({ page, context }) => {
+    const errors = collectErrors(page);
+    const dialogs = [];
+    page.on('dialog', (dialog) => {
+      dialogs.push(`${dialog.type()}: ${dialog.message()}`);
+      dialog.dismiss();
+    });
+    // Given a saved tournament "Older Cup", running (restored from the stored
+    // state its save left), a score entered,
+    const olderList = await saveATournamentAs(context, 'Older Cup');
+    await page.goto('/');
+    await expect(page.locator('#tournamentTitle')).toHaveText('Older Cup');
+    await expect(leftScore(page, 0)).toHaveValue('10');
+    await countStorageWrites(page);
+
+    // when the Organizer clicks Delete and dismisses the confirmation,
+    await page.click('#deleteTournamentBtn');
+
+    // then the confirmation was the only dialog,
+    await expect.poll(() => dialogs.length).toBe(1);
+    await page.evaluate(() => true); // runs only once the click's handler has returned
+    expect(dialogs).toEqual([
+      'confirm: Are you sure you want to delete "Older Cup"? Your secret sauce will vanish forever!',
+    ]);
+    // nothing is written, and the saved tournaments are as they were,
+    expect(await storageWrites(page)).toBe(0);
+    expect(await storedJson(page, SAVED_TOURNAMENTS_KEY)).toEqual(olderList);
+    await expect(page.locator('#savedTournamentSelect option')).toHaveCount(1);
+    // and the running tournament is kept, not reset.
+    await expect(page.locator('#tournamentName')).toHaveValue('Older Cup');
     await expect(page.locator('#tournamentTitle')).toHaveText('Older Cup');
     await expect(page.locator('.round-header .left')).toHaveText('Round 1');
     await expect(leftScore(page, 0)).toHaveValue('10');
