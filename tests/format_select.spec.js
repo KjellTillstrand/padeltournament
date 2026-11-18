@@ -187,12 +187,16 @@ test.describe('R-FORMAT-SELECT: Choose the tournament format', () => {
     page.on('dialog', (dialog) => dialog.accept());
     const organizer = theOrganizer(page);
 
-    // Given a Mexicano setup with a tournament name,
-    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(14));
-    await page.fill('#tournamentName', 'Reset Cup');
+    // Given a 14-player Mexicano tournament, started and saved (Delete resets
+    // only once it has deleted a save: AB#104),
+    await organizer.attemptsTo(ChooseTheFormat('Mexicano'), ChooseThePlayerCount(14), StartTheTournament('Reset Cup'));
+    await page.click('#saveTournamentBtn');
+    await expect.poll(async () => page.evaluate((key) => (JSON.parse(localStorage.getItem(key)) || {}).tournamentStarted, STATE_KEY)).toBe(true);
 
     // When the Organizer deletes it (which resets the setup),
+    await page.click('#toggleSettingsBtn');
     await page.click('#deleteTournamentBtn');
+    await expect(page.locator('#startTournamentBtn')).toBeEnabled();
 
     // Then the reset setup, still Mexicano, is stored at once.
     await expect(page.locator('#formatSelect')).toHaveValue('mexicano');

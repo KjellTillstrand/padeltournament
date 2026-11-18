@@ -281,6 +281,12 @@ test.describe('R-ROUND-NAV: Round navigation', () => {
         await organizer.attemptsTo(StartTheTournament('Nav Lost Schedule'), GoToTheNextRound);
         expect(await organizer.asksFor(DisplayedRoundTitle)).toBe('Round 2');
       }
+      // (saved too, for Delete: Delete drops only a tournament that has a save, AB#104)
+      if (route === 'Delete') {
+        await page.click('#saveTournamentBtn');
+        await expect.poll(() => dialogs.length).toBe(1);
+        expect(dialogs.splice(0)).toEqual(['Tournament saved!']);
+      }
       // whose default schedule's module is gone, as when its script failed to load.
       // The module is the select's default option (read from the page, so a changed
       // default cannot make this vacuous), and it was there until now.

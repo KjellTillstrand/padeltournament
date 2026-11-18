@@ -1066,6 +1066,12 @@ test.describe('R-MEXICANO-ROUNDS: One round at a time, locked once it seeds the 
       // and a Mexicano tournament whose round waits for every court (courts 1 and 2),
       await organizer.attemptsTo(ChooseMexicanoFor(8), StartTheTournament('Missing Cup'));
       await expect(theAnnouncement(page)).toHaveText(waitingForBoth);
+      // (saved too, for Delete: Delete replaces only a tournament that has a save, AB#104)
+      if (replacement === 'Delete') {
+        await page.click('#saveTournamentBtn');
+        await expect(page.locator('#savedTournamentSelect option')).toHaveCount(2);
+        await expect(page.locator('#savedTournamentSelect option').nth(1)).toContainText('Missing Cup');
+      }
       await watchTheAnnouncements(page);
 
       // When the Organizer replaces it,
